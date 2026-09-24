@@ -100,11 +100,15 @@ tst_consent.qml` runs single QML tests without the other stages.
    where Sailjail grants them.
 3. **The binary**: `main` is the only dynamic export, BIND_NOW, GNU_RELRO,
    PIE, no `.symtab`, and every NEEDED library on Harbour's list.
-4. **`harbour-sukkula.pro` itself**, built with a stand-in of the SDK's
-   sailfishapp feature (`tests/cpp/sailfishapp/features`) and installed with
+4. **`harbour-sukkula.pro` itself**, built out of tree with a stand-in of
+   the SDK's sailfishapp feature (`tests/cpp/sailfishapp/features`, which
+   passes `-rdynamic` as the real one does) and installed with
    `INSTALL_ROOT`: exactly `/usr/bin/harbour-sukkula`, the desktop file, the
    four icon sizes, the four `.qm` catalogues and `qml/`, nothing else, and
-   nothing group- or world-writable.
+   nothing group- or world-writable. The installed binary gets the checks
+   of stage 3 -- linked against the real Rust archive with
+   `SUKKULA_ENGINE=rust`, so `-Wl,--exclude-libs,ALL` is shown to keep
+   every Rust symbol out of the dynamic table despite `-rdynamic`.
 
 ## What only a phone can show
 
