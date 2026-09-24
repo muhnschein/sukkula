@@ -103,6 +103,8 @@ mod mailbox;
 mod receive;
 mod send;
 mod session;
+#[cfg(test)]
+mod sweep;
 mod transit;
 mod wire;
 

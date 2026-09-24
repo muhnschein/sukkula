@@ -326,14 +326,22 @@ async fn a_file_that_changed_or_became_a_fifo_is_not_sent() {
         size: 10,
         mime: None,
     });
-    let sent = a.adapter.send(SendTarget::Wormhole, vec![item]).await.unwrap();
+    let sent = a
+        .adapter
+        .send(SendTarget::Wormhole, vec![item])
+        .await
+        .unwrap();
     let start = tokio::time::Instant::now();
     match a.finished(sent).await.0 {
         Outcome::Failed { error } => assert_eq!(error.code, ErrorCode::BadFile),
         other => panic!("{other:?}"),
     }
     assert!(start.elapsed() < Duration::from_secs(1));
-    assert_eq!(mb.connections.load(Ordering::SeqCst), 0, "no code for a bad file");
+    assert_eq!(
+        mb.connections.load(Ordering::SeqCst),
+        0,
+        "no code for a bad file"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
