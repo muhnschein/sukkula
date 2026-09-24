@@ -1,0 +1,84 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/sukkula-core",
+    "crates/sukkula-engine",
+    "crates/sukkula-ffi",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/muhnschein/sukkula"
+publish = false
+
+[workspace.dependencies]
+sukkula-core = { path = "crates/sukkula-core" }
+sukkula-engine = { path = "crates/sukkula-engine", default-features = false }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+sha2 = "0.10"
+tracing = "0.1"
+tokio = { version = "1", default-features = false }
+tokio-util = { version = "0.7", default-features = false }
+getrandom = "0.3"
+rustix = { version = "1", default-features = false, features = ["std", "fs", "process"] }
+
+proptest = "1"
+tempfile = "3"
+
+# S10. Denied for workspace members only: cargo caps lints for fetched and
+# vendored dependencies, so third_party/rqs_lib is judged by its own patches
+# and by the hostile-input tests, not by this table.
+[workspace.lints.rust]
+warnings = "deny"
+# `forbid` is set per crate: sukkula-core and sukkula-engine forbid unsafe
+# outright, and sukkula-ffi, the one crate that needs it, allows it item by
+# item with a SAFETY comment.
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+rust_2018_idioms = { level = "deny", priority = -1 }
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+indexing_slicing = "deny"
+string_slice = "deny"
+arithmetic_side_effects = "deny"
+cast_possible_truncation = "deny"
+cast_possible_wrap = "deny"
+cast_sign_loss = "deny"
+as_conversions = "deny"
+unchecked_time_subtraction = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+exit = "deny"
+mem_forget = "deny"
+disallowed_methods = "deny"
+disallowed_types = "deny"
+
+# Tests compile fast and keep line tables for backtraces; full debuginfo
+# dominates target/ size.
+[profile.dev]
+debug = "line-tables-only"
+
+# The phone build. Overflow checks stay on (S10), and `panic = "unwind"` is
+# what lets a panicking connection task die alone (spec §3) and what lets
+# sukkula-ffi's catch_unwind stop a panic at the C boundary.
+[profile.release]
+overflow-checks = true
+panic = "unwind"
+lto = "thin"
+codegen-units = 1
+debug = false

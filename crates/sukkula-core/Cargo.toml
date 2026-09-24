@@ -1,0 +1,27 @@
+[package]
+name = "sukkula-core"
+description = "Every untrusted value passes through here: names, display text, limits, consent, and the only code that writes files."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+sha2.workspace = true
+tracing.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "macros", "fs", "io-util"] }
+getrandom.workspace = true
+rustix.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "macros", "fs", "io-util", "rt", "rt-multi-thread", "test-util"] }
+
+[lints]
+workspace = true

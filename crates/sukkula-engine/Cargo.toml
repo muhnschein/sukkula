@@ -1,0 +1,42 @@
+[package]
+name = "sukkula-engine"
+description = "Thin adapters from each protocol library's events to sukkula-core's types, and the engine that runs them."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[features]
+default = ["localsend", "quickshare", "wormhole", "bluetooth"]
+# One feature per protocol, so each can be built and tested alone (spec §3).
+localsend = ["dep:localsend"]
+quickshare = []
+wormhole = ["dep:magic-wormhole", "dep:qrcode"]
+bluetooth = ["dep:dbus"]
+
+[dependencies]
+sukkula-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros", "net", "io-util", "fs"] }
+tokio-util = { workspace = true, features = ["rt"] }
+
+# LocalSend v2: the protocol authors' own core, pinned (spec §6).
+localsend = { git = "https://github.com/localsend/localsend", rev = "e768240d1ad95f0f162b852b5ff37bec71cde1ef", features = ["discovery"], optional = true }
+# Magic Wormhole, transfer protocol v1 only (spec §5).
+magic-wormhole = { version = "=0.8.1", default-features = false, features = ["transfer"], optional = true }
+qrcode = { version = "0.14", default-features = false, optional = true }
+# BlueZ obexd over the system libdbus-1.so.3 (Harbour-allowed). Never `vendored`.
+dbus = { version = "0.9", optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true
+proptest.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros", "net", "io-util", "fs", "test-util"] }
+
+[lints]
+workspace = true

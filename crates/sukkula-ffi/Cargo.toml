@@ -1,0 +1,25 @@
+[package]
+name = "sukkula-ffi"
+description = "The C ABI the Qt shell links: four functions, JSON in and out, and the only unsafe code in Sukkula."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+name = "sukkula_ffi"
+crate-type = ["staticlib", "rlib"]
+
+[features]
+default = ["sukkula-engine/default"]
+
+[dependencies]
+sukkula-engine.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

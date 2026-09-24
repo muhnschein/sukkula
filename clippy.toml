@@ -1,0 +1,37 @@
+# Bans that encode spec rules. docs/SECURITY.md maps each to the rule it
+# enforces. A ban is lifted only at the one call site that is the rule's
+# implementation, with `#[allow(clippy::disallowed_methods)]` and a comment.
+
+disallowed-methods = [
+    # S8: no process spawning, no shell.
+    { path = "std::process::Command::new", reason = "S8: Sukkula never spawns processes" },
+    { path = "std::process::exit", reason = "an engine must never end the app" },
+    { path = "std::process::abort", reason = "an engine must never end the app" },
+    # S3: only sukkula-core's inbox and store write files.
+    { path = "std::fs::write", reason = "S3: write through sukkula_core::inbox or sukkula_core::store" },
+    { path = "std::fs::File::create", reason = "S3: write through sukkula_core::inbox or sukkula_core::store" },
+    { path = "std::fs::File::create_new", reason = "S3: write through sukkula_core::inbox or sukkula_core::store" },
+    { path = "std::fs::OpenOptions::new", reason = "S3: open through sukkula_core::inbox or sukkula_core::store" },
+    { path = "std::fs::rename", reason = "S3: moves happen only in sukkula_core" },
+    { path = "std::fs::copy", reason = "S3: copies happen only in sukkula_core" },
+    { path = "std::fs::remove_dir_all", reason = "never delete trees" },
+    { path = "tokio::fs::write", reason = "S3: write through sukkula_core::inbox or sukkula_core::store", allow-invalid = true },
+    { path = "tokio::fs::File::create", reason = "S3: write through sukkula_core::inbox or sukkula_core::store", allow-invalid = true },
+    { path = "tokio::fs::OpenOptions::new", reason = "S3: open through sukkula_core::inbox or sukkula_core::store", allow-invalid = true },
+    # Process-global state is shared with Qt; the engine never touches it.
+    { path = "std::env::set_var", reason = "process environment is shared with Qt" },
+    { path = "std::env::remove_var", reason = "process environment is shared with Qt" },
+    { path = "std::env::set_current_dir", reason = "process state is shared with Qt" },
+]
+
+disallowed-types = [
+    { path = "std::process::Command", reason = "S8: Sukkula never spawns processes" },
+    { path = "tokio::process::Command", reason = "S8: Sukkula never spawns processes", allow-invalid = true },
+]
+
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true
+allow-dbg-in-tests = true
+allow-print-in-tests = true

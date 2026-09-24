@@ -1,0 +1,36 @@
+# Rust
+/target/
+**/target/
+
+# Sailfish SDK / mb2 / sfdk build artifacts
+RPMS/
+*.rpm
+/.mb2/
+/build/
+build-*/
+
+# Compiled translation catalogs (built from the .ts files by the RPM %build)
+*.qm
+
+# Qt tooling
+*.pro.user
+*.pro.user.*
+.qmake.stash
+Makefile.qmake
+moc_*.cpp
+*.o
+
+# `cargo vendor` output for offline SDK builds
+/vendor/
+/.cargo/config.toml
+
+# fuzzing working state (seeds are committed under fuzz/seeds)
+/fuzz/corpus/
+/fuzz/artifacts/
+/fuzz/coverage/
+
+# Editor / OS cruft
+.vscode/
+.idea/
+*.swp
+.DS_Store
