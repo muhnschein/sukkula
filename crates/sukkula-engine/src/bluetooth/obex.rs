@@ -688,4 +688,110 @@ mod tests {
         assert_eq!(transfer_error(MAX_OBEX_PACKET).code, ErrorCode::Refused);
         assert_eq!(transfer_error(MAX_OBEX_PACKET + 1).code, ErrorCode::Network);
     }
+
+    fn watch() -> Watch {
+        Watch::new(&Session {
+            path: Path::new("/org/bluez/obex/client/session1").unwrap(),
+            owner: ":1.7".into(),
+        })
+    }
+
+    fn changed(sender: &str, path: &str) -> Message {
+        let mut props = dbus::arg::PropMap::new();
+        props.insert("Status".into(), Variant(Box::new("active".to_owned())));
+        props.insert("Transferred".into(), Variant(Box::new(1234u64)));
+        props.insert("Size".into(), Variant(Box::new(99_999u64)));
+        let mut m = Message::new_signal(path, PROPERTIES_IFACE, "PropertiesChanged")
+            .unwrap()
+            .append3(TRANSFER_IFACE, props, Vec::<String>::new());
+        m.set_sender(Some(dbus::strings::BusName::new(sender).unwrap()));
+        m
+    }
+
+    #[test]
+    fn signals_count_only_from_obexd_and_under_the_session() {
+        let t = "/org/bluez/obex/client/session1/transfer1";
+        let mut w = watch();
+        w.on_signal(&changed(":1.7", t));
+        assert_eq!(
+            w.updates.pop_front().unwrap().1,
+            Update {
+                status: Some(Status::Active),
+                transferred: Some(1234),
+                size: Some(99_999),
+            }
+        );
+        for (sender, path) in [
+            (":1.8", t),
+            ("org.bluez.obex", t),
+            (":1.7", "/org/bluez/obex/client/session2/transfer1"),
+            (":1.7", "/org/bluez/obex/client/session1"),
+            (":1.7", "/"),
+        ] {
+            w.on_signal(&changed(sender, path));
+            assert!(w.updates.is_empty(), "{sender} {path}");
+        }
+        // Once the transfer is known, only it.
+        w.transfer = Some(Path::new(t).unwrap());
+        w.on_signal(&changed(
+            ":1.7",
+            "/org/bluez/obex/client/session1/transfer2",
+        ));
+        assert!(w.updates.is_empty());
+        // A flood is capped.
+        for _ in 0..1000 {
+            w.on_signal(&changed(":1.7", t));
+        }
+        assert_eq!(w.updates.len(), MAX_UPDATES);
+    }
+
+    #[test]
+    fn only_the_bus_can_say_obexd_left() {
+        let mut w = watch();
+        let lost = |sender: &str, new: &str| {
+            let mut m = Message::new_signal(bus::DBUS_PATH, bus::DBUS_IFACE, "NameOwnerChanged")
+                .unwrap()
+                .append3(OBEX_NAME, ":1.7", new);
+            m.set_sender(Some(dbus::strings::BusName::new(sender).unwrap()));
+            m
+        };
+        w.on_signal(&lost(":1.9", ""));
+        assert!(!w.owner_lost);
+        w.on_signal(&lost(bus::DBUS_NAME, ":1.7"));
+        assert!(!w.owner_lost);
+        w.on_signal(&lost(bus::DBUS_NAME, ""));
+        assert!(w.owner_lost);
+    }
+
+    /// Deterministic mutation sweep over a PropertiesChanged signal, as for
+    /// BlueZ's reply: no mutation libdbus accepts may panic the watcher.
+    #[test]
+    fn mutated_signals_never_panic() {
+        let mut msg = changed(":1.7", "/org/bluez/obex/client/session1/transfer1");
+        msg.set_serial(1);
+        let mut bytes = Vec::new();
+        msg.marshal(|b| {
+            bytes.extend_from_slice(b);
+            Ok::<(), ()>(())
+        })
+        .unwrap();
+        let mut accepted = 0usize;
+        for i in 0..bytes.len() {
+            for mask in [0x01u8, 0x20, 0xff] {
+                let mut m = bytes.clone();
+                m[i] ^= mask;
+                let Ok(msg) = Message::demarshal(&m) else {
+                    continue;
+                };
+                accepted += 1;
+                let mut w = watch();
+                w.on_signal(&msg);
+                assert!(w.updates.len() <= 1);
+                if let Some((path, _)) = w.updates.pop_front() {
+                    assert!(under(&path, "/org/bluez/obex/client/session1"));
+                }
+            }
+        }
+        assert!(accepted > 50, "{accepted}");
+    }
 }

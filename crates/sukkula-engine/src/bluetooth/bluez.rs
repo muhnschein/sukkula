@@ -590,4 +590,56 @@ mod tests {
         sorted.sort_by(|a, b| a.name.cmp(&b.name));
         assert_eq!(devices, sorted);
     }
+
+    /// Deterministic mutation sweep: a realistic reply, marshalled, with
+    /// every byte flipped three ways. Whatever libdbus still accepts as a
+    /// message -- any shape at all -- must parse without a panic into
+    /// devices that keep every invariant.
+    #[test]
+    fn mutated_replies_never_panic() {
+        let mut o = Objects::new();
+        obj(&mut o, "/org/bluez/hci0", ADAPTER_IFACE, adapter(true));
+        obj(
+            &mut o,
+            "/org/bluez/hci0/dev_1",
+            DEVICE_IFACE,
+            device("11:22:33:44:55:66", "Pekka\u{202E}", true, &[OPP_UUID]),
+        );
+        let mut d = device("11:22:33:44:55:67", "Anna", true, &[OPP_UUID]);
+        d.insert("Name".into(), v("Anna's phone".to_owned()));
+        obj(&mut o, "/org/bluez/hci0/dev_2", DEVICE_IFACE, d);
+        let mut msg = reply(o);
+        msg.set_serial(1);
+        let mut bytes = Vec::new();
+        msg.marshal(|b| {
+            bytes.extend_from_slice(b);
+            Ok::<(), ()>(())
+        })
+        .unwrap();
+        assert_eq!(
+            parse_managed_objects(&Message::demarshal(&bytes).unwrap())
+                .unwrap()
+                .len(),
+            2
+        );
+        let mut accepted = 0usize;
+        for i in 0..bytes.len() {
+            for mask in [0x01u8, 0x20, 0xff] {
+                let mut m = bytes.clone();
+                m[i] ^= mask;
+                let Ok(msg) = Message::demarshal(&m) else {
+                    continue;
+                };
+                accepted += 1;
+                for d in parse_managed_objects(&msg).unwrap_or_default() {
+                    assert_eq!(Address::parse(&d.address.to_string()), Some(d.address));
+                    assert!(!d.name.is_empty());
+                    assert!(d.name.chars().count() <= MAX_ALIAS_CHARS);
+                    assert!(!d.name.chars().any(text::is_forbidden));
+                }
+            }
+        }
+        // The sweep reached the parser, not just libdbus's validator.
+        assert!(accepted > 100, "{accepted}");
+    }
 }
