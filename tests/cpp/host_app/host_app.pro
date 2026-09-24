@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# src/main.cpp and src/bridge.cpp as the phone builds them -- same sources,
+# same hardening (src/hardening.pri) -- against a desktop Qt, a host
+# stand-in for libsailfishapp and the stub or the real engine. Runs the
+# app's own qml/ with the stubs in qml-stubs/.
+TEMPLATE = app
+TARGET = harbour-sukkula-host
+QT = core gui qml quick
+include(../common.pri)
+include(../../../src/hardening.pri)
+
+# Our <sailfishapp.h>, ahead of anything else of that name.
+INCLUDEPATH = $$PWD/../sailfishapp $$INCLUDEPATH
+DEFINES += SUKKULA_SOURCE_ROOT=\\\"$$SUKKULA_ROOT\\\"
+
+HEADERS += $$SUKKULA_ROOT/src/bridge.h $$PWD/../sailfishapp/sailfishapp.h
+SOURCES += \
+    $$SUKKULA_ROOT/src/main.cpp \
+    $$SUKKULA_ROOT/src/bridge.cpp \
+    $$PWD/../sailfishapp/sailfishapp_host.cpp

@@ -1,0 +1,37 @@
+# A stub of Sailfish.Silica for host tests; see qml-stubs/README.md.
+# Never shipped, never loaded on a device.
+module Sailfish.Silica
+
+singleton Theme 1.0 Theme.qml
+singleton Clipboard 1.0 Clipboard.qml
+singleton Format 1.0 Format.qml
+PageStatus 1.0 PageStatus.qml
+PageStackAction 1.0 PageStackAction.qml
+TruncationMode 1.0 TruncationMode.qml
+BusyIndicatorSize 1.0 BusyIndicatorSize.qml
+
+ApplicationWindow 1.0 ApplicationWindow.qml
+PageStack 1.0 PageStack.qml
+Page 1.0 Page.qml
+Dialog 1.0 Dialog.qml
+DialogHeader 1.0 DialogHeader.qml
+PageHeader 1.0 PageHeader.qml
+SectionHeader 1.0 SectionHeader.qml
+SilicaFlickable 1.0 SilicaFlickable.qml
+PullDownMenu 1.0 PullDownMenu.qml
+MenuItem 1.0 MenuItem.qml
+ContextMenu 1.0 ContextMenu.qml
+Label 1.0 Label.qml
+Button 1.0 Button.qml
+IconButton 1.0 IconButton.qml
+TextSwitch 1.0 TextSwitch.qml
+TextField 1.0 TextField.qml
+TextArea 1.0 TextArea.qml
+ComboBox 1.0 ComboBox.qml
+ListItem 1.0 ListItem.qml
+BackgroundItem 1.0 BackgroundItem.qml
+BusyIndicator 1.0 BusyIndicator.qml
+VerticalScrollDecorator 1.0 VerticalScrollDecorator.qml
+CoverBackground 1.0 CoverBackground.qml
+CoverActionList 1.0 CoverActionList.qml
+CoverAction 1.0 CoverAction.qml
