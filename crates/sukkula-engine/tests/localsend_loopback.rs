@@ -403,7 +403,7 @@ async fn discovery_lists_registrations_and_forgets_on_stop() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_file_is_sent_as_it_was_checked_whether_it_grows_or_shrinks() {
+async fn a_file_that_changed_after_it_was_chosen_is_not_sent() {
     use sukkula_engine::adapter::OutgoingFile;
     let a = Node::new(&NodeConfig::new(0, "Alice"));
     let b = Node::new(&NodeConfig::new(1, "Bob"));
@@ -411,39 +411,46 @@ async fn a_file_is_sent_as_it_was_checked_whether_it_grows_or_shrinks() {
     let peer = a.find(&b).await;
     let src = tempfile::tempdir().unwrap();
     let path = make_file(src.path(), "log.txt", 1000);
-    let checked_at = |size: u64| {
+    let checked_at = |path: &std::path::Path, size: u64| {
         Outgoing::File(OutgoingFile {
-            path: path.clone(),
+            path: path.to_path_buf(),
             name: sukkula_core::name::sanitize("log.txt"),
             size,
             mime: None,
         })
     };
+    let fifo = src.path().join("fifo");
+    rustix::fs::mkfifoat(
+        rustix::fs::CWD,
+        &fifo,
+        rustix::fs::Mode::from_raw_mode(0o600),
+    )
+    .unwrap();
 
-    // It grew after the check: only the checked 600 bytes go.
-    let id =
-        a.ls.send(target(&peer), vec![checked_at(600)])
-            .await
-            .unwrap();
-    let (offer, o) = b.offer().await;
-    assert_eq!(o.total_bytes, 600);
-    b.answer(offer, true);
-    assert_eq!(a.finished(id).await.0, Outcome::Done);
-    let got = std::fs::read(b.downloads().join("log.txt")).unwrap();
-    assert_eq!(got, std::fs::read(&path).unwrap()[..600]);
-
-    // It shrank: the send fails rather than sending a short file.
-    let id =
-        a.ls.send(target(&peer), vec![checked_at(2000)])
-            .await
-            .unwrap();
-    let (offer, _) = b.offer_after(1).await;
-    b.answer(offer, true);
-    assert_eq!(failed_with(&a.finished(id).await.0), ErrorCode::BadFile);
-    let (outcome, saved) = b.finished(b.nth_incoming(1).await).await;
-    assert_ne!(outcome, Outcome::Done);
-    assert!(saved.is_empty());
-    assert_eq!(b.saved(), ["log.txt"]);
+    // It grew, it shrank, it became a FIFO (whose open would wait for a
+    // writer forever): the handle read from is not what was checked.
+    let changed = [
+        checked_at(&path, 600),
+        checked_at(&path, 2000),
+        checked_at(&fifo, 0),
+    ];
+    for (n, item) in changed.into_iter().enumerate() {
+        let id = a.ls.send(target(&peer), vec![item]).await.unwrap();
+        let (offer, _) = b.offer_after(n).await;
+        b.answer(offer, true);
+        assert_eq!(
+            failed_with(&a.finished(id).await.0),
+            ErrorCode::BadFile,
+            "{n}"
+        );
+        // The receiver is told at once, not left to its idle timeout.
+        let (outcome, saved) = b.finished(b.nth_incoming(n).await).await;
+        assert_eq!(outcome, Outcome::Cancelled, "{n}");
+        assert!(saved.is_empty());
+    }
+    // (Three offers is this address's budget for the minute, so the file
+    // as checked is sent in the other tests.)
+    assert!(b.saved().is_empty());
     wait("staging to be empty", || (b.partials() == 0).then_some(())).await;
 }
 

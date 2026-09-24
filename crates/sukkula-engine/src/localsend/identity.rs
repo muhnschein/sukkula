@@ -142,7 +142,7 @@ fn why(e: StoreError) -> &'static str {
 
 #[cfg(test)]
 #[allow(clippy::disallowed_methods)] // Tests set the scene with plain writes.
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
@@ -166,41 +166,83 @@ mod tests {
         assert!(shown.contains(first.fingerprint()));
     }
 
+    /// Two pre-made pairs, shared by the tests of this module and `tls`:
+    /// RSA key generation takes seconds in a debug build.
+    pub(crate) fn test_pairs() -> &'static [cert::SelfSignedCert; 2] {
+        static PAIRS: std::sync::OnceLock<[cert::SelfSignedCert; 2]> = std::sync::OnceLock::new();
+        PAIRS.get_or_init(|| {
+            let other = std::thread::spawn(|| cert::generate_self_signed().unwrap());
+            let one = cert::generate_self_signed().unwrap();
+            [one, other.join().unwrap()]
+        })
+    }
+
+    fn seed(store: &Store, cert_of: usize, key_of: usize) {
+        let pairs = test_pairs();
+        store
+            .write(CERT_FILE, pairs[cert_of].certificate_pem.as_bytes())
+            .unwrap();
+        store
+            .write(KEY_FILE, pairs[key_of].private_key_pem.as_bytes())
+            .unwrap();
+    }
+
+    #[test]
+    fn a_stored_pair_is_used_as_it_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        seed(&store, 0, 0);
+        let loaded = load_or_create(&store).unwrap();
+        assert_eq!(loaded.fingerprint(), test_pairs()[0].fingerprint);
+    }
+
     #[test]
     fn an_exposed_key_is_replaced() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path()).unwrap();
-        let first = load_or_create(&store).unwrap();
+        seed(&store, 0, 0);
         std::fs::set_permissions(
             dir.path().join(KEY_FILE),
             std::fs::Permissions::from_mode(0o644),
         )
         .unwrap();
-        let second = load_or_create(&store).unwrap();
-        assert_ne!(first.fingerprint(), second.fingerprint());
+        assert_eq!(
+            load(&store).unwrap_err(),
+            "the key is readable by other users"
+        );
+        let replaced = load_or_create(&store).unwrap();
+        assert_ne!(replaced.fingerprint(), test_pairs()[0].fingerprint);
         assert_eq!(mode(&dir.path().join(KEY_FILE)), 0o600);
     }
 
     #[test]
-    fn a_broken_or_mismatched_pair_is_replaced() {
+    fn broken_mismatched_or_half_pairs_are_unusable() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path()).unwrap();
-        let first = load_or_create(&store).unwrap();
+        seed(&store, 0, 0);
         store.write(CERT_FILE, b"not a certificate").unwrap();
-        let second = load_or_create(&store).unwrap();
-        assert_ne!(first.fingerprint(), second.fingerprint());
+        assert_eq!(load(&store).unwrap_err(), "malformed certificate");
 
         // A valid certificate with somebody else's key.
-        let other = cert::generate_self_signed().unwrap();
-        store
-            .write(KEY_FILE, other.private_key_pem.as_bytes())
-            .unwrap();
-        let third = load_or_create(&store).unwrap();
-        assert_ne!(third.fingerprint(), second.fingerprint());
-        assert_ne!(third.fingerprint(), other.fingerprint);
+        seed(&store, 0, 1);
+        assert_eq!(
+            load(&store).unwrap_err(),
+            "key does not match the certificate"
+        );
 
+        seed(&store, 0, 0);
         std::fs::remove_file(dir.path().join(CERT_FILE)).unwrap();
-        let fourth = load_or_create(&store).unwrap();
-        assert_ne!(fourth.fingerprint(), third.fingerprint());
+        assert_eq!(
+            load(&store).unwrap_err(),
+            "only one of certificate and key is present"
+        );
+
+        // A symlink where the key should be is not followed.
+        std::fs::remove_file(dir.path().join(KEY_FILE)).unwrap();
+        std::os::unix::fs::symlink("/etc/hostname", dir.path().join(KEY_FILE)).unwrap();
+        assert_eq!(
+            load(&store).unwrap_err(),
+            "not a regular file owned by this user"
+        );
     }
 }

@@ -530,6 +530,20 @@ async fn uploads_without_consent_or_the_right_token_are_refused_unread() {
         .await
         .unwrap();
     assert_eq!(r.status, 403, "tokens are bound to the sender's address");
+    // Same address, another certificate: a host spoofing the sender.
+    let mut other = raw_tls(port, Some(2), None).await.unwrap();
+    let r = exchange(
+        &mut other,
+        &post(&upload_path(&session, "f", &token), 10),
+        &[0; 10],
+    )
+    .await
+    .unwrap();
+    assert_eq!(r.status, 403, "and to the sender's certificate");
+    let mut other = raw_tls(port, Some(2), None).await.unwrap();
+    let cancel = format!("/api/localsend/v2/cancel?sessionId={session}");
+    let r = exchange(&mut other, &post(&cancel, 0), b"").await.unwrap();
+    assert_eq!(r.status, 200, "answered, but");
     assert_eq!(b.partials(), 0);
 
     // The real sender still can.

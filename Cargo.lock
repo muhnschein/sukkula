@@ -2890,6 +2890,7 @@ dependencies = [
  "magic-wormhole",
  "proptest",
  "qrcode",
+ "rustix",
  "rustls",
  "serde",
  "serde_json",

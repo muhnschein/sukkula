@@ -52,10 +52,16 @@ pub(super) fn check_pair(
     cert: &CertificateDer<'static>,
     key: &PrivateKeyDer<'static>,
 ) -> Result<(), &'static str> {
-    let pair = CertifiedKey::from_der(vec![cert.clone()], key.clone_key(), &provider())
-        .map_err(|_| "key unusable")?;
-    pair.keys_match()
-        .map_err(|_| "key does not match the certificate")
+    let mismatch = "key does not match the certificate";
+    let pair =
+        CertifiedKey::from_der(vec![cert.clone()], key.clone_key(), &provider()).map_err(|e| {
+            match e {
+                Error::InconsistentKeys(_) => mismatch,
+                _ => "key unusable",
+            }
+        })?;
+    // `from_der` lets a pair whose match cannot be told through; ours must.
+    pair.keys_match().map_err(|_| mismatch)
 }
 
 /// The server side: our certificate, peers' certificates required.
@@ -261,8 +267,7 @@ mod tests {
 
     #[test]
     fn the_pinned_certificate_passes_and_any_other_is_refused() {
-        let a = cert::generate_self_signed().unwrap();
-        let b = cert::generate_self_signed().unwrap();
+        let [a, b] = crate::localsend::identity::tests::test_pairs();
 
         let pinned = PinnedServer::new(Some(&a.fingerprint.to_ascii_lowercase()));
         assert!(check(&pinned, &der(&a.certificate_pem)).is_ok());
@@ -275,7 +280,7 @@ mod tests {
 
         let unpinned = PinnedServer::new(None);
         assert!(check(&unpinned, &der(&b.certificate_pem)).is_ok());
-        assert_eq!(unpinned.seen(), Some(b.fingerprint));
+        assert_eq!(unpinned.seen(), Some(b.fingerprint.clone()));
     }
 
     #[test]

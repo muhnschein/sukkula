@@ -127,6 +127,18 @@ impl Multicast {
         self.handle.clone()
     }
 
+    /// Announces once, in a task that ends with the socket.
+    pub(super) fn announce_in_background(&self, shared: &Shared) {
+        let handle = self.handle.clone();
+        let cancel = self.cancel.clone();
+        shared.tasks.spawn(async move {
+            tokio::select! {
+                () = cancel.cancelled() => {}
+                () = handle.announce() => {}
+            }
+        });
+    }
+
     /// Closes the socket and ends every task it started.
     pub(super) async fn stop(mut self) {
         if let Some(stop) = self.stop.take() {

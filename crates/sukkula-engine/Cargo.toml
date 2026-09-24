@@ -21,6 +21,7 @@ localsend = [
     "dep:tokio-rustls",
     "dep:form_urlencoded",
     "dep:getrandom",
+    "dep:rustix",
 ]
 quickshare = []
 wormhole = ["dep:magic-wormhole", "dep:qrcode"]
@@ -52,6 +53,9 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"], optional = true }
 form_urlencoded = { version = "1", optional = true }
 getrandom = { workspace = true, optional = true }
+# O_NONBLOCK for opening a file to send, so a FIFO swapped in since the
+# hub's check cannot block the open. Already in the tree through core.
+rustix = { workspace = true, optional = true }
 # Magic Wormhole, transfer protocol v1 only (spec §5).
 magic-wormhole = { version = "=0.8.1", default-features = false, features = ["transfer"], optional = true }
 qrcode = { version = "0.14", default-features = false, optional = true }

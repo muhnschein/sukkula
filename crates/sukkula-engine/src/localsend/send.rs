@@ -65,9 +65,20 @@ pub(super) async fn run(
         result = deliver(&shared, &identity, &target, items, &transfer, &mut remote_session) => result,
     };
     let by_peer = shared.outgoing_end(id);
-    if transfer.is_cancelled() && !by_peer && !shared.ctx.shutdown_token().is_cancelled() {
-        // Tell the receiver, as LocalSend senders do: with the session id
-        // once there is one, by address alone while the offer is pending.
+    // Tell the receiver when we give up, as LocalSend senders do: with the
+    // session id once there is one, by address alone while the offer is
+    // pending. A failure after the offer was accepted counts too, so the
+    // receiver ends at once rather than at its idle timeout. Not when the
+    // receiver cancelled, nor when the certificate was wrong (that is not
+    // the peer to tell), nor while the engine stops.
+    let failed_mid_session = result
+        .as_ref()
+        .is_err_and(|e| e.code != ErrorCode::PeerMismatch)
+        && remote_session.is_some();
+    if (transfer.is_cancelled() || failed_mid_session)
+        && !by_peer
+        && !shared.ctx.shutdown_token().is_cancelled()
+    {
         client::cancel(
             &shared,
             &identity,
@@ -201,19 +212,24 @@ async fn upload(
     content: Content,
     transfer: &TransferHandle,
 ) -> Result<(), ErrorInfo> {
+    let idle = shared.opts.idle_timeout();
+    let len = content.len();
+    // Opened and checked before the request starts: a file that fails the
+    // check must not become a request, least of all an empty one, whose
+    // body would be complete the moment its head was sent.
+    let source = open_source(idle, content).await?;
     let path = wire::path_with_query(
         &format!("{}/upload", wire::API_V2),
         &[("sessionId", session), ("fileId", id), ("token", token)],
     );
-    let (tx, body) = client::stream_body(content.len());
+    let (tx, body) = client::stream_body(len);
     let pending = conn
         .start(Method::POST, &path, body, false)
         .await
         .map_err(Failure::into_error)?;
     tokio::pin!(pending);
-    let feeding = feed(shared.opts.idle_timeout(), content, tx, transfer);
+    let feeding = feed(idle, source, tx, transfer);
     tokio::pin!(feeding);
-    let idle = shared.opts.idle_timeout();
     let mut fed = false;
     let response = loop {
         tokio::select! {
@@ -240,17 +256,62 @@ async fn upload(
     }
 }
 
-/// Hands `content` to the connection chunk by chunk.
+/// Opens a file to send, once, read-only. `O_NONBLOCK` makes opening a
+/// FIFO or a device return at once instead of waiting for a writer; for the
+/// regular file it must be, the flag changes nothing. Symlinks are followed
+/// on purpose, as the hub's check does: the picker hands out links.
+#[allow(clippy::disallowed_methods)] // S3 bans opening for writing; this reads.
+async fn open_to_send(path: &std::path::Path) -> std::io::Result<tokio::fs::File> {
+    let flags = rustix::fs::OFlags::NONBLOCK | rustix::fs::OFlags::NOCTTY;
+    tokio::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(i32::try_from(flags.bits()).unwrap_or(0))
+        .open(path)
+        .await
+}
+
+/// What an upload reads from.
+enum Source {
+    /// The file, opened and checked.
+    File { file: tokio::fs::File, size: u64 },
+    /// A text.
+    Text(Bytes),
+}
+
+/// Opens a file to upload and checks the handle it will read from: a
+/// regular file of the size the hub saw. Anything swapped in since -- a
+/// FIFO, a device, a file that grew or shrank -- is refused, not sent.
+async fn open_source(idle: Duration, content: Content) -> Result<Source, ErrorInfo> {
+    let (path, size) = match content {
+        Content::Text(bytes) => return Ok(Source::Text(bytes)),
+        Content::File { path, size } => (path, size),
+    };
+    let unreadable = || ErrorInfo::new(ErrorCode::BadFile, "the file cannot be read");
+    let file = tokio::time::timeout(idle, open_to_send(&path))
+        .await
+        .map_err(|_| unreadable())?
+        .map_err(|_| unreadable())?;
+    let meta = file.metadata().await.map_err(|_| unreadable())?;
+    if !meta.is_file() || meta.len() != size {
+        return Err(ErrorInfo::new(
+            ErrorCode::BadFile,
+            "the file changed after it was chosen",
+        ));
+    }
+    Ok(Source::File { file, size })
+}
+
+/// Hands `source` to the connection chunk by chunk.
 async fn feed(
     idle: Duration,
-    content: Content,
+    source: Source,
     tx: mpsc::Sender<Bytes>,
     transfer: &TransferHandle,
 ) -> Result<(), ErrorInfo> {
     let stalled = || ErrorInfo::new(ErrorCode::Network, "the receiver stopped reading");
     let closed = || ErrorInfo::new(ErrorCode::Network, "the connection closed");
-    match content {
-        Content::Text(bytes) => {
+    match source {
+        Source::Text(bytes) => {
             let n = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
             if n > 0 {
                 tokio::time::timeout(idle, tx.send(bytes))
@@ -261,11 +322,9 @@ async fn feed(
             transfer.add_progress(n);
             Ok(())
         }
-        Content::File { path, size } => {
+        Source::File { mut file, size } => {
             let unreadable = || ErrorInfo::new(ErrorCode::BadFile, "the file cannot be read");
-            let mut file = tokio::fs::File::open(&path)
-                .await
-                .map_err(|_| unreadable())?;
+            // Never past the checked size, however much the file grows.
             let mut remaining = size;
             while remaining > 0 {
                 let want = usize::try_from(remaining)

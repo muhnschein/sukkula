@@ -133,16 +133,39 @@ enum Slot {
     /// An offer is waiting for the user.
     Pending {
         id: u64,
-        sender: IpAddr,
+        sender: Party,
         cancel: CancellationToken,
     },
     /// An offer was accepted and its files are arriving.
     Active(Active),
 }
 
+/// Who made the offer: its address and the certificate it proved. Uploads
+/// and cancels must come from both -- the address, as LocalSend binds them,
+/// and the certificate, so that a host spoofing the sender's address on the
+/// LAN is not the sender.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Party {
+    ip: IpAddr,
+    fingerprint: String,
+}
+
+impl Party {
+    fn of(caller: &Caller) -> Party {
+        Party {
+            ip: caller.ip,
+            fingerprint: caller.fingerprint.clone(),
+        }
+    }
+
+    fn is(&self, caller: &Caller) -> bool {
+        self.ip == caller.ip && self.fingerprint == caller.fingerprint
+    }
+}
+
 struct Active {
     session_id: String,
-    sender: IpAddr,
+    sender: Party,
     uploads: mpsc::Sender<Upload>,
     /// Cancelled by the sender's `POST /cancel`.
     cancel: CancellationToken,
@@ -482,7 +505,7 @@ async fn prepare_upload(inner: &Arc<Inner>, caller: &Caller, req: Request<Incomi
     if dto.files.is_empty() {
         return status(StatusCode::BAD_REQUEST, "No files provided");
     }
-    let Some(mut pending) = PendingGuard::claim(inner, caller.ip) else {
+    let Some(mut pending) = PendingGuard::claim(inner, Party::of(caller)) else {
         return status(StatusCode::CONFLICT, "Blocked by another session");
     };
 
@@ -543,7 +566,7 @@ async fn prepare_upload(inner: &Arc<Inner>, caller: &Caller, req: Request<Incomi
     let sender_cancel = CancellationToken::new();
     let activated = pending.activate(Active {
         session_id: session_id.clone(),
-        sender: caller.ip,
+        sender: Party::of(caller),
         uploads: uploads_tx,
         cancel: sender_cancel.clone(),
     });
@@ -621,9 +644,7 @@ async fn upload(inner: &Inner, caller: &Caller, req: Request<Incoming>) -> Reply
         return status(StatusCode::BAD_REQUEST, "Missing parameters");
     };
     let uploads = match &*lock(&inner.slot) {
-        Slot::Active(a)
-            if a.sender == caller.ip && wire::same_secret(&a.session_id, &session_id) =>
-        {
+        Slot::Active(a) if a.sender.is(caller) && wire::same_secret(&a.session_id, &session_id) => {
             a.uploads.clone()
         }
         // No session, not this one, or not this sender: nothing is read.
@@ -653,12 +674,12 @@ fn cancel(inner: &Inner, caller: &Caller, req: &Request<Incoming>) -> Reply {
         match &*slot {
             // A sender does not know the session id before its offer is
             // answered, so a pending offer is cancelled by address alone.
-            Slot::Pending { sender, cancel, .. } if *sender == caller.ip => {
+            Slot::Pending { sender, cancel, .. } if sender.is(caller) => {
                 cancel.cancel();
                 return empty(StatusCode::OK);
             }
             Slot::Active(a)
-                if a.sender == caller.ip
+                if a.sender.is(caller)
                     && session_id
                         .as_deref()
                         .is_some_and(|id| wire::same_secret(&a.session_id, id)) =>
@@ -913,7 +934,7 @@ fn internal() -> ErrorInfo {
 
 impl Inner {
     fn is_session_sender(&self, ip: IpAddr) -> bool {
-        matches!(&*lock(&self.slot), Slot::Active(a) if a.sender == ip)
+        matches!(&*lock(&self.slot), Slot::Active(a) if a.sender.ip == ip)
     }
 
     /// Frees the slot after the session `session_id`; stops a draining
@@ -939,7 +960,7 @@ struct PendingGuard<'a> {
 }
 
 impl<'a> PendingGuard<'a> {
-    fn claim(inner: &'a Inner, sender: IpAddr) -> Option<PendingGuard<'a>> {
+    fn claim(inner: &'a Inner, sender: Party) -> Option<PendingGuard<'a>> {
         let mut slot = lock(&inner.slot);
         if !matches!(&*slot, Slot::Free) {
             return None;

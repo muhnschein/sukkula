@@ -442,19 +442,6 @@ impl LocalSend {
             state.multicast = Some(m);
         }
     }
-
-    /// Announces once, in the background.
-    fn announce_once(&self) {
-        if let Some(handle) = self.shared.multicast() {
-            let shutdown = self.shared.ctx.shutdown_token().clone();
-            self.shared.tasks.spawn(async move {
-                tokio::select! {
-                    () = shutdown.cancelled() => {}
-                    () = handle.announce() => {}
-                }
-            });
-        }
-    }
 }
 
 impl Adapter for LocalSend {
@@ -478,9 +465,10 @@ impl Adapter for LocalSend {
             }
             self.shared.receiving.store(true, Ordering::Release);
             self.update_multicast(&mut state, &identity).await;
-            drop(state);
             // Senders looking right now hear of us at once.
-            self.announce_once();
+            if let Some(m) = state.multicast.as_ref() {
+                m.announce_in_background(&self.shared);
+            }
             Ok(())
         })
     }
