@@ -19,12 +19,13 @@ Every ID names the requirement it covers.
 | ID | Covers | Steps | Pass when |
 | --- | --- | --- | --- |
 | M-1 | §2 firewall | Receive on. From the desktop, `nc -vz <phone-ip> 53317`; from the Pixel, share to the phone over Quick Share. | Both connect. If connman's firewall drops them, stop: record it, and do not release (spec §2). |
-| M-2 | §2 sandbox | `ls -la ~/.local/share/sukkula/sukkula ~/Downloads/Sukkula` after a first run. | Directories `0700`, `cert.pem`/`key.pem` and `settings.json` `0600`; nothing of Sukkula's anywhere else in `$HOME`. |
+| M-2 | §2 sandbox | `ls -la ~/.local/share/sukkula/sukkula ~/Downloads/Sukkula` after a first run. | Directories `0700`, `localsend-cert.pem`/`localsend-key.pem` and `settings.json` `0600`; nothing of Sukkula's anywhere else in `$HOME`. |
 | M-3 | §2 lifecycle | Receive on, close the app from the cover. From the desktop, try to send. | Nothing answers on 53317; no Sukkula process remains (`ps`). |
 | M-4 | §2 KeepAlive | Receive a 2 GB file with the screen off. | The transfer completes; with no transfer running the phone suspends as usual. |
 | M-5 | §2 cover | Receive on, go to the home screen. | The cover says "Receiving" and shows progress during a transfer. |
 | M-6 | F-C6 | Share a photo from Gallery and a link from the browser. | Sukkula is offered; "Send via…" opens with the item. |
 | M-7 | F-C7 | Rename the device in Settings. | LocalSend and Quick Share peers show the new name; empty falls back to the model name. |
+| M-8 | §2 sandbox | Share a photo from Gallery (it lives in `~/Pictures`), and pick a file in `~/Documents` with the file picker. | Record whether each can be sent. With only `Downloads` granted, Sukkula shows "Sukkula can read files in Downloads only" instead of failing silently; if the Share-menu photo is unreadable, raise it with the owner (it needs `UserDirs`, a spec change). |
 
 ## Consent and display
 
@@ -45,6 +46,7 @@ Every ID names the requirement it covers.
 | M-21 | F-LS2 | Switch the desktop's LocalSend to HTTP (encryption off) and send. | The phone refuses; the desktop reports an error. |
 | M-22 | F-LS3 | Send from the phone to the desktop and to iOS. | Files arrive intact (compare SHA-256). |
 | M-23 | F-LS4 | Set a PIN; send from the desktop with a wrong PIN, then the right one. | Wrong PIN refused, right PIN reaches the consent dialog. |
+| M-24 | F-LS4 | Set a PIN on the desktop's LocalSend, then send to it from the phone. | Known gap: the send fails as refused, because the send command carries no PIN. Record it. |
 
 ## Quick Share
 
@@ -64,6 +66,8 @@ Every ID names the requirement it covers.
 | M-41 | F-MW2 | `wormhole send file` on the laptop; type the code on the phone. | The consent dialog appears before any data flows; Accept receives it. |
 | M-42 | F-MW3 | `wormhole send somefolder/`. | Saved as one archive, unopened. |
 | M-43 | F-MW4 | Point Settings at a self-hosted mailbox and relay. | Transfers use them (check the server logs). |
+| M-44 | F-MW4 | Point the mailbox at a `wss://` server with a publicly trusted certificate, then at one with a self-signed certificate. | The first works (the system CA bundle is readable inside Sailjail); the second is refused. |
+| M-45 | F-MW1 | Send to a laptop on the same LAN, then to one behind another network. | Direct connection on the LAN (the relay's log shows no traffic), relay otherwise; connman lets the outbound connections through. |
 
 ## Bluetooth
 
@@ -71,6 +75,8 @@ Every ID names the requirement it covers.
 | --- | --- | --- | --- |
 | M-50 | F-BT1 | Send two files to the paired device; cancel a third mid-way. | Two arrive; the third stops on both sides. |
 | M-51 | F-BT2 | Send a file *to* the phone over Bluetooth. | The Sailfish system UI handles it; Sukkula is not involved. |
+| M-52 | F-BT1 | Send to a phone whose user waits ~45 s before accepting; send to one that declines; send with Bluetooth off. | Accepted late still succeeds; declined shows "refused"; off shows "Bluetooth is off". |
+| M-53 | F-C5 | Cancel a Bluetooth send mid-way, then run `busctl --user tree org.bluez.obex`. | No session is left behind. |
 
 ## Release
 

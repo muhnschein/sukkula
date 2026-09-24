@@ -145,7 +145,7 @@ static string. Never free it.
 ```json config
 {
   "v": 1,
-  "data_dir": "/home/defaultuser/.local/share/harbour-sukkula/harbour-sukkula",
+  "data_dir": "/home/defaultuser/.local/share/sukkula/sukkula",
   "download_dir": "/home/defaultuser/Downloads/Sukkula",
   "device_model": "Jolla Phone",
   "allow_loopback": false
@@ -166,7 +166,7 @@ the other, even through a symlink: a received file must never land among
 the settings and the key. The minimal configuration:
 
 ```json config
-{"v":1,"data_dir":"/home/defaultuser/.local/share/harbour-sukkula/harbour-sukkula","download_dir":"/home/defaultuser/Downloads/Sukkula"}
+{"v":1,"data_dir":"/home/defaultuser/.local/share/sukkula/sukkula","download_dir":"/home/defaultuser/Downloads/Sukkula"}
 ```
 
 ## Commands
@@ -235,22 +235,22 @@ file (`bad_file`) within the size limits (`too_large`); a text is at most
 build is `unavailable`.
 
 ```json command
-{"v":1,"id":8,"cmd":{"type":"send","target":{"protocol":"local_send","peer":"ls-4f2a"},"items":[{"kind":"file","path":"/home/defaultuser/Pictures/Jolla/20260924_101500.jpg"},{"kind":"text","text":"From the lake"}]}}
+{"v":1,"id":8,"cmd":{"type":"send","target":{"protocol":"local_send","peer":"ls-4f2a"},"items":[{"kind":"file","path":"/home/defaultuser/Downloads/20260924_101500.jpg"},{"kind":"text","text":"From the lake"}]}}
 ```
 
 ```json command
-{"v":1,"id":9,"cmd":{"type":"send","target":{"protocol":"quick_share","peer":"qs-91c0"},"items":[{"kind":"file","path":"/home/defaultuser/Documents/plan.pdf"}]}}
+{"v":1,"id":9,"cmd":{"type":"send","target":{"protocol":"quick_share","peer":"qs-91c0"},"items":[{"kind":"file","path":"/home/defaultuser/Downloads/plan.pdf"}]}}
 ```
 
 Magic Wormhole sends one file or one text, and reports the code to read out
 as `wormhole_code` (F-MW1):
 
 ```json command
-{"v":1,"id":10,"cmd":{"type":"send","target":{"protocol":"wormhole"},"items":[{"kind":"file","path":"/home/defaultuser/Documents/plan.pdf"}]}}
+{"v":1,"id":10,"cmd":{"type":"send","target":{"protocol":"wormhole"},"items":[{"kind":"file","path":"/home/defaultuser/Downloads/plan.pdf"}]}}
 ```
 
 ```json command
-{"v":1,"id":11,"cmd":{"type":"send","target":{"protocol":"bluetooth","address":"AA:BB:CC:DD:EE:FF"},"items":[{"kind":"file","path":"/home/defaultuser/Music/song.ogg"}]}}
+{"v":1,"id":11,"cmd":{"type":"send","target":{"protocol":"bluetooth","address":"AA:BB:CC:DD:EE:FF"},"items":[{"kind":"file","path":"/home/defaultuser/Downloads/song.ogg"}]}}
 ```
 
 ### receive_wormhole
@@ -290,7 +290,7 @@ the UI still shows them with `textFormat: Text.PlainText`.
 The engine could not start. The only event of a failed `sukkula_start`.
 
 ```json event
-{"type":"fatal","error":{"code":"storage","message":"the data directory is unusable: /home/defaultuser/.local/share/harbour-sukkula/harbour-sukkula is not a plain directory"}}
+{"type":"fatal","error":{"code":"storage","message":"the data directory is unusable: /home/defaultuser/.local/share/sukkula/sukkula is not a plain directory"}}
 ```
 
 ### started
