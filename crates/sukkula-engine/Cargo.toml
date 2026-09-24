@@ -46,6 +46,14 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+# S9: the engine's own log (src/logging.rs): a Registry, the level table
+# as `Targets` behind a switch, and a line formatter of our own, to
+# standard error. No `fmt`, no `env-filter` (and so no regex), no ANSI.
+# Both crates are already in the tree through the LocalSend core.
+tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "registry"] }
+# The `log` crate's records (rqs_lib, mdns-sd, tungstenite) into the same
+# filter.
+tracing-log = { version = "0.2", default-features = false, features = ["std", "log-tracer"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros", "net", "io-util", "fs"] }
 tokio-util = { workspace = true, features = ["rt"] }
 

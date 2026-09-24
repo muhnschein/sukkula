@@ -38,8 +38,10 @@ consent.**
   unique-local address ranges (S7), or plain HTTP from LocalSend (F-LS2).
 - A LocalSend send reaching a peer other than the one whose certificate
   fingerprint was announced (F-LS3).
-- The TLS private key leaving `key.pem`, or file names or message text
-  reaching a log at info level (S9).
+- The TLS private key leaving `key.pem` or reaching a log at any level;
+  or a file name, message text, alias, PIN, wormhole code, path in the
+  download directory or peer address reaching the log at info level or
+  above, with debug logging off or on (S9).
 - Sukkula spawning a process, opening a URL or a file, or changing Wi-Fi
   settings because of anything a peer sent (S8).
 
@@ -95,7 +97,11 @@ These are enforced in the code and checked in CI, not merely intended.
 - **One writer.** Only `sukkula_core::inbox` and `sukkula_core::store`
   write files, and the type system and the linter hold everyone else to
   it: a received file can only be created from a `SafeName`, and
-  `clippy.toml` bans every file-writing API outside those two modules.
+  `clippy.toml` bans every call that creates, opens for writing, links,
+  renames, copies, removes or changes a file or directory -- std, tokio
+  and rustix alike, the descriptor-relative `openat`/`linkat`/`unlinkat`
+  family included -- outside those two modules and the `dirfd` module
+  they share, where the ban is lifted one function at a time.
 - **Staged, capped, verified, never clobbering.** A received file is
   written under a random name with `O_CREAT|O_EXCL`, mode `0600`, into a
   staging directory opened `O_DIRECTORY|O_NOFOLLOW` and used by
@@ -140,6 +146,16 @@ These are enforced in the code and checked in CI, not merely intended.
   dereferenced; no panic crosses the C boundary.
 - **Minimal sandbox.** Sailjail grants `Internet;Bluetooth;Downloads` and
   nothing else, and the Harbour gate fails on any other permission.
+- **The log keeps quiet.** The engine logs to standard error (the
+  journal), never to a file. Off by default, it says only what Sukkula's
+  own crates report at warn and error; with debug logging on, Sukkula's
+  crates at debug and the protocol libraries at no more than the level
+  their messages were read and found clean at
+  (`crates/sukkula-engine/src/logging.rs` has the table and the
+  findings). Sukkula's own log lines carry counts, sizes, protocols and
+  error codes, never a name, a text, an alias, a PIN, a code, a key, a
+  path or an address, at any level. Every character that could forge a
+  line or reorder one is escaped, and lines are capped.
 
 ## Where each guarantee is checked
 
@@ -151,14 +167,15 @@ code or test it names.
 | --- | --- |
 | S1: a peer's name becomes one safe path component | `crates/sukkula-core/src/name.rs` tests; `tests/properties.rs` `sanitize_gives_one_safe_component`, `path_structure_never_survives`, `numbered_names_stay_safe`; `tests/hostile.rs` `names`; fuzz target `name_sanitize` (asserts the rule, against an independent oracle from the Unicode data) |
 | S2: no control, bidi or invisible character reaches the screen; stacks and lengths capped | `text.rs` tests (full Cf and Default_Ignorable coverage, Unicode 16 mark table); `properties.rs` `display_keeps_its_promises`, `message_keeps_its_promises`; fuzz targets `text_display`, `text_message`; QML tests walking the item tree for `Text.PlainText`; `tests/qml/static_checks.py` |
-| S3: only the inbox writes; staged, capped, verified, never clobbering or following links | `clippy.toml` bans; `inbox.rs` and `store.rs` tests (symlinked targets and staging, EXDEV copy fallback on tmpfs, cancel mid-copy, spoiled writes); `properties.rs` `the_inbox_writes_what_was_declared_or_nothing`; every adapter's hostile suite asserts nothing outside the download directory and no partial file |
+| S3: only the inbox writes; staged, capped, verified, never clobbering or following links | `clippy.toml` bans (std, tokio and rustix; lifted only in `sukkula_core::{inbox,store,dirfd}`, per function); `inbox.rs` and `store.rs` tests (symlinked targets and staging, EXDEV copy fallback on tmpfs, cancel mid-copy, spoiled writes); `properties.rs` `the_inbox_writes_what_was_declared_or_nothing`; every adapter's hostile suite asserts nothing outside the download directory and no partial file |
 | S4/S6: sizes and counts range-checked before allocation | `offer.rs` tests; `properties.rs` `validate_never_passes_a_bad_offer`, `negative_or_oversized_anywhere_is_refused`; fuzz target `offer_validate`; `localsend_hostile::impossible_sizes_and_counts_never_reach_the_user`, `oversized_json_is_refused_before_it_is_read`; `wormhole_hostile::negative_and_oversized_offers_never_reach_the_user`, `a_lying_record_length_is_refused_before_anything_is_allocated` |
 | S5: consent before any payload | `consent.rs` tests; `properties.rs` `consent_accounting_holds_under_any_schedule`; `localsend_hostile::uploads_without_consent_or_the_right_token_are_refused_unread`; `localsend_loopback::a_declined_offer_writes_nothing`; `wormhole::a_declined_offer_moves_no_data_and_leaves_no_file`; `ctx::tests::a_busy_engine_declines_without_asking` |
 | Every read has a timeout; slow peers are cut off | `localsend_hostile::slow_handshakes_heads_and_bodies_are_cut_off`, `a_stalled_upload_times_out_and_is_cleaned_up`, `a_receiver_that_stops_reading_times_out`; `wormhole_hostile::a_slow_loris_record_times_out`, `a_sender_that_stalls_after_the_yes_times_out`; `bluetooth::a_stalled_transfer_times_out`, `bluez_that_never_answers_times_out` |
 | S7: only private LAN peers, rate-limited | `reach.rs` tests; `properties.rs` `reach_agrees_with_the_ranges`, `the_limiter_is_bounded_and_exact_below_capacity`; `ctx::tests::offers_are_limited_per_peer_and_in_total`; `localsend_hostile::unpermitted_addresses_are_dropped_before_the_handshake`, `offers_are_rate_limited_per_address` |
 | F-LS2/F-LS3: HTTPS only, pinned | `localsend_hostile::plain_http_and_certificateless_clients_get_nothing`, `registrations_must_prove_their_fingerprint`; `localsend_loopback::a_changed_certificate_is_refused_before_anything_is_sent` |
 | S8: no processes, no opening, no Wi-Fi changes | `clippy.toml` `disallowed-methods`/`disallowed-types`; `ci/check-deps.sh` (and its selftest) over `Cargo.lock` and the shipped aarch64 graph; `tests/qml/static_checks.py` (no `openUrlExternally`, no `linkActivated`); Quick Share patches in `third_party/rqs_lib.patches/` |
-| S9: key `0600`, never logged | `store.rs` `exposed_secrets_are_refused`, symlink and owner refusal; redacted `Debug` for the PIN and the key |
+| S9: key `0600`, never logged | `store.rs` `exposed_secrets_are_refused`, symlink and owner refusal; redacted `Debug` for the PIN, the key, and an offer's text and PIN (`offer.rs` `debug_hides_the_message_and_the_pin`) |
+| S9: logging off by default, to stderr only, nothing private at info or above | `logging.rs` tests (the level table off and on, a runtime switch per engine, escaping and the line cap, the `log` bridge); `hub.rs` `every_engine_thread_logs_to_the_engine_log_and_the_setting_switches_it`, `a_bad_settings_file_is_logged_by_kind_never_by_content`; `tests/s9_logs.rs`: LocalSend (wrong and right PIN, a declined offer, a file, a text), Quick Share (a file, a text, a declined offer) and wormhole (a text, a file, against a mailbox server that writes into the log) transfers with distinctive values, every event of every crate captured and judged by the engine's own table, off and on, and two engines' real log lines read back |
 | S10: `unsafe` only in `sukkula-ffi`; lints | `#![forbid(unsafe_code)]` in core and engine; workspace lints in `Cargo.toml` (`-D warnings`, no `unwrap`/`expect`/`panic`/indexing/unchecked arithmetic); overflow checks in release |
 | The C boundary cannot be misused into memory unsafety | `crates/sukkula-ffi/tests/ffi.rs` (NULLs, stale handles, bad UTF-8, oversized commands, stop from the callback, hammering while stopping); `ci/ffi-harness/run.sh` under ASan, UBSan and LSan with no suppressions |
 | Parsers survive hostile input | Deterministic mutation sweeps on every push: `sukkula-core/tests/hostile.rs`, `localsend_hostile::a_mutation_sweep_of_offers_breaks_nothing`, the wormhole `sweep` module, the Bluetooth reply sweeps; cargo-fuzz targets with seeds and dictionaries, 60 s each per pull request (`fuzz/README.md`), each asserting the S-rules on what it accepts rather than only survival: the core's `name_sanitize`, `text_display`, `text_message`, `offer_validate`, `settings_json`, `hex`, `command_json`, `start_config`, and every protocol parser that reads a peer's or a server's bytes, through the adapter's own code: `localsend_prepare_upload`, `localsend_discovery`, `wormhole_wire`, `wormhole_code`, `wormhole_mailbox`, `quickshare_handshake`, `quickshare_frame` (no payload byte before consent, S5), `quickshare_mdns` |

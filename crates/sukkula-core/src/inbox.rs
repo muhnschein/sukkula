@@ -249,6 +249,8 @@ impl Inbox {
 
 /// Removes regular `*.part` files from the staging directory: what a
 /// previous run left when it was killed mid-file.
+// S3: deletes only regular `*.part` entries of the staging directory.
+#[allow(clippy::disallowed_methods)]
 fn sweep_stale(staging: &OwnedFd) {
     let Ok(dir) = rustix::fs::Dir::read_from(staging) else {
         return;
@@ -358,6 +360,8 @@ impl Incoming {
     /// [`InboxError::Truncated`], [`InboxError::DigestMismatch`],
     /// [`InboxError::NoFreeName`] or an I/O error. The staging file is gone
     /// either way, and so is anything this call put in the target directory.
+    // S3: removes the staging entry once the file is placed.
+    #[allow(clippy::disallowed_methods)]
     pub async fn commit(mut self) -> Result<Saved, InboxError> {
         if self.failed {
             return Err(spoiled());
@@ -413,6 +417,8 @@ impl Incoming {
 
     /// Puts the staged file at `dest` in the target directory, which must
     /// not exist.
+    // S3: linkat(2) without AT_SYMLINK_FOLLOW, never over an existing name.
+    #[allow(clippy::disallowed_methods)]
     async fn place(&mut self, dest: &str) -> io::Result<()> {
         let staged = rustix::fs::statat(
             &self.dirs.staging,
@@ -472,6 +478,8 @@ impl Incoming {
 }
 
 impl Drop for Incoming {
+    // S3: a file not committed is deleted from staging.
+    #[allow(clippy::disallowed_methods)]
     fn drop(&mut self) {
         if !self.done {
             self.file.take();
@@ -501,6 +509,8 @@ impl Placing<'_> {
 }
 
 impl Drop for Placing<'_> {
+    // S3: removes a half-copied destination, only if it is still ours.
+    #[allow(clippy::disallowed_methods)]
     fn drop(&mut self) {
         if self.armed && entry_id(self.dir, self.name) == Some(self.id) {
             let _ = rustix::fs::unlinkat(self.dir, self.name, AtFlags::empty());
@@ -526,6 +536,8 @@ fn copy_instead(e: Errno) -> bool {
 
 /// Creates `name` in `dir` with `O_CREAT|O_EXCL|O_NOFOLLOW`, mode `0600`.
 /// `O_EXCL` alone already refuses an existing symlink; `O_NOFOLLOW` says so.
+// S3: the inbox's one way to create a file.
+#[allow(clippy::disallowed_methods)]
 fn create_exclusive(dir: &OwnedFd, name: &str, access: OFlags) -> io::Result<OwnedFd> {
     let flags = access | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC;
     Ok(rustix::fs::openat(

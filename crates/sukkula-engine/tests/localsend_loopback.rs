@@ -231,8 +231,10 @@ async fn a_second_sender_is_told_busy_and_the_first_goes_through() {
 fn big_sparse(dir: &std::path::Path) -> std::path::PathBuf {
     let path = dir.join("big.iso");
     #[allow(clippy::disallowed_methods)] // The scene: a file to send.
-    let f = std::fs::File::create(&path).unwrap();
-    f.set_len(512 * 1024 * 1024).unwrap();
+    std::fs::File::create(&path)
+        .unwrap()
+        .set_len(512 * 1024 * 1024)
+        .unwrap();
     path
 }
 
@@ -420,6 +422,7 @@ async fn a_file_that_changed_after_it_was_chosen_is_not_sent() {
         })
     };
     let fifo = src.path().join("fifo");
+    #[allow(clippy::disallowed_methods)] // The scene: a FIFO where a file was.
     rustix::fs::mkfifoat(
         rustix::fs::CWD,
         &fifo,

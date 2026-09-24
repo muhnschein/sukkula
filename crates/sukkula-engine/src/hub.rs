@@ -55,7 +55,7 @@ use sukkula_core::limits::{
 };
 use sukkula_core::name;
 use sukkula_core::reach::ReachPolicy;
-use sukkula_core::store::Store;
+use sukkula_core::store::{Store, StoreError};
 use sukkula_core::text;
 use thiserror::Error;
 use tokio::sync::Mutex as AsyncMutex;
@@ -68,6 +68,7 @@ use crate::api::{
     RequestId, SendItem, SendTarget, StartConfig, TransferId, parse_command,
 };
 use crate::ctx::{Ctx, EventSink};
+use crate::logging::{self, LogSink, Logging};
 
 /// How long [`Engine::stop`] waits for adapters and tasks to wind down, per
 /// phase.
@@ -131,6 +132,8 @@ struct Hub {
     state: AsyncMutex<HubState>,
     /// Held across a whole `start_discovery` or `stop_discovery`.
     discovery: AsyncMutex<()>,
+    /// This engine's log (S9), switched by `Settings::logging`.
+    logging: Logging,
 }
 
 struct HubState {
@@ -152,7 +155,36 @@ impl Engine {
     /// characters; a data directory and download directory that are the
     /// same or nested; a directory that cannot be created; or a thread or
     /// runtime that cannot start. The sink is not called.
+    ///
+    /// The engine's log goes to standard error (see [`logging`]).
     pub fn start(config: StartConfig, sink: EventSink) -> Result<Engine, ErrorInfo> {
+        Self::start_with_log(config, sink, logging::stderr())
+    }
+
+    /// Starts an engine whose log lines go to `log` instead of standard
+    /// error, with the same filter and format. For tests, which read the
+    /// log back; the C ABI always uses [`start`](Self::start).
+    ///
+    /// # Errors
+    ///
+    /// As for [`start`](Self::start).
+    // CONTRACT: new (additive); `start` keeps its signature.
+    pub fn start_with_log(
+        config: StartConfig,
+        sink: EventSink,
+        log: LogSink,
+    ) -> Result<Engine, ErrorInfo> {
+        // Off until the settings say otherwise: whatever the start itself
+        // logs is held to the default.
+        let logging = Logging::new(log, false);
+        logging.scope(|| Self::start_logged(config, sink, logging.clone()))
+    }
+
+    fn start_logged(
+        config: StartConfig,
+        sink: EventSink,
+        logging: Logging,
+    ) -> Result<Engine, ErrorInfo> {
         if config.v != API_VERSION {
             return Err(ErrorInfo::new(
                 ErrorCode::BadVersion,
@@ -170,11 +202,12 @@ impl Engine {
         // strings one directory.
         apart(&resolved(&data_dir)?, &resolved(&download_dir)?)?;
         let settings = load_settings(&store);
+        logging.set(settings.logging);
         let model = config
             .device_model
             .map_or_else(read_hw_model, |m| text::display(&m, MAX_MODEL_CHARS));
 
-        let delivery = Delivery::spawn(sink).map_err(|e| internal(&e))?;
+        let delivery = Delivery::spawn(sink, &logging).map_err(|e| internal(&e))?;
         let events: EventSink = {
             let gate = delivery.gate.clone();
             Arc::new(move |e| {
@@ -189,9 +222,13 @@ impl Engine {
             settings, model, store, inbox, consent, reach, events,
         ));
 
+        let on_start = logging.clone();
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .thread_name("sukkula-engine")
+            // Workers and blocking threads alike log to this engine's log.
+            .on_thread_start(move || on_start.enter_thread())
+            .on_thread_stop(Logging::leave_thread)
             .enable_all()
             .build()
             .map_err(|e| internal(&e))?;
@@ -211,6 +248,7 @@ impl Engine {
                 statuses: statuses.clone(),
             }),
             discovery: AsyncMutex::new(()),
+            logging,
         });
 
         hub.ctx.emit(Event::Started {
@@ -246,7 +284,7 @@ impl Engine {
                 Ok(env) => env.id,
                 Err((id, _)) => id.unwrap_or(0),
             };
-            self.hub.ctx.emit(busy_reply(id));
+            self.hub.logging.scope(|| self.hub.ctx.emit(busy_reply(id)));
         }
     }
 
@@ -254,7 +292,7 @@ impl Engine {
     pub fn command(&self, env: CommandEnvelope) {
         let id = env.id;
         if self.try_command(env) == Err(Refused::Busy) {
-            self.hub.ctx.emit(busy_reply(id));
+            self.hub.logging.scope(|| self.hub.ctx.emit(busy_reply(id)));
         }
     }
 
@@ -271,14 +309,14 @@ impl Engine {
     pub fn try_command_json(&self, json: &str) -> Result<(), Refused> {
         let runtime = self.runtime.as_ref().ok_or(Refused::Stopped)?;
         let permit = Permit::acquire(&self.hub.in_flight).ok_or(Refused::Busy)?;
-        match parse_command(json) {
+        self.hub.logging.scope(|| match parse_command(json) {
             Ok(env) => self.hub.spawn_command(runtime, env, permit),
             Err((id, e)) => {
                 self.hub
                     .gate
                     .push(reply_event(id.unwrap_or(0), Err(e.into())), Some(permit));
             }
-        }
+        });
         Ok(())
     }
 
@@ -290,7 +328,9 @@ impl Engine {
     pub fn try_command(&self, env: CommandEnvelope) -> Result<(), Refused> {
         let runtime = self.runtime.as_ref().ok_or(Refused::Stopped)?;
         let permit = Permit::acquire(&self.hub.in_flight).ok_or(Refused::Busy)?;
-        self.hub.spawn_command(runtime, env, permit);
+        self.hub
+            .logging
+            .scope(|| self.hub.spawn_command(runtime, env, permit));
         Ok(())
     }
 
@@ -313,6 +353,11 @@ impl Engine {
     }
 
     fn shutdown(&mut self) {
+        let logging = self.hub.logging.clone();
+        logging.scope(|| self.shutdown_logged());
+    }
+
+    fn shutdown_logged(&mut self) {
         let Some(runtime) = self.runtime.take() else {
             return;
         };
@@ -337,7 +382,7 @@ impl Engine {
             let spawned = std::thread::scope(|s| {
                 std::thread::Builder::new()
                     .name("sukkula-stop".to_owned())
-                    .spawn_scoped(s, || teardown(&mut slot))
+                    .spawn_scoped(s, || hub.logging.scope(|| teardown(&mut slot)))
                     .map(|t| t.join().is_ok())
             });
             if !matches!(spawned, Ok(true))
@@ -402,11 +447,13 @@ impl Hub {
                 let mut state = self.state.lock().await;
                 let store = self.ctx.store().clone();
                 let saved = settings.clone();
+                let logging = settings.logging;
                 tokio::task::spawn_blocking(move || store.write_json(SETTINGS_FILE, &saved))
                     .await
                     .map_err(|_| ErrorInfo::new(ErrorCode::Internal, "the settings write failed"))?
                     .map_err(|e| ErrorInfo::new(ErrorCode::Storage, e.to_string()))?;
                 self.ctx.set_settings(settings);
+                self.logging.set(logging);
                 self.emit_settings();
                 if state.receiving {
                     self.restart_receiving(&mut state).await;
@@ -718,12 +765,35 @@ fn consent_observer(events: EventSink) -> sukkula_core::consent::Observer {
 
 fn load_settings(store: &Store) -> Settings {
     match store.read_json::<Settings>(SETTINGS_FILE, MAX_SETTINGS_BYTES) {
-        Ok(Some(s)) => s.validate().unwrap_or_default(),
+        Ok(Some(s)) => s.validate().unwrap_or_else(|e| {
+            // ConfigError's messages are fixed; they name the setting only.
+            tracing::warn!(error = %e, "settings invalid; using defaults");
+            Settings::default()
+        }),
         Ok(None) => Settings::default(),
         Err(e) => {
-            tracing::warn!(error = %e, "settings unreadable; using defaults");
+            // S9: only the kind. The error's text quotes the file -- serde
+            // repeats the value it choked on -- and the file holds the
+            // device name and the LocalSend PIN.
+            tracing::warn!(
+                why = store_error_kind(&e),
+                "settings unreadable; using defaults"
+            );
             Settings::default()
         }
+    }
+}
+
+/// What went wrong with a store file, without its contents or its path.
+fn store_error_kind(e: &StoreError) -> &'static str {
+    match e {
+        StoreError::Directory(_) => "data directory unusable",
+        StoreError::BadName => "bad file name",
+        StoreError::NotRegular(_) => "not a regular file of ours",
+        StoreError::Exposed(_) => "readable by other users",
+        StoreError::TooLarge(_) => "too large",
+        StoreError::Malformed(..) => "malformed",
+        StoreError::Io(_) => "i/o error",
     }
 }
 
@@ -1067,12 +1137,17 @@ struct Delivery {
 }
 
 impl Delivery {
-    fn spawn(sink: EventSink) -> io::Result<Delivery> {
+    fn spawn(sink: EventSink, logging: &Logging) -> io::Result<Delivery> {
         let gate = Arc::new(Gate::new());
         let g = gate.clone();
+        let log = logging.clone();
         let thread = std::thread::Builder::new()
             .name("sukkula-events".to_owned())
-            .spawn(move || g.run(sink))?;
+            .spawn(move || {
+                log.enter_thread();
+                g.run(sink);
+                Logging::leave_thread();
+            })?;
         let thread_id = thread.thread().id();
         Ok(Delivery {
             gate,
@@ -1455,7 +1530,159 @@ mod tests {
         let log = Arc::new(Mutex::new(Vec::new()));
         let l = log.clone();
         let sink: EventSink = Arc::new(move |e| l.lock().unwrap().push(e));
-        (Delivery::spawn(sink).unwrap(), log)
+        (Delivery::spawn(sink, &quiet()).unwrap(), log)
+    }
+
+    /// A log that goes nowhere.
+    fn quiet() -> Logging {
+        Logging::new(Arc::new(|_| {}), false)
+    }
+
+    type Lines = Arc<Mutex<Vec<String>>>;
+
+    /// An engine whose log lines are kept, and whose sink logs a warning
+    /// from the delivery thread for every reply it is handed.
+    fn start_logged_engine(dir: &Path) -> (Engine, Arc<Mutex<Vec<Event>>>, Lines) {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let e = events.clone();
+        let sink: EventSink = Arc::new(move |event| {
+            if let Event::Reply { id, .. } = &event {
+                tracing::warn!(id, "the delivery thread logs here");
+            }
+            e.lock().unwrap().push(event);
+        });
+        let lines: Lines = Arc::default();
+        let l = lines.clone();
+        let log: LogSink = Arc::new(move |line| l.lock().unwrap().push(line.to_owned()));
+        let engine = Engine::start_with_log(config(dir), sink, log).unwrap();
+        (engine, events, lines)
+    }
+
+    /// Logs a debug and a warning line from a runtime worker and from a
+    /// blocking thread of `engine`, and waits for them.
+    fn probe(engine: &Engine, tag: &'static str) {
+        let rt = engine.runtime.as_ref().unwrap();
+        rt.block_on(async move {
+            tokio::spawn(async move {
+                tracing::debug!(tag, "debug from a worker");
+                tracing::warn!(tag, "warning from a worker");
+            })
+            .await
+            .unwrap();
+            tokio::task::spawn_blocking(move || {
+                tracing::debug!(tag, "debug from a blocking thread");
+                tracing::warn!(tag, "warning from a blocking thread");
+            })
+            .await
+            .unwrap();
+        });
+    }
+
+    fn with_tag(lines: &Lines, tag: &str) -> Vec<String> {
+        let tag = format!("tag={tag:?}");
+        lines
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| l.contains(&tag))
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn every_engine_thread_logs_to_the_engine_log_and_the_setting_switches_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (engine, events, lines) = start_logged_engine(dir.path());
+        probe(&engine, "off");
+        let off = with_tag(&lines, "off");
+        assert_eq!(off.len(), 2, "{off:?}");
+        assert!(
+            off.iter().all(|l| l.starts_with("sukkula: WARN ")),
+            "{off:?}"
+        );
+
+        engine.command_json(
+            r#"{"v":1,"id":1,"cmd":{"type":"set_settings","settings":{"logging":true}}}"#,
+        );
+        wait_for_reply(&events, 1);
+        probe(&engine, "on");
+        let on = with_tag(&lines, "on");
+        assert_eq!(on.len(), 4, "{on:?}");
+        assert_eq!(
+            on.iter()
+                .filter(|l| l.starts_with("sukkula: DEBUG "))
+                .count(),
+            2
+        );
+        // The delivery thread's log is the engine's too.
+        let delivered = "the delivery thread logs here id=1";
+        wait_until("the delivery thread's line", || {
+            lines.lock().unwrap().iter().any(|l| l.contains(delivered))
+        });
+        assert!(
+            lines
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|l| l.contains("INFO") && l.contains("debug logging on"))
+        );
+
+        engine.command_json(
+            r#"{"v":1,"id":2,"cmd":{"type":"set_settings","settings":{"logging":false}}}"#,
+        );
+        wait_for_reply(&events, 2);
+        probe(&engine, "off again");
+        assert_eq!(with_tag(&lines, "off again").len(), 2);
+        engine.stop();
+    }
+
+    #[test]
+    fn logging_on_is_remembered_and_two_engines_have_two_switches() {
+        let dir = tempfile::tempdir().unwrap();
+        let (engine, events, _) = start_logged_engine(dir.path());
+        engine.command_json(
+            r#"{"v":1,"id":1,"cmd":{"type":"set_settings","settings":{"logging":true}}}"#,
+        );
+        wait_for_reply(&events, 1);
+        engine.stop();
+
+        let (loud, _, loud_lines) = start_logged_engine(dir.path());
+        let other = tempfile::tempdir().unwrap();
+        let (quiet, _, quiet_lines) = start_logged_engine(other.path());
+        probe(&loud, "loud");
+        probe(&quiet, "quiet");
+        assert_eq!(with_tag(&loud_lines, "loud").len(), 4);
+        assert_eq!(with_tag(&quiet_lines, "quiet").len(), 2);
+        assert!(with_tag(&loud_lines, "quiet").is_empty());
+        assert!(with_tag(&quiet_lines, "loud").is_empty());
+        loud.stop();
+        quiet.stop();
+    }
+
+    #[test]
+    fn a_bad_settings_file_is_logged_by_kind_never_by_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        Store::open(&data).unwrap();
+        // serde's message for this quotes the value: "invalid type:
+        // integer `98765`, expected a string".
+        std::fs::write(
+            data.join(SETTINGS_FILE),
+            r#"{"device_name":"Zorbulon","localsend":{"pin":98765}}"#,
+        )
+        .unwrap();
+        let (engine, _, lines) = start_logged_engine(dir.path());
+        engine.stop();
+        let lines = lines.lock().unwrap().clone();
+        assert!(
+            lines.iter().any(|l| l.starts_with("sukkula: WARN ")
+                && l.contains("settings unreadable")
+                && l.contains(r#"why="malformed""#)),
+            "{lines:?}"
+        );
+        for l in &lines {
+            assert!(!l.contains("98765") && !l.contains("Zorbulon"), "{l}");
+        }
     }
 
     fn progress(n: u64) -> Event {
@@ -1665,7 +1892,7 @@ mod tests {
             let _ = go_rx.lock().unwrap().recv();
             l.lock().unwrap().push(e);
         });
-        let delivery = Delivery::spawn(sink).unwrap();
+        let delivery = Delivery::spawn(sink, &quiet()).unwrap();
         let gate = delivery.gate.clone();
         let total = MAX_QUEUED_EVENTS + 100;
         let pushed = Arc::new(AtomicUsize::new(0));
@@ -1718,7 +1945,7 @@ mod tests {
         let sink: EventSink = Arc::new(move |_: Event| {
             let _ = go_rx.lock().unwrap().recv();
         });
-        let delivery = Delivery::spawn(sink).unwrap();
+        let delivery = Delivery::spawn(sink, &quiet()).unwrap();
         let gate = delivery.gate.clone();
         // About 200 KiB each: the byte bound binds long before the count.
         let big = || Event::PeerLost {
@@ -1761,7 +1988,7 @@ mod tests {
             }
             l.lock().unwrap().push(e);
         });
-        let delivery = Delivery::spawn(sink).unwrap();
+        let delivery = Delivery::spawn(sink, &quiet()).unwrap();
         *slot.lock().unwrap() = Some(delivery.gate.clone());
         delivery.gate.emit(Event::PeerLost {
             peer: "echo".into(),

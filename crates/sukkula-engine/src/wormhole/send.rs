@@ -169,6 +169,7 @@ fn bad_file() -> ErrorInfo {
 /// read-only and non-blocking, so a FIFO put in the file's place after the
 /// hub looked cannot hang it (and is then refused by the check). Nothing
 /// after this looks at the path again.
+#[allow(clippy::disallowed_methods)] // S3 bans opening for writing; this is O_RDONLY.
 async fn open_checked(file: &OutgoingFile, limit: Duration) -> Result<tokio::fs::File, ErrorInfo> {
     use rustix::fs::{Mode, OFlags};
     let path = file.path.clone();

@@ -26,6 +26,7 @@ Every ID names the requirement it covers.
 | M-6 | F-C6 | Share a photo from Gallery and a link from the browser. | Sukkula is offered; "Send via…" opens with the item. |
 | M-7 | F-C7 | Rename the device in Settings. | LocalSend and Quick Share peers show the new name; empty falls back to the model name. |
 | M-8 | §2 sandbox | Share a photo from Gallery (it lives in `~/Pictures`), and pick a file in `~/Documents` with the file picker. | Record whether each can be sent. With only `Downloads` granted, Sukkula shows "Sukkula can read files in Downloads only" instead of failing silently; if the Share-menu photo is unreadable, raise it with the owner (it needs `UserDirs`, a spec change). |
+| M-9 | S9 | Run `journalctl --user -f \| grep 'sukkula:'` over SSH. Receive a file over each protocol with debug logging off; turn it on in Settings and receive again, a text too; turn it off. | Off: no line at all unless something failed. On: `DEBUG` lines such as `offer accepted` and `transfer finished`, with counts and sizes only: no file name, text, device name, PIN, code or address in any line. Off again: `debug logging off`, then silence. Nothing of Sukkula's under `$HOME` looks like a log file. |
 
 ## Consent and display
 

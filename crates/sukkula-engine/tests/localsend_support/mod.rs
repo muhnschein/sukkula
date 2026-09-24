@@ -323,8 +323,7 @@ pub fn make_file(dir: &Path, name: &str, len: usize) -> PathBuf {
 pub fn sparse_file(dir: &Path, name: &str, len: u64) -> PathBuf {
     let path = dir.join(name);
     #[allow(clippy::disallowed_methods)] // The scene: a file to send.
-    let f = std::fs::File::create(&path).unwrap();
-    f.set_len(len).unwrap();
+    std::fs::File::create(&path).unwrap().set_len(len).unwrap();
     path
 }
 

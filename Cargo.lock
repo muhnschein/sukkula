@@ -3138,6 +3138,8 @@ dependencies = [
  "tokio-rustls",
  "tokio-util",
  "tracing",
+ "tracing-log",
+ "tracing-subscriber",
  "url",
 ]
 

@@ -192,6 +192,26 @@ impl Ctx {
     /// Why the offer is not going ahead; the adapter declines it at the
     /// protocol level. The UI has already been told whatever it needs to be.
     pub async fn offer(self: &Arc<Self>, raw: RawOffer) -> Result<Accepted, Declined> {
+        let protocol = raw.protocol;
+        let result = self.decide(raw).await;
+        // S9: counts, sizes and reasons; never a name, the text, the
+        // sender or the PIN.
+        match &result {
+            Ok(a) => tracing::debug!(
+                ?protocol,
+                offer = a.offer_id,
+                transfer = a.transfer.id(),
+                files = a.offer.files.len(),
+                bytes = a.offer.total_bytes,
+                text = a.offer.text.is_some(),
+                "offer accepted"
+            ),
+            Err(why) => tracing::debug!(?protocol, ?why, "offer not going ahead"),
+        }
+        result
+    }
+
+    async fn decide(self: &Arc<Self>, raw: RawOffer) -> Result<Accepted, Declined> {
         let offer = Offer::validate(raw).map_err(Declined::Invalid)?;
         // Not worth asking the user about an offer that cannot run: they
         // would see it accepted and then nothing happen. (Checked again
@@ -394,6 +414,14 @@ impl Transfers {
             id
         };
         let file_count = files.len();
+        tracing::debug!(
+            transfer = id,
+            ?direction,
+            ?protocol,
+            files = file_count,
+            bytes = total,
+            "transfer started"
+        );
         files.truncate(MAX_LISTED_FILES);
         ctx.emit(Event::TransferStarted {
             transfer: TransferView {
@@ -525,6 +553,21 @@ impl TransferHandle {
     }
 
     fn report(&self, outcome: Outcome, saved: Vec<String>) {
+        // S9: the outcome's code, never its message (a storage error's
+        // names a directory) or the saved names.
+        let (result, code) = match &outcome {
+            Outcome::Done => ("done", None),
+            Outcome::Cancelled => ("cancelled", None),
+            Outcome::Failed { error } => ("failed", Some(error.code)),
+        };
+        tracing::debug!(
+            transfer = self.id,
+            result,
+            ?code,
+            bytes = self.bytes.load(Ordering::Relaxed),
+            saved = saved.len(),
+            "transfer finished"
+        );
         if let Some(ctx) = self.ctx.upgrade() {
             ctx.transfers.remove(self.id);
             ctx.emit(Event::TransferFinished {
