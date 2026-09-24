@@ -17,6 +17,8 @@ lines keep what helps with a protocol problem (states, frame types,
 payload ids, sizes, device types, addresses at debug) and drop names,
 paths, texts, the PIN and peer-chosen strings; per-chunk lines move to
 trace.
+
+Findings: S9. Report: docs/UPSTREAM-QUICKSHARE.md R13.
 ---
  src/hdl/inbound.rs        | 34 ++++++++++++----------------------
  src/hdl/mdns.rs           |  2 +-

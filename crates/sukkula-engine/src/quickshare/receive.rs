@@ -31,7 +31,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{Running, Shared, Slot, lock, new_endpoint_id, within};
 use crate::api::{ErrorCode, ErrorInfo, Event, Outcome};
-use crate::ctx::{Accepted, Declined, ReceivingFile};
+use crate::ctx::{Accepted, Declined, ReceivingFile, idle_timeout};
 
 /// How long to back off after a failed `accept` (out of file descriptors,
 /// say) rather than spinning on it.
@@ -362,24 +362,32 @@ async fn receive(
                         .position(|id| *id == chunk.payload_id)
                         .and_then(|i| accepted.offer.files.get(i))
                         .ok_or_else(protocol_error)?;
-                    let incoming = shared
-                        .ctx
-                        .begin_file(transfer, file)
+                    // The inbox's calls are file system calls: a stuck one
+                    // (a full or hung file system) is given up on like a
+                    // stuck peer (S6).
+                    let incoming = idle_timeout(shared.ctx.begin_file(transfer, file))
                         .await
+                        .and_then(|r| r)
                         .map_err(Ended::Failed)?;
                     open.insert(chunk.payload_id, incoming);
                 }
                 let incoming = open.get_mut(&chunk.payload_id).ok_or_else(protocol_error)?;
-                incoming.write(&chunk.body).await.map_err(|e| {
-                    if transfer.is_cancelled() {
-                        Ended::CancelledHere
-                    } else {
-                        Ended::Failed(e)
-                    }
-                })?;
+                idle_timeout(incoming.write(&chunk.body))
+                    .await
+                    .and_then(|r| r)
+                    .map_err(|e| {
+                        if transfer.is_cancelled() {
+                            Ended::CancelledHere
+                        } else {
+                            Ended::Failed(e)
+                        }
+                    })?;
                 if chunk.last {
                     let incoming = open.remove(&chunk.payload_id).ok_or_else(protocol_error)?;
-                    let placed = incoming.commit().await.map_err(Ended::Failed)?;
+                    let placed = idle_timeout(incoming.commit())
+                        .await
+                        .and_then(|r| r)
+                        .map_err(Ended::Failed)?;
                     saved.push(placed.name.as_str().to_owned());
                     pending.remove(&chunk.payload_id);
                 }

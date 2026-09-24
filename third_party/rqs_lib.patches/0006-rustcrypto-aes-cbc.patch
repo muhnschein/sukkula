@@ -20,6 +20,8 @@ crates (constant-time, with AES instructions where the CPU has them),
 which check key and IV lengths and the padding and return an error
 instead; both handlers use them. Unit tests cover a round trip, short
 IVs, a short key, partial blocks and a wrong key.
+
+Findings: spec §5 (no crash from any input). Report: docs/UPSTREAM-QUICKSHARE.md R2.
 ---
  Cargo.toml          |  4 +++-
  src/hdl/inbound.rs  | 14 +++++---------

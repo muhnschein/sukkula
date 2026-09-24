@@ -1,8 +1,9 @@
 //! Quick Share over the LAN (F-QS), over the patched `rqs_lib` in
-//! `third_party/` (`docs/UPSTREAM-QUICKSHARE.md` lists every patch).
+//! `third_party/` (upstream plus `third_party/rqs_lib.patches/`;
+//! `docs/UPSTREAM-QUICKSHARE.md` explains every patch).
 //!
 //! rqs_lib, as patched, is a protocol library and nothing else: it keeps no
-//! global state, spawns nothing and writes no file. This adapter owns every
+//! global state, spawns no task and writes no file. This adapter owns every
 //! socket, task and timer and drives each connection one frame at a time:
 //!
 //! - **Receiving** (F-QS1, F-QS4) — [`receive`]. A TCP listener on a random
@@ -15,10 +16,12 @@
 //!   [`sukkula_core::offer::RawOffer`] with the handshake PIN (F-QS3) and
 //!   goes through [`Ctx::offer`]. Until the user accepts, the connection is
 //!   read only for keep-alives and cancellation: rqs_lib refuses any
-//!   payload byte before acceptance (S5), and buffers at most a bounded
-//!   sharing frame. Accepted files arrive as chunks and are written by
-//!   `sukkula_core::inbox` through [`Ctx::begin_file`] (S1, S3); a text is
-//!   shown with `Event::TextReceived` once accepted (F-C4).
+//!   payload byte before acceptance (S5), and holds at most one frame of
+//!   260 KiB and two sharing frames of 256 KiB meanwhile. Accepted files
+//!   arrive as chunks and are written by `sukkula_core::inbox` through
+//!   [`Ctx::begin_file`] (S1, S3), every call bounded by
+//!   [`crate::ctx::idle_timeout`]; a text is shown with
+//!   `Event::TextReceived` once accepted (F-C4).
 //! - **Sending** (F-QS1) — [`send`]: files, or one text, to a peer found by
 //!   discovery.
 //! - **Discovery** — [`discovery`]: mDNS browsing, peers reported as
@@ -31,9 +34,14 @@
 //!   Best effort: without an adapter or BlueZ, LAN discovery still works.
 //!
 //! Every task ends on [`Ctx::shutdown_token`]; receiving and discovery each
-//! run under a child token that `stop_*` cancels and then waits out, so
-//! that the mDNS daemon threads and the D-Bus thread are gone when the
-//! engine stops.
+//! run under a child token that `stop_*` cancels and then waits out (at
+//! most 1.25 s each, inside the hub's 3 s), so that the mDNS daemon
+//! threads and the D-Bus thread are gone when the engine stops.
+//!
+//! Under the test switch (`StartConfig.allow_loopback`, which the shell
+//! never sets) mDNS runs on loopback only and the BLE nudge only on a bus
+//! the test names, so a test run never announces on the host's LAN or
+//! talks to its system bus.
 //!
 //! [`HANDSHAKE_TIMEOUT`]: sukkula_core::limits::HANDSHAKE_TIMEOUT
 //! [`MAX_PEERS`]: sukkula_core::limits::MAX_PEERS

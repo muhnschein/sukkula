@@ -34,6 +34,8 @@ Nearby keep-alive timeout) ends the connection. Unit tests cover frames
 split at every byte with the read future dropped mid-frame, oversized
 and empty lengths, and a trickled length prefix that allocates nothing
 up front.
+
+Findings: S4, S6. Report: docs/UPSTREAM-QUICKSHARE.md R7.
 ---
  src/hdl/frame.rs    | 216 ++++++++++++++++++++++++++++++++++++++++++++
  src/hdl/inbound.rs  |  87 ++++++++++--------

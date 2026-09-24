@@ -23,6 +23,8 @@ public interface and from inside the receiver:
 
 The unit tests of frame.rs, payload.rs and utils.rs came with their
 patches.
+
+Findings: spec §7 (hostile-input and loopback tests).
 ---
  src/hdl/inbound.rs       |   4 +
  src/hdl/inbound_tests.rs | 246 +++++++++++++++++++++++++++++++++++++++

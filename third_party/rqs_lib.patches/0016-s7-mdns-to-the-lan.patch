@@ -31,6 +31,8 @@ blocking and for at most half a second each, and dropping either type
 shuts its daemon down too. Announced names are cut to 128 bytes on a
 character boundary, and the endpoint-info parser uses bounds-checked
 reads. The service type is one constant.
+
+Findings: S7. Report: docs/UPSTREAM-QUICKSHARE.md R12.
 ---
  src/hdl/mdns.rs           |  51 +++++++---
  src/hdl/mdns_discovery.rs | 201 ++++++++++++++++++++++++--------------

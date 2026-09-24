@@ -2,8 +2,8 @@
 //! and texts.
 //!
 //! Every size here is the peer's claim and is checked before it is used:
-//! a declared size below zero is refused (it used to become a huge
-//! `usize` in `Vec::with_capacity` and abort the process), nothing is
+//! a declared size below zero is refused (as a huge `usize` in
+//! `Vec::with_capacity` it used to panic the task), nothing is
 //! allocated from a declared size (only from bytes that arrived), a
 //! payload never grows past what it declared, all its chunks must declare
 //! the same size, and only a few payloads may be in flight at once.

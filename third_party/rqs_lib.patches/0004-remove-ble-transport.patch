@@ -30,6 +30,8 @@ handling and the MigratableStream impls; the "a phone nearby is sharing"
 re-announcement in mdns.rs, and EndpointInfo's BLE address and PSM
 fields. Outgoing connections announce WIFI_LAN as their only medium.
 hotspot.rs is no longer referenced; the next patch deletes it.
+
+Findings: Q6 (spec §5), F-QS1, F-QS2. Report: docs/UPSTREAM-QUICKSHARE.md Q6.
 ---
  Cargo.toml                |  10 -
  src/hdl/ble.rs            | 272 --------------

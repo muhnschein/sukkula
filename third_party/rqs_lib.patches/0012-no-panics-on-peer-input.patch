@@ -30,6 +30,8 @@ endpoint info is parsed with bounds-checked reads, and the device type is
 taken from the right bits (3 to 1 of the flags byte; upstream masked the
 wrong ones). Unit tests cover the coordinate encodings, off-curve points
 and garbage.
+
+Findings: spec §5 (no crash from any input), S10. Report: docs/UPSTREAM-QUICKSHARE.md R1, R6, R16.
 ---
  src/hdl/inbound.rs  | 152 +++++++++++++++++++++++++-------------------
  src/hdl/outbound.rs | 145 +++++++++++++++++++++++++-----------------

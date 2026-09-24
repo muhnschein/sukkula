@@ -16,6 +16,8 @@ makes stable `cargo fmt` warn.
 No code of the library changes. This keeps the vendored tree to what is
 reviewed and built, so that ci/vendor-check.sh and the patches that follow
 are about the library alone.
+
+Findings: none; packaging only (spec §5: the patched copy lives in third_party/ with the patches kept separate).
 ---
  .gitignore                   |    2 +-
  Cargo.lock                   | 2341 ----------------------------------

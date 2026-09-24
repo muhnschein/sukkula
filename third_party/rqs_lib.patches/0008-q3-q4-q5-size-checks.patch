@@ -6,9 +6,10 @@ before checking them:
 - Q3: a BYTES payload (the sharing frames that set a transfer up, and
   texts) is refused only when its declared total_size is over 5 MiB, so
   a negative size passes, and `Vec::with_capacity(total_size as usize)`
-  turns it into a capacity near 2^64: the allocation fails and the
-  process aborts ("capacity overflow"), before any consent, on both the
-  receiving and the sending side.
+  turns it into a capacity near 2^64: it panics ("capacity overflow"),
+  which ends the connection task (and the whole process in a build with
+  panic = "abort"), before any consent, on both the receiving and the
+  sending side.
 - Q4: the buffer then grows by whatever the chunks carry, never checked
   against the declared size, and a finished buffer stays in the map for
   the life of the connection; any number of payload ids can be open at
@@ -34,6 +35,8 @@ zero, more than 1000 files are offered, or a payload id repeats; a text
 must declare 0 to 64 KiB and come alone. File chunks use checked
 arithmetic, the last chunk may carry data, and it must end the file at
 exactly its declared size.
+
+Findings: Q3, Q4, Q5 (spec §5), S4, S6. Report: docs/UPSTREAM-QUICKSHARE.md Q3, Q4, Q5, R8.
 ---
  src/hdl/inbound.rs  | 109 +++++++++++++++-----------
  src/hdl/mod.rs      |   3 +-
@@ -305,7 +308,7 @@ index 28f5b28..5193a02 100644
                              let inner_frame = sharing_nearby::Frame::decode(buffer.as_slice())?;
 diff --git a/src/hdl/payload.rs b/src/hdl/payload.rs
 new file mode 100644
-index 0000000..f60a109
+index 0000000..64d8226
 --- /dev/null
 +++ b/src/hdl/payload.rs
 @@ -0,0 +1,183 @@
@@ -313,8 +316,8 @@ index 0000000..f60a109
 +//! and texts.
 +//!
 +//! Every size here is the peer's claim and is checked before it is used:
-+//! a declared size below zero is refused (it used to become a huge
-+//! `usize` in `Vec::with_capacity` and abort the process), nothing is
++//! a declared size below zero is refused (as a huge `usize` in
++//! `Vec::with_capacity` it used to panic the task), nothing is
 +//! allocated from a declared size (only from bytes that arrived), a
 +//! payload never grows past what it declared, all its chunks must declare
 +//! the same size, and only a few payloads may be in flight at once.

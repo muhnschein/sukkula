@@ -20,6 +20,8 @@ addresses from a peer's.
 
 sys_metrics, the other git dependency, goes with the global device name
 in the patch that makes the embedding application name the device.
+
+Findings: spec §6 (git dependencies pinned, builds offline). Report: docs/UPSTREAM-QUICKSHARE.md R17.
 ---
  Cargo.toml      |  6 ++++--
  src/hdl/mdns.rs | 11 ++++++++---

@@ -11,6 +11,8 @@ there; build.rs and the prost-build build dependency go. The files are
 byte for byte what prost-build 0.13.5 (with libprotoc 3.21.12) emits for
 the unchanged .proto files, so the types, and the wire format, are
 exactly upstream's. The comment in lib.rs says how to regenerate them.
+
+Findings: none; build (spec §3: the phone build has no protoc).
 ---
  Cargo.toml                               |    3 -
  build.rs                                 |   16 -

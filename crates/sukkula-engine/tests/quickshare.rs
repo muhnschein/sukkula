@@ -537,6 +537,62 @@ async fn hidden_means_no_listener() {
     );
 }
 
+/// Peers are reported as PeerFound, at most MAX_PEERS of them, with
+/// showable names and plain-ASCII ids; a new round of discovery reports the
+/// old ones lost.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn peers_are_bounded_and_reported() {
+    use sukkula_core::limits::MAX_PEERS;
+    let rig = Rig::new("Looking");
+    let addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 9);
+    let mut ids = Vec::new();
+    for i in 0..(MAX_PEERS + 10) {
+        let endpoint = [
+            b'a',
+            b'0' + (i / 100) as u8,
+            b'0' + (i / 10 % 10) as u8,
+            b'0' + (i % 10) as u8,
+        ];
+        if let Some(id) = rig
+            .adapter
+            .insert_peer(endpoint, addr, "\u{202e}Evil\nPhone")
+        {
+            ids.push(id);
+        }
+    }
+    assert_eq!(ids.len(), MAX_PEERS);
+    // A peer outside the reach policy is never listed.
+    let public = SocketAddr::new(Ipv4Addr::new(8, 8, 8, 8).into(), 9);
+    assert_eq!(rig.adapter.insert_peer(*b"zzzz", public, "x"), None);
+    let found: Vec<_> = rig
+        .seen
+        .events()
+        .into_iter()
+        .filter_map(|e| match e {
+            Event::PeerFound { peer } => Some(peer),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(found.len(), MAX_PEERS);
+    for p in &found {
+        assert!(p.id.is_ascii() && p.id.starts_with("qs:"), "{}", p.id);
+        assert!(
+            !p.name.contains('\u{202e}') && !p.name.contains('\n'),
+            "{:?}",
+            p.name
+        );
+    }
+    rig.adapter.start_discovery().await.unwrap();
+    let lost = rig
+        .seen
+        .events()
+        .iter()
+        .filter(|e| matches!(e, Event::PeerLost { .. }))
+        .count();
+    assert_eq!(lost, MAX_PEERS);
+    rig.adapter.stop_discovery().await;
+}
+
 /// A file to send is checked where it is opened: a FIFO swapped in for the
 /// file, or a file that changed size, is refused, never blocks, never sends
 /// more than the size the receiver was promised.

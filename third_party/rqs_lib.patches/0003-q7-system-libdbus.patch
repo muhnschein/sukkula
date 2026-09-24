@@ -16,6 +16,8 @@ does by default (through pkg-config).
 The dependency goes. Sukkula's own BLE nudge (F-QS2) uses the `dbus`
 crate over the system libdbus, and its cargo-deny policy refuses the
 `vendored` feature of `dbus` and `libdbus-sys` from any crate.
+
+Findings: Q7 (spec §5). Report: docs/UPSTREAM-QUICKSHARE.md Q7.
 ---
  Cargo.toml | 3 ---
  1 file changed, 3 deletions(-)

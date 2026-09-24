@@ -19,6 +19,8 @@ WIFI_LAN only, no role or address metadata, OS type Linux (as the
 receive path already said). The PACKET_SEND_META environment knob that
 switched those experiments goes too; a library does not read the
 environment.
+
+Findings: Q6 (spec §5), S8. Report: docs/UPSTREAM-QUICKSHARE.md Q6, R14.
 ---
  Cargo.toml          |   1 -
  src/hdl/hotspot.rs  | 255 --------------------------------------------

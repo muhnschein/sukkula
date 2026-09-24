@@ -15,6 +15,8 @@ Three protocol details in the encrypted channel and the handshake:
   CLIENT_INIT, BAD_MESSAGE_DATA (4) as a CLIENT_FINISH, the others as
   undefined types, so the peer never reads an alert. It now goes out as
   type ALERT with the Ukey2Alert inside, as UKEY2 specifies.
+
+Findings: none in the spec; hardening. Report: docs/UPSTREAM-QUICKSHARE.md R15.
 ---
  src/hdl/inbound.rs  | 20 +++++++++++---------
  src/hdl/outbound.rs | 34 ++++++++++++++++++----------------

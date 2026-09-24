@@ -21,6 +21,8 @@ Now a file or text payload chunk before acceptance ends the connection
 with an error, and accept_transfer works only while the transfer waits
 for consent. (Spec S5: no payload byte is written before the user
 accepts.)
+
+Findings: S5, F-C2. Report: docs/UPSTREAM-QUICKSHARE.md R3, R4.
 ---
  src/hdl/inbound.rs | 18 ++++++++++++++++++
  1 file changed, 18 insertions(+)

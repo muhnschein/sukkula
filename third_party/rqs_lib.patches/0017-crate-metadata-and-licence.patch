@@ -14,6 +14,8 @@ GPL-3.0. The manifest also gains a description, the upstream repository,
 `publish = false`, and an empty [workspace] table so that the crate
 builds and tests on its own from within another project's tree (the
 embedding workspace lists third_party/ under `exclude`).
+
+Findings: none; licensing (spec §6: licences checked by cargo-deny).
 ---
  Cargo.toml |  11 +-
  LICENSE    | 674 +++++++++++++++++++++++++++++++++++++++++++++++++++++

@@ -62,6 +62,8 @@ application drives:
 
 The handshake, the frame limits, the size checks, consent-first and the
 Wi-Fi refusal of the previous patches carry over unchanged.
+
+Findings: Q1, Q2 (spec §5), S1, S3, S8. Report: docs/UPSTREAM-QUICKSHARE.md Q1, Q2, R9, R10, R11.
 ---
  Cargo.toml                |   16 +-
  src/channel.rs            |   43 --
