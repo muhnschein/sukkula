@@ -2884,6 +2884,7 @@ dependencies = [
  "magic-wormhole",
  "proptest",
  "qrcode",
+ "rustix",
  "serde",
  "serde_json",
  "sukkula-core",
@@ -2900,7 +2901,9 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "sukkula-core",
  "sukkula-engine",
+ "tempfile",
  "tracing",
 ]
 

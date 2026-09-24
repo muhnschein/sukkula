@@ -1,9 +1,48 @@
 //! The hub: parses commands, drives the adapters, answers every command
-//! with exactly one `Reply`.
+//! with exactly one `Reply`, and hands events to the sink.
+//!
+//! # Delivery
+//!
+//! Nothing in the engine calls the sink directly. Every event goes into the
+//! [`Gate`], a bounded FIFO, and one thread of the engine's own
+//! (`sukkula-events`) takes events out and calls the sink with them, one at
+//! a time. That buys the C ABI its promises:
+//!
+//! - the sink is never called on a thread that called into the engine, so
+//!   a shell may post to its UI thread without fearing re-entrancy;
+//! - the sink is never called twice at once, and events arrive in the
+//!   order they were emitted;
+//! - a slow UI slows the engine only once the queue is full, and a full
+//!   queue slows only the tasks that emit, never the one that delivers;
+//! - after [`Engine::stop`] returns the sink is never called again.
+//!
+//! The queue is bounded by count and by bytes ([`MAX_QUEUED_EVENTS`],
+//! [`MAX_QUEUED_BYTES`]). An emitter that finds it full waits for room,
+//! with two exceptions that keep waiting from ever turning into a
+//! deadlock: a `Reply`, which holds one of the [`MAX_IN_FLIGHT_COMMANDS`]
+//! command slots and is therefore bounded already, and anything emitted on
+//! the delivery thread itself (a sink that sends a command), which would be
+//! waiting for itself.
+//!
+//! # Commands
+//!
+//! A command takes a slot before it is parsed and gives it back when its
+//! reply has been delivered, so at most [`MAX_IN_FLIGHT_COMMANDS`] commands
+//! and their replies exist at once; the next is refused as
+//! [`Refused::Busy`] without a reply. Each runs in a task of its own under
+//! [`COMMAND_TIMEOUT`]. A [`ReplyGuard`] owns the slot: whatever becomes of
+//! the task -- it finishes, it panics, it times out, the runtime drops it
+//! at stop -- exactly one `Reply` is emitted for it.
 
+use std::cell::Cell;
+use std::collections::VecDeque;
+use std::future::Future;
+use std::io::{self, Read as _};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::thread::{JoinHandle, ThreadId};
 use std::time::Duration;
 
 use sukkula_core::Protocol;
@@ -11,84 +50,106 @@ use sukkula_core::config::{MAX_SETTINGS_BYTES, SETTINGS_FILE, Settings};
 use sukkula_core::consent::{ConsentBroker, ConsentEvent, Decision};
 use sukkula_core::inbox::Inbox;
 use sukkula_core::limits::{
-    MAX_FILE_BYTES, MAX_FILES_PER_OFFER, MAX_MESSAGE_BYTES, MAX_MODEL_CHARS, MAX_OFFER_BYTES,
-    OFFER_TIMEOUT,
+    MAX_EVENT_BYTES, MAX_FILE_BYTES, MAX_FILES_PER_OFFER, MAX_MESSAGE_BYTES, MAX_MODEL_CHARS,
+    MAX_OFFER_BYTES, MAX_PEERS, OFFER_TIMEOUT,
 };
 use sukkula_core::name;
 use sukkula_core::reach::ReachPolicy;
 use sukkula_core::store::Store;
 use sukkula_core::text;
+use thiserror::Error;
 use tokio::sync::Mutex as AsyncMutex;
+use tokio_util::sync::CancellationToken;
 
 use crate::adapter::{Adapter, Outgoing, OutgoingFile};
 use crate::api::{
-    API_VERSION, Command, CommandEnvelope, ErrorCode, ErrorInfo, Event, FileView, MAX_LISTED_FILES,
-    OfferView, ProtocolState, ProtocolStatus, SendItem, SendTarget, StartConfig, TransferId,
-    parse_command,
+    API_VERSION, Command, CommandEnvelope, ErrorCode, ErrorInfo, Event, FileView,
+    MAX_IN_FLIGHT_COMMANDS, MAX_LISTED_FILES, OfferView, Outcome, ProtocolState, ProtocolStatus,
+    RequestId, SendItem, SendTarget, StartConfig, TransferId, parse_command,
 };
 use crate::ctx::{Ctx, EventSink};
 
-/// How long [`Engine::stop`] waits for adapters and tasks to wind down.
+/// How long [`Engine::stop`] waits for adapters and tasks to wind down, per
+/// phase.
 const STOP_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// How long one adapter may take to start or stop receiving or discovery.
+/// Past it the adapter is reported as failed and the command goes on, so
+/// one hung adapter cannot hold the receive switch hostage.
+const ADAPTER_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// The most one command may take. A last resort behind the adapters' own
+/// timeouts: without it one hung adapter call would hold a command slot
+/// for the life of the engine.
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Most events waiting for the sink, not counting replies (which are
+/// bounded by [`MAX_IN_FLIGHT_COMMANDS`]).
+const MAX_QUEUED_EVENTS: usize = 1024;
+
+/// Most bytes of events waiting for the sink, measured as JSON, not
+/// counting replies.
+const MAX_QUEUED_BYTES: usize = 4 * 1024 * 1024;
+
+/// Where Sailfish describes the hardware.
+const HW_RELEASE: &str = "/etc/hw-release";
 
 /// Largest `/etc/hw-release` read.
 const MAX_HW_RELEASE_BYTES: u64 = 4096;
+
+/// Longest configured directory path, in bytes (Linux's `PATH_MAX`).
+const MAX_PATH_BYTES: usize = 4096;
 
 /// A running engine.
 pub struct Engine {
     runtime: Option<tokio::runtime::Runtime>,
     hub: Arc<Hub>,
-    gate: Arc<Gate>,
+    delivery: Delivery,
+}
+
+/// Why [`Engine::try_command`] did not take a command. No reply follows.
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+pub enum Refused {
+    /// [`MAX_IN_FLIGHT_COMMANDS`] commands are waiting for their replies.
+    #[error("too many commands are waiting for their reply")]
+    Busy,
+    /// The engine is stopping.
+    #[error("the engine is stopping")]
+    Stopped,
 }
 
 struct Hub {
     ctx: Arc<Ctx>,
     adapters: Vec<Arc<dyn Adapter>>,
+    gate: Arc<Gate>,
+    /// Commands taken and not yet answered to the UI.
+    in_flight: Arc<AtomicUsize>,
+    /// The receive switch. Held across a whole `set_receiving` or
+    /// `set_settings`, so the two never interleave.
     state: AsyncMutex<HubState>,
+    /// Held across a whole `start_discovery` or `stop_discovery`.
+    discovery: AsyncMutex<()>,
 }
 
-#[derive(Default)]
 struct HubState {
     receiving: bool,
     statuses: Vec<ProtocolStatus>,
 }
 
-/// Stands between the engine and the sink: once closed, nothing reaches the
-/// sink, and closing waits for any call already in it.
-struct Gate {
-    open: AtomicBool,
-    sink: RwLock<Option<EventSink>>,
-}
-
-impl Gate {
-    fn emit(&self, event: Event) {
-        if !self.open.load(Ordering::Acquire) {
-            return;
-        }
-        let guard = self.sink.read().unwrap_or_else(PoisonError::into_inner);
-        if let Some(sink) = guard.as_ref() {
-            sink(event);
-        }
-    }
-
-    fn close(&self) {
-        self.open.store(false, Ordering::Release);
-        // Taking the write lock waits out every emit in progress.
-        self.sink
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take();
-    }
-}
-
 impl Engine {
     /// Starts an engine. Emits `Started`, `Settings` and `Receiving`, in that
-    /// order, before any other event.
+    /// order, before any other event, and returns only once the sink has
+    /// had all three.
+    ///
+    /// Safe to call from inside another tokio runtime.
     ///
     /// # Errors
     ///
-    /// The configuration is unusable: a relative path, a directory that
-    /// cannot be created, or a runtime that cannot start.
+    /// The configuration is unusable: another API version; a path that is
+    /// relative, too long, has `.` or `..` components or control
+    /// characters; a data directory and download directory that are the
+    /// same or nested; a directory that cannot be created; or a thread or
+    /// runtime that cannot start. The sink is not called.
     pub fn start(config: StartConfig, sink: EventSink) -> Result<Engine, ErrorInfo> {
         if config.v != API_VERSION {
             return Err(ErrorInfo::new(
@@ -96,24 +157,27 @@ impl Engine {
                 "unsupported API version",
             ));
         }
-        let data_dir = absolute(&config.data_dir)?;
-        let download_dir = absolute(&config.download_dir)?;
+        let data_dir = checked_dir(&config.data_dir, "data_dir")?;
+        let download_dir = checked_dir(&config.download_dir, "download_dir")?;
+        apart(&data_dir, &download_dir)?;
         let store = Store::open(&data_dir)
             .map_err(|e| ErrorInfo::new(ErrorCode::Storage, e.to_string()))?;
         let inbox = Inbox::open(&download_dir)
             .map_err(|e| ErrorInfo::new(ErrorCode::Storage, e.to_string()))?;
+        // Again, now that both exist: a symlink could make two different
+        // strings one directory.
+        apart(&resolved(&data_dir)?, &resolved(&download_dir)?)?;
         let settings = load_settings(&store);
         let model = config
             .device_model
             .map_or_else(read_hw_model, |m| text::display(&m, MAX_MODEL_CHARS));
 
-        let gate = Arc::new(Gate {
-            open: AtomicBool::new(true),
-            sink: RwLock::new(Some(sink)),
-        });
+        let delivery = Delivery::spawn(sink).map_err(|e| internal(&e))?;
         let events: EventSink = {
-            let gate = gate.clone();
-            Arc::new(move |e| gate.emit(e))
+            let gate = delivery.gate.clone();
+            Arc::new(move |e| {
+                gate.emit(e);
+            })
         };
         let consent = ConsentBroker::new(consent_observer(events.clone()));
         let reach = ReachPolicy {
@@ -128,78 +192,120 @@ impl Engine {
             .thread_name("sukkula-engine")
             .enable_all()
             .build()
-            .map_err(|e| ErrorInfo::new(ErrorCode::Internal, e.to_string()))?;
+            .map_err(|e| internal(&e))?;
 
         let adapters = {
             let _guard = runtime.enter();
             build_adapters(&ctx)
         };
+        let statuses = statuses(&adapters, &ctx.settings(), false);
         let hub = Arc::new(Hub {
-            ctx: ctx.clone(),
+            ctx,
             adapters,
-            state: AsyncMutex::new(HubState::default()),
+            gate: delivery.gate.clone(),
+            in_flight: Arc::new(AtomicUsize::new(0)),
+            state: AsyncMutex::new(HubState {
+                receiving: false,
+                statuses: statuses.clone(),
+            }),
+            discovery: AsyncMutex::new(()),
         });
 
-        ctx.emit(Event::Started {
+        hub.ctx.emit(Event::Started {
             version: crate::VERSION.to_owned(),
             api: API_VERSION,
             protocols: hub.adapters.iter().map(|a| a.protocol()).collect(),
         });
         hub.emit_settings();
-        runtime.block_on(async {
-            let mut state = hub.state.lock().await;
-            state.statuses = hub.statuses(false);
-            hub.emit_receiving(&state);
-        });
+        let receiving = Event::Receiving {
+            on: false,
+            protocols: statuses,
+        };
+        if let Some(seq) = hub.gate.push(receiving, None) {
+            hub.gate.wait_delivered(seq);
+        }
         Ok(Engine {
             runtime: Some(runtime),
             hub,
-            gate,
+            delivery,
         })
     }
 
     /// Takes one command as JSON. Always answered by exactly one `Reply`,
-    /// even when the JSON is malformed.
+    /// even when the JSON is malformed or the engine is busy (then with
+    /// `too_large`); only a stopping engine does not answer.
+    ///
+    /// For Rust callers and tests. The C ABI uses
+    /// [`try_command_json`](Self::try_command_json), which refuses a
+    /// command it is too busy for instead of answering it.
     pub fn command_json(&self, json: &str) {
-        match parse_command(json) {
-            Ok(env) => self.command(env),
-            Err((id, e)) => self.hub.ctx.emit(Event::Reply {
-                id: id.unwrap_or(0),
-                ok: false,
-                error: Some(e.into()),
-                transfer: None,
-            }),
+        if self.try_command_json(json) == Err(Refused::Busy) {
+            let id = match parse_command(json) {
+                Ok(env) => env.id,
+                Err((id, _)) => id.unwrap_or(0),
+            };
+            self.hub.ctx.emit(busy_reply(id));
         }
     }
 
-    /// Takes one parsed command.
+    /// Takes one parsed command, as [`command_json`](Self::command_json).
     pub fn command(&self, env: CommandEnvelope) {
-        let Some(runtime) = self.runtime.as_ref() else {
-            return;
-        };
-        let hub = self.hub.clone();
-        runtime.spawn(async move {
-            let id = env.id;
-            let reply = match hub.dispatch(env.cmd).await {
-                Ok(transfer) => Event::Reply {
-                    id,
-                    ok: true,
-                    error: None,
-                    transfer,
-                },
-                Err(error) => Event::Reply {
-                    id,
-                    ok: false,
-                    error: Some(error),
-                    transfer: None,
-                },
-            };
-            hub.ctx.emit(reply);
-        });
+        let id = env.id;
+        if self.try_command(env) == Err(Refused::Busy) {
+            self.hub.ctx.emit(busy_reply(id));
+        }
     }
 
-    /// Stops everything. When this returns, no engine thread is running and
-    /// the sink will never be called again.
+    /// Takes one command as JSON, if there is room for it. When this
+    /// returns `Ok`, exactly one `Reply` follows, from the delivery thread;
+    /// otherwise none does.
+    ///
+    /// Never blocks. The JSON is parsed on the calling thread; a malformed
+    /// command is answered like any other.
+    ///
+    /// # Errors
+    ///
+    /// [`Refused`].
+    pub fn try_command_json(&self, json: &str) -> Result<(), Refused> {
+        let runtime = self.runtime.as_ref().ok_or(Refused::Stopped)?;
+        let permit = Permit::acquire(&self.hub.in_flight).ok_or(Refused::Busy)?;
+        match parse_command(json) {
+            Ok(env) => self.hub.spawn_command(runtime, env, permit),
+            Err((id, e)) => {
+                self.hub
+                    .gate
+                    .push(reply_event(id.unwrap_or(0), Err(e.into())), Some(permit));
+            }
+        }
+        Ok(())
+    }
+
+    /// Takes one parsed command, as [`try_command_json`](Self::try_command_json).
+    ///
+    /// # Errors
+    ///
+    /// [`Refused`].
+    pub fn try_command(&self, env: CommandEnvelope) -> Result<(), Refused> {
+        let runtime = self.runtime.as_ref().ok_or(Refused::Stopped)?;
+        let permit = Permit::acquire(&self.hub.in_flight).ok_or(Refused::Busy)?;
+        self.hub.spawn_command(runtime, env, permit);
+        Ok(())
+    }
+
+    /// Stops everything. When this returns, the sink will never be called
+    /// again, and no engine thread is running.
+    ///
+    /// Callable from anywhere, including from inside the sink and from
+    /// inside another tokio runtime:
+    ///
+    /// - From inside this engine's own sink, the gate closes first and
+    ///   events still queued are dropped; the delivery thread, which is the
+    ///   caller, ends as soon as the sink returns.
+    /// - From inside another engine's sink, this engine's delivery thread
+    ///   is waited for at most [`STOP_TIMEOUT`]: the two sinks could be
+    ///   waiting for each other.
+    /// - Otherwise, events emitted before the gate closes -- including
+    ///   those the teardown itself emits -- are delivered first.
     pub fn stop(mut self) {
         self.shutdown();
     }
@@ -208,19 +314,45 @@ impl Engine {
         let Some(runtime) = self.runtime.take() else {
             return;
         };
+        if self.delivery.is_current() {
+            // This thread is the one that would drain the queue.
+            self.delivery.finish(Finish::Discard);
+        }
         let hub = self.hub.clone();
-        runtime.block_on(async {
-            let stopping = async {
-                for a in &hub.adapters {
-                    a.stop_discovery().await;
-                    a.stop_receiving().await;
-                }
-            };
-            let _ = tokio::time::timeout(STOP_TIMEOUT, stopping).await;
-        });
-        hub.ctx.shut_down();
-        runtime.shutdown_timeout(STOP_TIMEOUT);
-        self.gate.close();
+        let mut slot = Some(runtime);
+        let teardown = |slot: &mut Option<tokio::runtime::Runtime>| {
+            if let Some(runtime) = slot.take() {
+                runtime.block_on(async {
+                    let _ = tokio::time::timeout(STOP_TIMEOUT, hub.stop_adapters()).await;
+                });
+                hub.ctx.shut_down();
+                runtime.shutdown_timeout(STOP_TIMEOUT);
+            }
+        };
+        if tokio::runtime::Handle::try_current().is_ok() {
+            // Inside a runtime, `block_on` and a blocking runtime shutdown
+            // both panic. Do them on a thread that is not.
+            let spawned = std::thread::scope(|s| {
+                std::thread::Builder::new()
+                    .name("sukkula-stop".to_owned())
+                    .spawn_scoped(s, || teardown(&mut slot))
+                    .map(|t| t.join().is_ok())
+            });
+            if !matches!(spawned, Ok(true))
+                && let Some(runtime) = slot.take()
+            {
+                hub.ctx.shut_down();
+                runtime.shutdown_background();
+            }
+        } else {
+            teardown(&mut slot);
+        }
+        let finish = if in_delivery() {
+            Finish::Discard
+        } else {
+            Finish::Drain
+        };
+        self.delivery.finish(finish);
     }
 }
 
@@ -231,26 +363,51 @@ impl Drop for Engine {
 }
 
 impl Hub {
+    fn spawn_command(
+        self: &Arc<Self>,
+        runtime: &tokio::runtime::Runtime,
+        env: CommandEnvelope,
+        permit: Permit,
+    ) {
+        let hub = self.clone();
+        let work = async move { hub.dispatch(env.cmd).await };
+        spawn_reply(
+            runtime.handle(),
+            ReplyGuard::new(
+                self.gate.clone(),
+                env.id,
+                permit,
+                self.ctx.shutdown_token().clone(),
+            ),
+            work,
+        );
+    }
+
     async fn dispatch(self: &Arc<Self>, cmd: Command) -> Result<Option<TransferId>, ErrorInfo> {
         match cmd {
             Command::SetReceiving { on } => {
-                self.set_receiving(on).await;
+                let mut state = self.state.lock().await;
+                self.set_receiving(&mut state, on).await;
                 Ok(None)
             }
             Command::SetSettings { settings } => {
                 let settings = settings
                     .validate()
                     .map_err(|e| ErrorInfo::new(ErrorCode::BadSettings, e.to_string()))?;
-                self.ctx
-                    .store()
-                    .write_json(SETTINGS_FILE, &settings)
+                // Held from the write to the restart: two `set_settings`
+                // cannot leave the file and the engine disagreeing, and a
+                // `set_receiving` cannot slip between a stop and a start.
+                let mut state = self.state.lock().await;
+                let store = self.ctx.store().clone();
+                let saved = settings.clone();
+                tokio::task::spawn_blocking(move || store.write_json(SETTINGS_FILE, &saved))
+                    .await
+                    .map_err(|_| ErrorInfo::new(ErrorCode::Internal, "the settings write failed"))?
                     .map_err(|e| ErrorInfo::new(ErrorCode::Storage, e.to_string()))?;
                 self.ctx.set_settings(settings);
                 self.emit_settings();
-                let on = self.state.lock().await.receiving;
-                if on {
-                    self.set_receiving(false).await;
-                    self.set_receiving(true).await;
+                if state.receiving {
+                    self.restart_receiving(&mut state).await;
                 }
                 Ok(None)
             }
@@ -259,17 +416,34 @@ impl Hub {
                 Ok(None)
             }
             Command::StartDiscovery => {
-                for a in self.enabled_adapters() {
-                    if let Err(e) = a.start_discovery().await {
-                        tracing::debug!(protocol = ?a.protocol(), code = ?e.code, "discovery failed to start");
+                let _held = self.discovery.lock().await;
+                let settings = self.ctx.settings();
+                let started = each(&self.adapters, |a| {
+                    let on = enabled(&settings, a.protocol());
+                    async move {
+                        if on {
+                            a.start_discovery().await
+                        } else {
+                            a.stop_discovery().await;
+                            Ok(())
+                        }
+                    }
+                })
+                .await;
+                for (protocol, result) in started {
+                    if let Err(e) = result {
+                        tracing::debug!(?protocol, code = ?e.code, "discovery failed to start");
                     }
                 }
                 Ok(None)
             }
             Command::StopDiscovery => {
-                for a in &self.adapters {
+                let _held = self.discovery.lock().await;
+                each(&self.adapters, |a| async move {
                     a.stop_discovery().await;
-                }
+                    Ok(())
+                })
+                .await;
                 Ok(None)
             }
             Command::Answer { offer, accept } => {
@@ -308,32 +482,45 @@ impl Hub {
             }
             Command::ListBluetoothDevices => {
                 let adapter = self.adapter(Protocol::Bluetooth)?;
-                let devices = adapter.list_devices().await?;
+                let mut devices = adapter.list_devices().await?;
+                // The adapter bounds the list; this is the second layer.
+                devices.truncate(MAX_PEERS);
                 self.ctx.emit(Event::BluetoothDevices { devices });
                 Ok(None)
             }
         }
     }
 
-    async fn set_receiving(&self, on: bool) {
-        let mut state = self.state.lock().await;
-        state.receiving = on;
-        state.statuses = self.statuses(on);
-        if on {
-            self.emit_receiving(&state);
-        }
+    /// Turns the receivers on or off. Every receiving adapter is started or
+    /// stopped at once, in a task of its own under [`ADAPTER_TIMEOUT`], so
+    /// one that hangs or panics is reported as failed and the rest carry
+    /// on.
+    async fn set_receiving(&self, state: &mut HubState, on: bool) {
         let settings = self.ctx.settings();
-        for a in &self.adapters {
-            if !a.receives() {
-                continue;
+        state.receiving = on;
+        state.statuses = statuses(&self.adapters, &settings, on);
+        if on {
+            self.emit_receiving(state);
+        }
+        let receivers: Vec<Arc<dyn Adapter>> = self
+            .adapters
+            .iter()
+            .filter(|a| a.receives())
+            .cloned()
+            .collect();
+        let results = each(&receivers, |a| {
+            let start = on && enabled(&settings, a.protocol());
+            async move {
+                if start {
+                    a.start_receiving().await.map(|()| ProtocolState::Ready)
+                } else {
+                    a.stop_receiving().await;
+                    Ok(ProtocolState::Off)
+                }
             }
-            let protocol = a.protocol();
-            let result = if on && enabled(&settings, protocol) {
-                a.start_receiving().await.map(|()| ProtocolState::Ready)
-            } else {
-                a.stop_receiving().await;
-                Ok(ProtocolState::Off)
-            };
+        })
+        .await;
+        for (protocol, result) in results {
             if let Some(s) = state.statuses.iter_mut().find(|s| s.protocol == protocol) {
                 match result {
                     Ok(st) => {
@@ -347,28 +534,30 @@ impl Hub {
                 }
             }
         }
-        self.emit_receiving(&state);
+        self.emit_receiving(state);
     }
 
-    fn statuses(&self, on: bool) -> Vec<ProtocolStatus> {
-        let settings = self.ctx.settings();
-        self.adapters
-            .iter()
-            .map(|a| {
-                let state = if !a.receives() {
-                    ProtocolState::SendOnly
-                } else if on && enabled(&settings, a.protocol()) {
-                    ProtocolState::Starting
-                } else {
-                    ProtocolState::Off
-                };
-                ProtocolStatus {
-                    protocol: a.protocol(),
-                    state,
-                    error: None,
-                }
-            })
-            .collect()
+    /// Restarts running receivers with new settings, without telling the
+    /// UI the switch went off in between.
+    async fn restart_receiving(&self, state: &mut HubState) {
+        each(&self.adapters, |a| async move {
+            if a.receives() {
+                a.stop_receiving().await;
+            }
+            Ok(())
+        })
+        .await;
+        self.set_receiving(state, true).await;
+    }
+
+    /// Stops discovery and receiving on every adapter, for [`Engine::stop`].
+    async fn stop_adapters(&self) {
+        each(&self.adapters, |a| async move {
+            a.stop_discovery().await;
+            a.stop_receiving().await;
+            Ok(())
+        })
+        .await;
     }
 
     fn emit_receiving(&self, state: &HubState) {
@@ -401,15 +590,71 @@ impl Hub {
                 ErrorInfo::new(ErrorCode::Unavailable, "the protocol is not in this build")
             })
     }
+}
 
-    fn enabled_adapters(&self) -> Vec<Arc<dyn Adapter>> {
-        let settings = self.ctx.settings();
-        self.adapters
-            .iter()
-            .filter(|a| enabled(&settings, a.protocol()))
-            .cloned()
-            .collect()
+fn statuses(adapters: &[Arc<dyn Adapter>], settings: &Settings, on: bool) -> Vec<ProtocolStatus> {
+    adapters
+        .iter()
+        .map(|a| {
+            let state = if !a.receives() {
+                ProtocolState::SendOnly
+            } else if on && enabled(settings, a.protocol()) {
+                ProtocolState::Starting
+            } else {
+                ProtocolState::Off
+            };
+            ProtocolStatus {
+                protocol: a.protocol(),
+                state,
+                error: None,
+            }
+        })
+        .collect()
+}
+
+/// Runs `f` for every adapter at once, each in a task of its own under
+/// [`ADAPTER_TIMEOUT`], and collects the results in adapter order. A task
+/// that panics or times out is an error, not the caller's problem.
+async fn each<T, F, Fut>(
+    adapters: &[Arc<dyn Adapter>],
+    f: F,
+) -> Vec<(Protocol, Result<T, ErrorInfo>)>
+where
+    T: Send + 'static,
+    F: Fn(Arc<dyn Adapter>) -> Fut,
+    Fut: Future<Output = Result<T, ErrorInfo>> + Send + 'static,
+{
+    let tasks: Vec<_> = adapters
+        .iter()
+        .map(|a| {
+            let work = f(a.clone());
+            let task = tokio::spawn(async move {
+                tokio::time::timeout(ADAPTER_TIMEOUT, work)
+                    .await
+                    .unwrap_or_else(|_| {
+                        Err(ErrorInfo::new(
+                            ErrorCode::Internal,
+                            "the protocol did not answer in time",
+                        ))
+                    })
+            });
+            (a.protocol(), task)
+        })
+        .collect();
+    let mut out = Vec::with_capacity(tasks.len());
+    for (protocol, task) in tasks {
+        let result = task.await.unwrap_or_else(|e| {
+            if e.is_panic() {
+                tracing::error!(?protocol, "adapter panicked");
+            }
+            Err(ErrorInfo::new(
+                ErrorCode::Internal,
+                "the protocol failed internally",
+            ))
+        });
+        out.push((protocol, result));
     }
+    out
 }
 
 fn enabled(settings: &Settings, protocol: Protocol) -> bool {
@@ -480,33 +725,596 @@ fn load_settings(store: &Store) -> Settings {
     }
 }
 
-fn absolute(p: &str) -> Result<PathBuf, ErrorInfo> {
-    let path = PathBuf::from(p);
-    if !path.is_absolute() || p.contains('\0') {
-        return Err(ErrorInfo::new(
-            ErrorCode::BadCommand,
-            "paths must be absolute",
-        ));
-    }
-    Ok(path)
+fn internal(e: &io::Error) -> ErrorInfo {
+    ErrorInfo::new(ErrorCode::Internal, e.to_string())
 }
 
-/// The model from `/etc/hw-release` (`NAME=`), after S2.
+// ---------------------------------------------------------------------------
+// Replies.
+
+fn reply_event(id: RequestId, result: Result<Option<TransferId>, ErrorInfo>) -> Event {
+    match result {
+        Ok(transfer) => Event::Reply {
+            id,
+            ok: true,
+            error: None,
+            transfer,
+        },
+        Err(error) => Event::Reply {
+            id,
+            ok: false,
+            error: Some(error),
+            transfer: None,
+        },
+    }
+}
+
+fn busy_reply(id: RequestId) -> Event {
+    reply_event(
+        id,
+        Err(ErrorInfo::new(
+            ErrorCode::TooLarge,
+            "too many commands are waiting for their reply",
+        )),
+    )
+}
+
+/// One of the [`MAX_IN_FLIGHT_COMMANDS`] command slots. Given back when
+/// dropped, which for a command is after its reply has been delivered.
+struct Permit(Arc<AtomicUsize>);
+
+impl Permit {
+    fn acquire(count: &Arc<AtomicUsize>) -> Option<Permit> {
+        count
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < MAX_IN_FLIGHT_COMMANDS).then_some(n.saturating_add(1))
+            })
+            .ok()
+            .map(|_| Permit(count.clone()))
+    }
+}
+
+impl Drop for Permit {
+    fn drop(&mut self) {
+        let _ = self
+            .0
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1));
+    }
+}
+
+/// Owns a command's slot and its reply. [`send`](Self::send) replies with
+/// the result; dropping it unsent -- a panic, the runtime dropping the task
+/// at stop -- replies with `internal`. Either way, once.
+struct ReplyGuard {
+    gate: Arc<Gate>,
+    id: RequestId,
+    permit: Option<Permit>,
+    stopping: CancellationToken,
+}
+
+impl ReplyGuard {
+    fn new(gate: Arc<Gate>, id: RequestId, permit: Permit, stopping: CancellationToken) -> Self {
+        ReplyGuard {
+            gate,
+            id,
+            permit: Some(permit),
+            stopping,
+        }
+    }
+
+    fn send(mut self, result: Result<Option<TransferId>, ErrorInfo>) {
+        if let Some(permit) = self.permit.take() {
+            self.gate.push(reply_event(self.id, result), Some(permit));
+        }
+    }
+}
+
+impl Drop for ReplyGuard {
+    fn drop(&mut self) {
+        if let Some(permit) = self.permit.take() {
+            let message = if self.stopping.is_cancelled() {
+                "the engine is stopping"
+            } else {
+                "the command failed internally"
+            };
+            let error = ErrorInfo::new(ErrorCode::Internal, message);
+            self.gate
+                .push(reply_event(self.id, Err(error)), Some(permit));
+        }
+    }
+}
+
+/// Runs one command's work under [`COMMAND_TIMEOUT`] and replies through
+/// `guard`.
+fn spawn_reply<F>(runtime: &tokio::runtime::Handle, guard: ReplyGuard, work: F)
+where
+    F: Future<Output = Result<Option<TransferId>, ErrorInfo>> + Send + 'static,
+{
+    runtime.spawn(async move {
+        let result = tokio::time::timeout(COMMAND_TIMEOUT, work)
+            .await
+            .unwrap_or_else(|_| {
+                Err(ErrorInfo::new(
+                    ErrorCode::Internal,
+                    "the command did not finish in time",
+                ))
+            });
+        guard.send(result);
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Delivery.
+
+thread_local! {
+    /// Set on every engine's delivery thread.
+    static IN_DELIVERY: Cell<bool> = const { Cell::new(false) };
+}
+
+fn in_delivery() -> bool {
+    IN_DELIVERY.with(Cell::get)
+}
+
+/// Stands between the engine and the sink: a bounded FIFO that one thread
+/// drains into the sink. Once closed, nothing more reaches the sink.
+struct Gate {
+    queue: Mutex<Queue>,
+    /// Wakes the delivery thread: an event arrived, or the gate closed.
+    ready: Condvar,
+    /// Wakes everyone else: room in the queue, an event delivered, the
+    /// delivery thread gone, the gate closed.
+    changed: Condvar,
+}
+
+struct Queue {
+    items: VecDeque<Queued>,
+    /// Events and bytes waiting that count against the bounds: all but
+    /// replies holding a command slot.
+    held_events: usize,
+    held_bytes: usize,
+    state: GateState,
+    /// Events accepted so far, numbering them from 1.
+    accepted: u64,
+    /// Events the sink has returned from.
+    delivered: u64,
+    /// The delivery thread has exited.
+    finished: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GateState {
+    Open,
+    /// No more events are taken; the queue is delivered, then the thread
+    /// ends.
+    Draining,
+    /// No more events are taken or delivered.
+    Closed,
+}
+
+struct Queued {
+    event: Event,
+    bytes: usize,
+    /// A reply's command slot, given back once the reply is delivered.
+    /// Also marks the event as not counting against the bounds.
+    permit: Option<Permit>,
+}
+
+/// How [`Delivery::finish`] ends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Finish {
+    /// Deliver what is queued, then stop.
+    Drain,
+    /// Drop what is queued.
+    Discard,
+}
+
+impl Gate {
+    fn new() -> Gate {
+        Gate {
+            queue: Mutex::new(Queue {
+                items: VecDeque::new(),
+                held_events: 0,
+                held_bytes: 0,
+                state: GateState::Open,
+                accepted: 0,
+                delivered: 0,
+                finished: false,
+            }),
+            ready: Condvar::new(),
+            changed: Condvar::new(),
+        }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, Queue> {
+        self.queue.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn emit(&self, event: Event) {
+        self.push(event, None);
+    }
+
+    /// Queues `event`, waiting for room unless it holds a command slot or
+    /// this is the delivery thread. Returns its number, or `None` when the
+    /// gate is closed or the event could not be made to fit
+    /// [`MAX_EVENT_BYTES`].
+    fn push(&self, event: Event, permit: Option<Permit>) -> Option<u64> {
+        let (event, bytes) = fit(event)?;
+        let counted = permit.is_none();
+        let may_wait = counted && !in_delivery();
+        let mut q = self.lock();
+        while may_wait
+            && q.state == GateState::Open
+            && q.held_events > 0
+            && (q.held_events >= MAX_QUEUED_EVENTS
+                || q.held_bytes.saturating_add(bytes) > MAX_QUEUED_BYTES)
+        {
+            q = self.changed.wait(q).unwrap_or_else(PoisonError::into_inner);
+        }
+        if q.state != GateState::Open {
+            return None;
+        }
+        if counted {
+            q.held_events = q.held_events.saturating_add(1);
+            q.held_bytes = q.held_bytes.saturating_add(bytes);
+        }
+        q.accepted = q.accepted.saturating_add(1);
+        let seq = q.accepted;
+        q.items.push_back(Queued {
+            event,
+            bytes,
+            permit,
+        });
+        drop(q);
+        self.ready.notify_one();
+        Some(seq)
+    }
+
+    /// Stops taking events. Wakes every waiter.
+    fn close(&self, finish: Finish) {
+        let dropped = {
+            let mut q = self.lock();
+            match finish {
+                Finish::Drain if q.state == GateState::Open => q.state = GateState::Draining,
+                Finish::Drain => {}
+                Finish::Discard => q.state = GateState::Closed,
+            }
+            if q.state == GateState::Closed {
+                q.held_events = 0;
+                q.held_bytes = 0;
+                std::mem::take(&mut q.items)
+            } else {
+                VecDeque::new()
+            }
+        };
+        // Dropped outside the lock: permits touch other state.
+        drop(dropped);
+        self.ready.notify_all();
+        self.changed.notify_all();
+    }
+
+    /// Waits until event `seq` has been delivered, or never will be.
+    fn wait_delivered(&self, seq: u64) {
+        let q = self.lock();
+        let _q = self
+            .changed
+            .wait_while(q, |q| {
+                q.delivered < seq && q.state != GateState::Closed && !q.finished
+            })
+            .unwrap_or_else(PoisonError::into_inner);
+    }
+
+    /// Waits at most `timeout` for the delivery thread to end.
+    fn wait_finished(&self, timeout: Duration) -> bool {
+        let q = self.lock();
+        let (q, _) = self
+            .changed
+            .wait_timeout_while(q, timeout, |q| !q.finished)
+            .unwrap_or_else(PoisonError::into_inner);
+        q.finished
+    }
+
+    /// The delivery thread's loop.
+    fn run(&self, sink: EventSink) {
+        IN_DELIVERY.with(|d| d.set(true));
+        loop {
+            let next = {
+                let mut q = self.lock();
+                loop {
+                    if q.state == GateState::Closed {
+                        break None;
+                    }
+                    if let Some(item) = q.items.pop_front() {
+                        if item.permit.is_none() {
+                            q.held_events = q.held_events.saturating_sub(1);
+                            q.held_bytes = q.held_bytes.saturating_sub(item.bytes);
+                        }
+                        break Some(item);
+                    }
+                    if q.state == GateState::Draining {
+                        break None;
+                    }
+                    q = self.ready.wait(q).unwrap_or_else(PoisonError::into_inner);
+                }
+            };
+            let Some(Queued { event, permit, .. }) = next else {
+                break;
+            };
+            // Room for a waiting emitter.
+            self.changed.notify_all();
+            if catch_unwind(AssertUnwindSafe(|| sink(event))).is_err() {
+                tracing::error!("the event sink panicked");
+            }
+            drop(permit);
+            {
+                let mut q = self.lock();
+                q.delivered = q.delivered.saturating_add(1);
+            }
+            self.changed.notify_all();
+        }
+        // Whatever the sink holds is released before anyone is told the
+        // thread is done.
+        drop(sink);
+        let rest = {
+            let mut q = self.lock();
+            q.finished = true;
+            std::mem::take(&mut q.items)
+        };
+        drop(rest);
+        self.changed.notify_all();
+    }
+}
+
+/// The delivery thread and its gate.
+struct Delivery {
+    gate: Arc<Gate>,
+    thread: Option<JoinHandle<()>>,
+    thread_id: ThreadId,
+}
+
+impl Delivery {
+    fn spawn(sink: EventSink) -> io::Result<Delivery> {
+        let gate = Arc::new(Gate::new());
+        let g = gate.clone();
+        let thread = std::thread::Builder::new()
+            .name("sukkula-events".to_owned())
+            .spawn(move || g.run(sink))?;
+        let thread_id = thread.thread().id();
+        Ok(Delivery {
+            gate,
+            thread: Some(thread),
+            thread_id,
+        })
+    }
+
+    /// Whether this is the delivery thread.
+    fn is_current(&self) -> bool {
+        std::thread::current().id() == self.thread_id
+    }
+
+    /// Closes the gate and waits for the delivery thread, except where that
+    /// could never end: on the delivery thread itself (it ends once the
+    /// sink returns), and on another engine's delivery thread (bounded by
+    /// [`STOP_TIMEOUT`]).
+    fn finish(&mut self, finish: Finish) {
+        let Some(thread) = self.thread.take() else {
+            return;
+        };
+        if self.is_current() {
+            self.gate.close(Finish::Discard);
+            return;
+        }
+        self.gate.close(finish);
+        if in_delivery() && !self.gate.wait_finished(STOP_TIMEOUT) {
+            tracing::warn!("the event sink did not return in time; not waiting for it");
+            return;
+        }
+        let _ = thread.join();
+    }
+}
+
+impl Drop for Delivery {
+    fn drop(&mut self) {
+        self.finish(Finish::Discard);
+    }
+}
+
+/// Counts the bytes of JSON written, and fails past [`MAX_EVENT_BYTES`] so
+/// an oversized event costs no more than the cap to measure.
+struct Measure(usize);
+
+impl io::Write for Measure {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0 = self.0.saturating_add(buf.len());
+        if self.0 > MAX_EVENT_BYTES {
+            return Err(io::Error::other("event too large"));
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// The event's size as JSON, if it is within [`MAX_EVENT_BYTES`].
+fn encoded_len(event: &Event) -> Option<usize> {
+    let mut m = Measure(0);
+    serde_json::to_writer(&mut m, event).ok().map(|()| m.0)
+}
+
+/// Holds an event to [`MAX_EVENT_BYTES`]. Events are built from sanitised,
+/// capped values and fit by construction; this is the check that the
+/// construction is right. An event that does not fit is replaced where the
+/// UI depends on it -- a reply must still answer its command, a transfer
+/// must still end -- and dropped otherwise.
+fn fit(event: Event) -> Option<(Event, usize)> {
+    if let Some(n) = encoded_len(&event) {
+        return Some((event, n));
+    }
+    let kind = event_kind(&event);
+    tracing::error!(kind, "event over the size cap");
+    let replacement = match event {
+        Event::Reply { id, .. } => reply_event(
+            id,
+            Err(ErrorInfo::new(
+                ErrorCode::Internal,
+                "the reply was too large",
+            )),
+        ),
+        Event::TransferFinished { transfer, .. } => Event::TransferFinished {
+            transfer,
+            outcome: Outcome::Failed {
+                error: ErrorInfo::new(ErrorCode::Internal, "the report was too large"),
+            },
+            saved: Vec::new(),
+        },
+        _ => return None,
+    };
+    encoded_len(&replacement).map(|n| (replacement, n))
+}
+
+fn event_kind(event: &Event) -> &'static str {
+    match event {
+        Event::Fatal { .. } => "fatal",
+        Event::Started { .. } => "started",
+        Event::Reply { .. } => "reply",
+        Event::Settings { .. } => "settings",
+        Event::Receiving { .. } => "receiving",
+        Event::PeerFound { .. } => "peer_found",
+        Event::PeerLost { .. } => "peer_lost",
+        Event::OfferPending { .. } => "offer_pending",
+        Event::OfferClosed { .. } => "offer_closed",
+        Event::TransferStarted { .. } => "transfer_started",
+        Event::TransferProgress { .. } => "transfer_progress",
+        Event::TransferFinished { .. } => "transfer_finished",
+        Event::TextReceived { .. } => "text_received",
+        Event::WormholeCode { .. } => "wormhole_code",
+        Event::BluetoothDevices { .. } => "bluetooth_devices",
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Start configuration.
+
+/// A directory from the start configuration: absolute, at most
+/// [`MAX_PATH_BYTES`], below the root, no `.` or `..` components (which
+/// would make the overlap check below meaningless), no NUL or other
+/// control characters.
+fn checked_dir(p: &str, what: &str) -> Result<PathBuf, ErrorInfo> {
+    let bad = |why: &str| ErrorInfo::new(ErrorCode::BadCommand, format!("{what} {why}"));
+    let path = Path::new(p);
+    if p.len() > MAX_PATH_BYTES {
+        return Err(bad("is too long"));
+    }
+    if p.chars().any(char::is_control) {
+        return Err(bad("contains control characters"));
+    }
+    if !path.is_absolute() {
+        return Err(bad("must be absolute"));
+    }
+    if p.split('/').any(|c| c == "." || c == "..") {
+        return Err(bad("must not contain . or .."));
+    }
+    if path.parent().is_none() {
+        return Err(bad("must not be the root directory"));
+    }
+    Ok(path.to_path_buf())
+}
+
+/// The data directory holds the settings and the TLS key; the download
+/// directory holds whatever peers send. Neither may be inside the other,
+/// or a received file could land among the secrets (or the secrets in
+/// `~/Downloads`).
+fn apart(data: &Path, download: &Path) -> Result<(), ErrorInfo> {
+    if data.starts_with(download) || download.starts_with(data) {
+        return Err(ErrorInfo::new(
+            ErrorCode::BadCommand,
+            "data_dir and download_dir must be separate directories",
+        ));
+    }
+    Ok(())
+}
+
+fn resolved(p: &Path) -> Result<PathBuf, ErrorInfo> {
+    std::fs::canonicalize(p).map_err(|e| ErrorInfo::new(ErrorCode::Storage, e.to_string()))
+}
+
+/// The device model from `/etc/hw-release`, after S2; empty if unknown.
 fn read_hw_model() -> String {
-    use std::io::Read as _;
-    let mut buf = String::new();
-    let read = std::fs::File::open("/etc/hw-release")
-        .and_then(|f| f.take(MAX_HW_RELEASE_BYTES).read_to_string(&mut buf));
+    read_hw_model_from(Path::new(HW_RELEASE))
+}
+
+fn read_hw_model_from(path: &Path) -> String {
+    // A regular file only: opening a FIFO would block start until a writer
+    // came along, and a device could be read forever.
+    match std::fs::metadata(path) {
+        Ok(m) if m.is_file() => {}
+        _ => return String::new(),
+    }
+    let mut buf = Vec::new();
+    let read =
+        std::fs::File::open(path).and_then(|f| f.take(MAX_HW_RELEASE_BYTES).read_to_end(&mut buf));
     if read.is_err() {
         return String::new();
     }
-    let name = buf
-        .lines()
-        .find_map(|l| l.strip_prefix("NAME="))
-        .map(|v| v.trim().trim_matches('"'))
-        .unwrap_or("");
-    text::display(name, MAX_MODEL_CHARS)
+    parse_hw_release(&String::from_utf8_lossy(&buf))
 }
+
+/// The model from `hw-release` (the `os-release(5)` format): `NAME=`, else
+/// the adaptation's device name `MER_HA_DEVICE=`, after S2.
+fn parse_hw_release(content: &str) -> String {
+    let mut name = None;
+    let mut device = None;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let slot = match key.trim() {
+            "NAME" => &mut name,
+            "MER_HA_DEVICE" => &mut device,
+            _ => continue,
+        };
+        if slot.is_none() {
+            *slot = Some(unquote(value));
+        }
+    }
+    [name, device]
+        .into_iter()
+        .flatten()
+        .map(|v| text::display(&v, MAX_MODEL_CHARS))
+        .find(|v| !v.is_empty())
+        .unwrap_or_default()
+}
+
+/// An `os-release(5)` value: optionally in double quotes, with `\` escaping
+/// the next character, or in single quotes, taken literally.
+fn unquote(raw: &str) -> String {
+    let raw = raw.trim();
+    if let Some(inner) = raw.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')) {
+        return inner.to_owned();
+    }
+    let Some(inner) = raw.strip_prefix('"').and_then(|s| s.strip_suffix('"')) else {
+        return raw.to_owned();
+    };
+    let mut out = String::with_capacity(inner.len());
+    let mut escaped = false;
+    for c in inner.chars() {
+        if escaped || c != '\\' {
+            out.push(c);
+            escaped = false;
+        } else {
+            escaped = true;
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// Sending.
 
 /// Checks everything a `send` names before any adapter sees it.
 async fn prepare(items: Vec<SendItem>) -> Result<Vec<Outgoing>, ErrorInfo> {
@@ -603,23 +1411,33 @@ fn guess_mime(name: &str) -> Option<String> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::disallowed_methods, // Tests set the scene with plain writes.
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_possible_truncation
+)]
 mod tests {
     use super::*;
-    use crate::api::RequestId;
-    use std::sync::Mutex;
+    use std::sync::mpsc;
+    use std::time::Instant;
+    use sukkula_core::consent::Closed;
 
-    fn start_engine(dir: &Path) -> (Engine, Arc<Mutex<Vec<Event>>>) {
-        let log = Arc::new(Mutex::new(Vec::new()));
-        let l = log.clone();
-        let sink: EventSink = Arc::new(move |e| l.lock().unwrap().push(e));
-        let cfg = StartConfig {
+    fn config(dir: &Path) -> StartConfig {
+        StartConfig {
             v: API_VERSION,
             data_dir: dir.join("data").to_string_lossy().into_owned(),
             download_dir: dir.join("dl").to_string_lossy().into_owned(),
             device_model: Some("Test Phone".into()),
             allow_loopback: true,
-        };
-        (Engine::start(cfg, sink).unwrap(), log)
+        }
+    }
+
+    fn start_engine(dir: &Path) -> (Engine, Arc<Mutex<Vec<Event>>>) {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let l = log.clone();
+        let sink: EventSink = Arc::new(move |e| l.lock().unwrap().push(e));
+        (Engine::start(config(dir), sink).unwrap(), log)
     }
 
     fn wait_for_reply(log: &Arc<Mutex<Vec<Event>>>, id: RequestId) -> Event {
@@ -637,12 +1455,36 @@ mod tests {
         panic!("no reply to {id}");
     }
 
+    fn recording_delivery() -> (Delivery, Arc<Mutex<Vec<Event>>>) {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let l = log.clone();
+        let sink: EventSink = Arc::new(move |e| l.lock().unwrap().push(e));
+        (Delivery::spawn(sink).unwrap(), log)
+    }
+
+    fn progress(n: u64) -> Event {
+        Event::TransferProgress {
+            transfer: 1,
+            bytes: n,
+            total: u64::MAX,
+        }
+    }
+
+    fn wait_until(what: &str, mut f: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !f() {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
     #[test]
     fn start_emits_started_settings_receiving() {
         let dir = tempfile::tempdir().unwrap();
         let (engine, log) = start_engine(dir.path());
         {
             let log = log.lock().unwrap();
+            assert_eq!(log.len(), 3, "{log:?}");
             assert!(matches!(
                 log[0],
                 Event::Started {
@@ -717,6 +1559,430 @@ mod tests {
         let n = log.lock().unwrap().len();
         std::thread::sleep(Duration::from_millis(50));
         assert_eq!(log.lock().unwrap().len(), n);
+    }
+
+    #[test]
+    fn a_panicking_command_is_still_answered_once() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let (delivery, log) = recording_delivery();
+        let slots = Arc::new(AtomicUsize::new(0));
+        let guard = |id| {
+            ReplyGuard::new(
+                delivery.gate.clone(),
+                id,
+                Permit::acquire(&slots).unwrap(),
+                CancellationToken::new(),
+            )
+        };
+        spawn_reply(runtime.handle(), guard(1), async {
+            panic!("a bug in dispatch");
+        });
+        spawn_reply(runtime.handle(), guard(2), async { Ok(Some(9)) });
+        spawn_reply(runtime.handle(), guard(3), std::future::pending());
+        wait_until("two replies", || log.lock().unwrap().len() == 2);
+        // The runtime drops the pending task, and its guard answers it.
+        drop(runtime);
+        wait_until("three replies", || log.lock().unwrap().len() == 3);
+        std::thread::sleep(Duration::from_millis(20));
+        let log = log.lock().unwrap();
+        assert_eq!(log.len(), 3);
+        for id in 1..=3 {
+            let replies: Vec<_> = log
+                .iter()
+                .filter(|e| matches!(e, Event::Reply { id: i, .. } if *i == id))
+                .collect();
+            assert_eq!(replies.len(), 1, "id {id}: {log:?}");
+            let expect_ok = id == 2;
+            assert!(
+                matches!(replies[0], Event::Reply { ok, .. } if *ok == expect_ok),
+                "{replies:?}"
+            );
+        }
+        assert_eq!(slots.load(Ordering::Acquire), 0, "every slot came back");
+    }
+
+    #[test]
+    fn slots_are_bounded_and_come_back() {
+        let slots = Arc::new(AtomicUsize::new(0));
+        let held: Vec<_> = (0..MAX_IN_FLIGHT_COMMANDS)
+            .map(|_| Permit::acquire(&slots).unwrap())
+            .collect();
+        assert!(Permit::acquire(&slots).is_none());
+        drop(held);
+        assert_eq!(slots.load(Ordering::Acquire), 0);
+        assert!(Permit::acquire(&slots).is_some());
+    }
+
+    #[test]
+    fn a_flood_of_commands_is_refused_not_queued() {
+        let dir = tempfile::tempdir().unwrap();
+        // A sink that holds every event until told to go on: no reply is
+        // delivered, so no slot comes back.
+        let (go_tx, go_rx) = mpsc::channel::<()>();
+        let go_rx = Mutex::new(go_rx);
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let l = log.clone();
+        let started = Arc::new(AtomicUsize::new(0));
+        let s = started.clone();
+        let sink: EventSink = Arc::new(move |e: Event| {
+            if s.fetch_add(1, Ordering::SeqCst) >= 3 {
+                let _ = go_rx.lock().unwrap().recv();
+            }
+            l.lock().unwrap().push(e);
+        });
+        let engine = Engine::start(config(dir.path()), sink).unwrap();
+        let mut taken = 0;
+        let mut refused = 0;
+        for id in 0..(MAX_IN_FLIGHT_COMMANDS as u64 * 4) {
+            match engine.try_command_json(&format!(
+                r#"{{"v":1,"id":{id},"cmd":{{"type":"answer","offer":1,"accept":false}}}}"#
+            )) {
+                Ok(()) => taken += 1,
+                Err(Refused::Busy) => refused += 1,
+                Err(e) => panic!("{e}"),
+            }
+        }
+        assert_eq!(taken, MAX_IN_FLIGHT_COMMANDS);
+        assert_eq!(refused, MAX_IN_FLIGHT_COMMANDS * 3);
+        for _ in 0..taken {
+            go_tx.send(()).unwrap();
+        }
+        wait_until("every reply", || log.lock().unwrap().len() == 3 + taken);
+        wait_until("every slot", || {
+            engine.hub.in_flight.load(Ordering::Acquire) == 0
+        });
+        // Room again.
+        engine
+            .try_command_json(r#"{"v":1,"id":999,"cmd":{"type":"get_settings"}}"#)
+            .unwrap();
+        drop(go_tx);
+        engine.stop();
+    }
+
+    #[test]
+    fn the_queue_is_bounded_and_waits_for_room() {
+        let (go_tx, go_rx) = mpsc::channel::<()>();
+        let go_rx = Mutex::new(go_rx);
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let l = log.clone();
+        let sink: EventSink = Arc::new(move |e: Event| {
+            let _ = go_rx.lock().unwrap().recv();
+            l.lock().unwrap().push(e);
+        });
+        let delivery = Delivery::spawn(sink).unwrap();
+        let gate = delivery.gate.clone();
+        let total = MAX_QUEUED_EVENTS + 100;
+        let pushed = Arc::new(AtomicUsize::new(0));
+        let p = pushed.clone();
+        let g = gate.clone();
+        let emitter = std::thread::spawn(move || {
+            for n in 0..total {
+                g.emit(progress(n as u64));
+                p.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+        // One is in the sink, MAX_QUEUED_EVENTS wait, and the emitter is
+        // stuck on the next.
+        wait_until("a full queue", || {
+            pushed.load(Ordering::SeqCst) == MAX_QUEUED_EVENTS + 1
+        });
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(pushed.load(Ordering::SeqCst), MAX_QUEUED_EVENTS + 1);
+        assert!(gate.lock().held_events <= MAX_QUEUED_EVENTS);
+        // A reply holding a slot does not wait.
+        let slots = Arc::new(AtomicUsize::new(0));
+        assert!(
+            gate.push(reply_event(1, Ok(None)), Permit::acquire(&slots))
+                .is_some()
+        );
+        for _ in 0..=total {
+            go_tx.send(()).unwrap();
+        }
+        emitter.join().unwrap();
+        wait_until("everything", || log.lock().unwrap().len() == total + 1);
+        // In order, the reply after the events queued before it.
+        let log = log.lock().unwrap();
+        let order: Vec<u64> = log
+            .iter()
+            .filter_map(|e| match e {
+                Event::TransferProgress { bytes, .. } => Some(*bytes),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(order, (0..total as u64).collect::<Vec<_>>());
+        drop(log);
+        drop(delivery);
+        assert_eq!(slots.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn the_queue_is_bounded_in_bytes_too() {
+        let (go_tx, go_rx) = mpsc::channel::<()>();
+        let go_rx = Mutex::new(go_rx);
+        let sink: EventSink = Arc::new(move |_: Event| {
+            let _ = go_rx.lock().unwrap().recv();
+        });
+        let delivery = Delivery::spawn(sink).unwrap();
+        let gate = delivery.gate.clone();
+        // About 200 KiB each: the byte bound binds long before the count.
+        let big = || Event::PeerLost {
+            peer: "x".repeat(200 * 1024),
+        };
+        let pushed = Arc::new(AtomicUsize::new(0));
+        let p = pushed.clone();
+        let g = gate.clone();
+        let emitter = std::thread::spawn(move || {
+            for _ in 0..40 {
+                g.emit(big());
+                p.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+        wait_until("a full queue", || pushed.load(Ordering::SeqCst) >= 10);
+        std::thread::sleep(Duration::from_millis(50));
+        let n = pushed.load(Ordering::SeqCst);
+        assert!(n < 40, "{n}");
+        assert!(gate.lock().held_bytes <= MAX_QUEUED_BYTES);
+        drop(go_tx);
+        emitter.join().unwrap();
+        drop(delivery);
+    }
+
+    #[test]
+    fn the_sink_may_emit_without_deadlocking() {
+        let slot: Arc<Mutex<Option<Arc<Gate>>>> = Arc::new(Mutex::new(None));
+        let s = slot.clone();
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let l = log.clone();
+        let sink: EventSink = Arc::new(move |e: Event| {
+            if let Event::PeerLost { peer } = &e
+                && peer == "echo"
+            {
+                let gate = s.lock().unwrap().clone().unwrap();
+                // Far more than fit: the delivery thread never waits.
+                for n in 0..(MAX_QUEUED_EVENTS as u64 * 2) {
+                    gate.emit(progress(n));
+                }
+            }
+            l.lock().unwrap().push(e);
+        });
+        let delivery = Delivery::spawn(sink).unwrap();
+        *slot.lock().unwrap() = Some(delivery.gate.clone());
+        delivery.gate.emit(Event::PeerLost {
+            peer: "echo".into(),
+        });
+        wait_until("every echo", || {
+            log.lock().unwrap().len() == 1 + MAX_QUEUED_EVENTS * 2
+        });
+        slot.lock().unwrap().take();
+        drop(delivery);
+    }
+
+    #[test]
+    fn oversized_events_are_replaced_or_dropped() {
+        let (delivery, log) = recording_delivery();
+        let huge = "x".repeat(MAX_EVENT_BYTES);
+        let slots = Arc::new(AtomicUsize::new(0));
+        delivery.gate.push(
+            Event::Reply {
+                id: 7,
+                ok: false,
+                error: Some(ErrorInfo {
+                    code: ErrorCode::Internal,
+                    message: huge.clone(),
+                }),
+                transfer: None,
+            },
+            Permit::acquire(&slots),
+        );
+        delivery.gate.emit(Event::TransferFinished {
+            transfer: 3,
+            outcome: Outcome::Done,
+            saved: vec![huge.clone()],
+        });
+        delivery.gate.emit(Event::PeerLost { peer: huge });
+        delivery.gate.emit(Event::OfferClosed {
+            offer: 1,
+            reason: Closed::Declined,
+        });
+        wait_until("three events", || log.lock().unwrap().len() == 3);
+        std::thread::sleep(Duration::from_millis(20));
+        let log = log.lock().unwrap();
+        assert_eq!(log.len(), 3, "the peer event was dropped");
+        assert!(
+            matches!(&log[0], Event::Reply { id: 7, ok: false, error: Some(e), .. } if e.code == ErrorCode::Internal && e.message.len() < 100)
+        );
+        assert!(matches!(
+            &log[1],
+            Event::TransferFinished {
+                transfer: 3,
+                outcome: Outcome::Failed { .. },
+                saved,
+            } if saved.is_empty()
+        ));
+        assert!(matches!(log[2], Event::OfferClosed { offer: 1, .. }));
+        for e in log.iter() {
+            assert!(encoded_len(e).is_some());
+        }
+    }
+
+    #[test]
+    fn stop_from_inside_the_sink_does_not_deadlock() {
+        let dir = tempfile::tempdir().unwrap();
+        let slot: Arc<Mutex<Option<Engine>>> = Arc::new(Mutex::new(None));
+        let s = slot.clone();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let c = calls.clone();
+        let (done_tx, done_rx) = mpsc::channel();
+        let done_tx = Mutex::new(done_tx);
+        let sink: EventSink = Arc::new(move |e: Event| {
+            c.fetch_add(1, Ordering::SeqCst);
+            if matches!(e, Event::Reply { id: 1, .. }) {
+                let engine = s.lock().unwrap().take().unwrap();
+                engine.stop();
+                done_tx.lock().unwrap().send(()).unwrap();
+            }
+        });
+        let engine = Engine::start(config(dir.path()), sink).unwrap();
+        {
+            let mut held = slot.lock().unwrap();
+            let engine = held.insert(engine);
+            engine.command_json(r#"{"v":1,"id":1,"cmd":{"type":"get_settings"}}"#);
+        }
+        done_rx.recv_timeout(Duration::from_secs(20)).unwrap();
+        let n = calls.load(Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(calls.load(Ordering::SeqCst), n, "called after stop");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn start_and_stop_inside_another_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let (engine, log) = start_engine(dir.path());
+        engine.command_json(r#"{"v":1,"id":1,"cmd":{"type":"get_settings"}}"#);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        engine.stop();
+        let n = log.lock().unwrap().len();
+        assert!(n >= 3);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(log.lock().unwrap().len(), n);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn drop_inside_a_current_thread_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let (engine, _log) = start_engine(dir.path());
+        drop(engine);
+    }
+
+    #[test]
+    fn config_paths_are_checked() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().to_string_lossy().into_owned();
+        let sink: EventSink = Arc::new(|_: Event| panic!("no event for a failed start"));
+        let cases = [
+            ("relative/data".to_owned(), format!("{base}/dl")),
+            (format!("{base}/data"), format!("{base}/data")),
+            (format!("{base}/data"), format!("{base}/data/dl")),
+            (format!("{base}/dl/data"), format!("{base}/dl")),
+            (format!("{base}/a/../data"), format!("{base}/dl")),
+            (format!("{base}/./data"), format!("{base}/dl")),
+            (format!("{base}/da\nta"), format!("{base}/dl")),
+            (format!("{base}/data\0"), format!("{base}/dl")),
+            ("/".to_owned(), format!("{base}/dl")),
+            (
+                format!("/{}", "a".repeat(MAX_PATH_BYTES)),
+                format!("{base}/dl"),
+            ),
+        ];
+        for (data, dl) in cases {
+            let cfg = StartConfig {
+                v: API_VERSION,
+                data_dir: data.clone(),
+                download_dir: dl.clone(),
+                device_model: None,
+                allow_loopback: false,
+            };
+            match Engine::start(cfg, sink.clone()) {
+                Err(e) => assert_eq!(e.code, ErrorCode::BadCommand, "{data} {dl}"),
+                Ok(_) => panic!("{data} {dl} was accepted"),
+            }
+        }
+        // Different strings, one directory.
+        std::fs::create_dir(dir.path().join("real")).unwrap();
+        std::os::unix::fs::symlink(dir.path().join("real"), dir.path().join("link")).unwrap();
+        let cfg = StartConfig {
+            v: API_VERSION,
+            data_dir: format!("{base}/link/data"),
+            download_dir: format!("{base}/real"),
+            device_model: None,
+            allow_loopback: false,
+        };
+        assert_eq!(
+            Engine::start(cfg, sink.clone()).err().map(|e| e.code),
+            Some(ErrorCode::BadCommand)
+        );
+        let cfg = StartConfig {
+            v: 2,
+            ..config(dir.path())
+        };
+        assert_eq!(
+            Engine::start(cfg, sink).err().map(|e| e.code),
+            Some(ErrorCode::BadVersion)
+        );
+    }
+
+    #[test]
+    fn hw_release_names_the_model() {
+        assert_eq!(
+            parse_hw_release(
+                "# comment\nID=x\nNAME=\"Jolla Phone\"\nMER_HA_DEVICE=jp2026\nVERSION_ID=5.2\n"
+            ),
+            "Jolla Phone"
+        );
+        assert_eq!(parse_hw_release("MER_HA_DEVICE=jp2026\n"), "jp2026");
+        assert_eq!(
+            parse_hw_release("NAME=\"\u{202E}\"\nMER_HA_DEVICE='jp2026'\n"),
+            "jp2026",
+            "an empty name after S2 falls through"
+        );
+        assert_eq!(parse_hw_release("NAME='It''s'\n"), "It''s");
+        assert_eq!(parse_hw_release("NAME=\"A \\\"B\\\" C\"\n"), "A \"B\" C");
+        assert_eq!(parse_hw_release("NAME=Plain Name  \n"), "Plain Name");
+        assert_eq!(parse_hw_release("NAME=first\nNAME=second\n"), "first");
+        assert_eq!(parse_hw_release(""), "");
+        assert_eq!(parse_hw_release("garbage\n=\n==\n"), "");
+        let long = parse_hw_release(&format!("NAME={}", "x".repeat(1000)));
+        assert_eq!(long.chars().count(), MAX_MODEL_CHARS);
+        assert_eq!(
+            parse_hw_release("NAME=\"Evil\u{1b}[31m\u{202E}Phone\"\n"),
+            "Evil[31mPhone"
+        );
+    }
+
+    #[test]
+    fn hw_release_reads_are_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hw-release");
+        let mut content = "#".repeat(usize::try_from(MAX_HW_RELEASE_BYTES).unwrap());
+        content.push_str("\nNAME=Beyond the cap\n");
+        std::fs::write(&path, &content).unwrap();
+        assert_eq!(read_hw_model_from(&path), "");
+        std::fs::write(&path, b"NAME=Jolla \xff Phone\n").unwrap();
+        assert_eq!(read_hw_model_from(&path), "Jolla \u{FFFD} Phone");
+        assert_eq!(read_hw_model_from(&dir.path().join("missing")), "");
+        assert_eq!(read_hw_model_from(dir.path()), "", "a directory");
+        let fifo = dir.path().join("fifo");
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            &fifo,
+            rustix::fs::FileType::Fifo,
+            rustix::fs::Mode::from_raw_mode(0o600),
+            0,
+        )
+        .unwrap();
+        let started = Instant::now();
+        assert_eq!(read_hw_model_from(&fifo), "", "a FIFO is not opened");
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[tokio::test]

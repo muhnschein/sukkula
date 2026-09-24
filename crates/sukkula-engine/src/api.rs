@@ -19,6 +19,7 @@ use sukkula_core::Protocol;
 use sukkula_core::config::Settings;
 use sukkula_core::consent::Closed;
 use sukkula_core::limits::MAX_MESSAGE_BYTES;
+use sukkula_core::text;
 use thiserror::Error;
 
 /// The version of this interface. Bumped on any incompatible change.
@@ -36,6 +37,17 @@ pub type RequestId = u64;
 /// Most files an [`OfferView`] lists by name; the rest are counted in
 /// `more_files`. Keeps an event bounded when an offer carries 500 files.
 pub const MAX_LISTED_FILES: usize = 50;
+
+/// Most commands the engine holds at once, from being taken until their
+/// [`Event::Reply`] has been handed to the UI. One more is refused without
+/// a reply (`SUKKULA_ERR_BUSY` at the C ABI), so a UI stuck in a loop costs
+/// bounded memory rather than an ever longer queue.
+pub const MAX_IN_FLIGHT_COMMANDS: usize = 64;
+
+/// Longest [`ErrorInfo::message`], in characters. Messages are for logs;
+/// the cap keeps a serde error that quotes a 60 KiB command from making
+/// its reply 60 KiB long.
+pub const MAX_ERROR_MESSAGE_CHARS: usize = 256;
 
 /// What the shell passes to `sukkula_start`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -495,12 +507,16 @@ pub enum ParseError {
 }
 
 impl ErrorInfo {
-    /// An error with a message.
+    /// An error with a message. The message goes through S2 and is capped
+    /// at [`MAX_ERROR_MESSAGE_CHARS`]: it ends up in logs, and a message
+    /// that quotes its input (serde's do) must not carry control characters
+    /// or unbounded length there.
     #[must_use]
     pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
+        let message: String = message.into();
         ErrorInfo {
             code,
-            message: message.into(),
+            message: text::display(&message, MAX_ERROR_MESSAGE_CHARS),
         }
     }
 }
@@ -520,6 +536,12 @@ impl From<ParseError> for ErrorInfo {
 /// The `id` is recovered on a best-effort basis when the rest is malformed,
 /// so the UI still gets a [`Event::Reply`] it can match.
 ///
+/// The work is linear in the input and the input is at most
+/// [`MAX_MESSAGE_BYTES`]: the length is checked before a byte is parsed,
+/// serde_json's recursion limit (128) bounds nesting, and a malformed
+/// command costs at most two passes (the second only looks for `id`). The
+/// fuzz target in `fuzz/` drives this function.
+///
 /// # Errors
 ///
 /// [`ParseError`], with the id if one could be read.
@@ -536,7 +558,7 @@ pub fn parse_command(json: &str) -> Result<CommandEnvelope, (Option<RequestId>, 
                 id: RequestId,
             }
             let id = serde_json::from_str::<IdOnly>(json).ok().map(|i| i.id);
-            Err((id, ParseError::Malformed(e.to_string())))
+            Err((id, ParseError::Malformed(short(&e))))
         }
     }
 }
@@ -551,11 +573,17 @@ pub fn parse_start_config(json: &str) -> Result<StartConfig, ParseError> {
         return Err(ParseError::TooLarge);
     }
     let cfg: StartConfig =
-        serde_json::from_str(json).map_err(|e| ParseError::Malformed(e.to_string()))?;
+        serde_json::from_str(json).map_err(|e| ParseError::Malformed(short(&e)))?;
     if cfg.v != API_VERSION {
         return Err(ParseError::Version(cfg.v));
     }
     Ok(cfg)
+}
+
+/// A serde error as a log line: S2, and capped. serde quotes unknown
+/// variants and fields verbatim, and the command may be 64 KiB of them.
+fn short(e: &serde_json::Error) -> String {
+    text::display(&e.to_string(), MAX_ERROR_MESSAGE_CHARS)
 }
 
 #[cfg(test)]
