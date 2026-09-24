@@ -42,6 +42,8 @@ Page {
     readonly property bool hasText: page.texts.length > 0 || textArea.text.length > 0
     // Most files one offer may carry (S6), which the engine checks again.
     readonly property int maxFiles: 500
+    // ~/Downloads, the one folder Sailjail lets Sukkula read (spec §2).
+    readonly property string downloads: StandardPaths.download
 
     function availableProtocols() {
         var order = ["local_send", "quick_share", "wormhole", "bluetooth"]
@@ -229,20 +231,44 @@ Page {
             Repeater {
                 model: page.files
                 delegate: ListItem {
+                    id: fileItem
                     width: column.width
-                    contentHeight: Theme.itemSizeSmall
+                    contentHeight: Math.max(Theme.itemSizeSmall, fileColumn.height + 2 * Theme.paddingSmall)
 
-                    Label {
-                        objectName: "sendFileName"
+                    // Sailjail grants Downloads only (spec §2): a file from
+                    // anywhere else -- a picture shared from the gallery --
+                    // may be out of the app's reach. Said up front; the
+                    // engine's bad_file says it again if so.
+                    readonly property bool outside: page.downloads.length > 0
+                        && modelData.path.indexOf(page.downloads + "/") !== 0
+
+                    Column {
+                        id: fileColumn
                         anchors {
                             left: parent.left
                             leftMargin: Theme.horizontalPageMargin
                             right: removeButton.left
                             verticalCenter: parent.verticalCenter
                         }
-                        text: modelData.name
-                        textFormat: Text.PlainText
-                        elide: Text.ElideMiddle
+
+                        Label {
+                            objectName: "sendFileName"
+                            width: parent.width
+                            text: modelData.name
+                            textFormat: Text.PlainText
+                            elide: Text.ElideMiddle
+                        }
+                        Label {
+                            objectName: "sendFileOutside"
+                            width: parent.width
+                            visible: fileItem.outside
+                            //: Send page: a file outside ~/Downloads, which the sandbox may not let Sukkula read.
+                            text: qsTr("Outside Downloads: Sukkula may not be allowed to read it.")
+                            textFormat: Text.PlainText
+                            wrapMode: Text.Wrap
+                            font.pixelSize: Theme.fontSizeExtraSmall
+                            color: Theme.secondaryHighlightColor
+                        }
                     }
                     IconButton {
                         id: removeButton

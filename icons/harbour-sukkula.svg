@@ -2,7 +2,7 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later
      Sukkula's icon: a loom shuttle, pointed at both ends because it goes
      both ways, on a round badge. The source of the four PNG sizes Harbour
-     requires; regenerate them with icons/render.sh. -->
+     requires; regenerate them with `sh icons/render.sh`. -->
 <svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
   <defs>
     <linearGradient id="badge" x1="0" y1="0" x2="1" y2="1">

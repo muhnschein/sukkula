@@ -164,10 +164,6 @@
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <source>A file could not be read.</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
         <source>Too large, or too many files.</source>
         <translation type="unfinished"></translation>
     </message>
@@ -193,6 +189,10 @@
     </message>
     <message>
         <source>Something went wrong.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>A file could not be read. Sukkula can read files in Downloads only.</source>
         <translation type="unfinished"></translation>
     </message>
 </context>
@@ -361,6 +361,11 @@ Opens the file picker.</extracomment>
     <message>
         <source>Add a file or type a text first.</source>
         <extracomment>Send page with nothing chosen yet.</extracomment>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Outside Downloads: Sukkula may not be allowed to read it.</source>
+        <extracomment>Send page: a file outside ~/Downloads, which the sandbox may not let Sukkula read.</extracomment>
         <translation type="unfinished"></translation>
     </message>
 </context>

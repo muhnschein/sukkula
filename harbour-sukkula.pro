@@ -41,8 +41,9 @@ isEmpty(SUKKULA_RUST_LIB): SUKKULA_RUST_LIB = $$PWD/target/aarch64-unknown-linux
 # with make's "No rule to make target", which names the path.
 PRE_TARGETDEPS += $$SUKKULA_RUST_LIB
 # What the static library needs from the system, all on Harbour's list:
-# the system libdbus-1 (BlueZ, never a vendored copy), and glibc.
-LIBS += $$SUKKULA_RUST_LIB -ldbus-1 -lpthread -ldl -lm -lrt
+# the system libdbus-1 (BlueZ, never a vendored copy), and glibc. Never
+# -lutil, which rustc names and nothing uses (docs/FFI.md, Linking).
+LIBS += $$SUKKULA_RUST_LIB -ldbus-1 -lpthread -ldl -lm
 
 # Stack protector, fortify, PIE, full RELRO, --as-needed, main() as the
 # only export, and stripping at link: see src/hardening.pri, which the host

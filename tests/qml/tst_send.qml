@@ -186,6 +186,33 @@ Script {
             test.compare(sent[sent.length - 1].target, { protocol: "bluetooth", address: "AA:BB:CC:DD:EE:FF" })
         },
         function () {
+            test.compare(window.pageStack.currentPage.objectName, "mainPage", "the Bluetooth send went")
+            // A file from outside Downloads -- the gallery's, through the
+            // Share menu -- is flagged, and the engine's bad_file is
+            // explained: Sailjail grants Downloads only.
+            bridge.autoReply = false
+            test.page = window.pageStack.push(Qt.resolvedUrl("../../qml/pages/SendPage.qml"), {
+                engine: engine,
+                items: [{ kind: "file", path: "/home/defaultuser/Downloads/ok.txt" },
+                        { kind: "file", path: "/home/defaultuser/Pictures/Jolla/p.jpg" }] })
+            bridge.emitEvent(Ev.peerFound("p9", "local_send", "Laptop"))
+        },
+        function () {
+            var flags = probe.findAll(test.page, "sendFileOutside")
+            test.compare(flags.length, 2)
+            test.compare([flags[0].visible, flags[1].visible], [false, true], "only the Pictures file")
+            probe.find(test.page, "peerItem").clicked()
+            var cmds = bridge.parsedCommands()
+            bridge.emitEvent(Ev.reply(cmds[cmds.length - 1].id, false, "bad_file"))
+        },
+        function () {
+            test.compare(window.pageStack.currentPage.objectName, "sendPage", "the page stays, to fix it")
+            test.compare(probe.find(test.page, "bannerLabel").text,
+                         "A file could not be read. Sukkula can read files in Downloads only.")
+            bridge.autoReply = true
+            window.pageStack.pop()
+        },
+        function () {
             // Every protocol off: nothing to choose.
             bridge.emitEvent(Ev.settings({ localsend: { enabled: false, pin: null },
                                            quickshare: { enabled: false, visibility: "hidden", ble_nudge: false },

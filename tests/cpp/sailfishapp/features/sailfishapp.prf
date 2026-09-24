@@ -36,10 +36,10 @@ isEmpty(SAILFISHAPP_ICONS) {
 
 INSTALLS += target desktop
 
-# The SDK's feature adds these; the booster needs position-independent
-# code.
+# The SDK's feature adds these: the booster dlopen()s a position-independent
+# binary and finds main() through -rdynamic.
 QMAKE_CXXFLAGS += -fPIC -fvisibility=hidden -fvisibility-inlines-hidden
-QMAKE_LFLAGS += -pie
+QMAKE_LFLAGS += -pie -rdynamic
 
 # In place of PKGCONFIG += sailfishapp.
 INCLUDEPATH += $$PWD/..

@@ -67,6 +67,42 @@ build_pro() { # dir pro [qmake args...]
 engines=stub
 [ "$engine" = rust ] && engines="stub rust"
 
+# What Harbour reads from a binary (1.6.1, 1.7): main() the only dynamic
+# export, PIE, full RELRO, stripped, and only allowed libraries recorded.
+elf_checks() { # binary label
+    before=$status
+    # The C runtime's and the linker's own symbols, which -rdynamic (the
+    # SDK's sailfishapp feature passes it) exports from every binary, are
+    # not ours; anything else besides main() -- a Bridge method, a
+    # sukkula_* function, a Rust symbol -- is a leak.
+    syms=$(readelf --dyn-syms -W "$1" | awk '$5 == "GLOBAL" && $7 != "UND" { print $8 }' | sed 's/@.*//' |
+        grep -v -x -E '_IO_stdin_used|__bss_start|__data_start|data_start|_edata|_end|_start|_init|_fini|__dso_handle' |
+        sort -u)
+    [ "$syms" = main ] || fail "$2 exports more than main(): $(printf '%s' "$syms" | tr '\n' ' ')"
+    readelf -d "$1" | grep -q 'BIND_NOW' || fail "$2: no BIND_NOW (-z now)"
+    readelf -lW "$1" | grep -q 'GNU_RELRO' || fail "$2: no GNU_RELRO segment"
+    readelf -hW "$1" | grep -q 'DYN' || fail "$2: not a position-independent executable"
+    if readelf -SW "$1" | grep -q ' \.symtab '; then
+        fail "$2: not stripped"
+    fi
+    needed=$(readelf -d "$1" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' | sort)
+    for lib in $needed; do
+        case $lib in
+            libQt5Core.so.5|libQt5Gui.so.5|libQt5Qml.so.5|libQt5Quick.so.5|libQt5DBus.so.5) ;;
+            libsailfishapp.so.1|libmdeclarativecache5.so.0|libdbus-1.so.3|libz.so.1) ;;
+            libc.so.6|libm.so.6|libdl.so.2|libpthread.so.0|librt.so.1|libgcc_s.so.1|libstdc++.so.6) ;;
+            # The dynamic loader, for __tls_get_addr (the Rust library's
+            # thread-locals): ld-linux-aarch64.so.1 is on Harbour's list,
+            # and this is the host's twin of it.
+            ld-linux-aarch64.so.1|ld-linux-x86-64.so.2) ;;
+            *) fail "$2 links $lib, which is not on Harbour's list" ;;
+        esac
+    done
+    if [ "$status" -eq "$before" ]; then
+        say "binary checks ($2): ok (needs: $(printf '%s' "$needed" | tr '\n' ' '))"
+    fi
+}
+
 # 1. The bridge.
 for e in $engines; do
     dir=$build/bridge-$e
@@ -117,39 +153,25 @@ for e in $engines; do
     fi
     [ "$status" -eq 0 ] && say "host app ($e engine): ok"
 
+
     # 3. What Harbour reads from the binary.
-    syms=$(readelf --dyn-syms -W "$app" | awk '$5 == "GLOBAL" && $7 != "UND" { print $8 }' | sed 's/@.*//' | sort -u)
-    [ "$syms" = main ] || fail "the binary exports more than main(): $(printf '%s ' $syms)"
-    readelf -d "$app" | grep -q 'BIND_NOW' || fail "no BIND_NOW (-z now)"
-    readelf -lW "$app" | grep -q 'GNU_RELRO' || fail "no GNU_RELRO segment"
-    readelf -hW "$app" | grep -q 'DYN' || fail "not a position-independent executable"
-    if readelf -SW "$app" | grep -q ' \.symtab '; then
-        fail "not stripped"
-    fi
-    needed=$(readelf -d "$app" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' | sort)
-    for lib in $needed; do
-        case $lib in
-            libQt5Core.so.5|libQt5Gui.so.5|libQt5Qml.so.5|libQt5Quick.so.5|libQt5DBus.so.5) ;;
-            libsailfishapp.so.1|libmdeclarativecache5.so.0|libdbus-1.so.3|libz.so.1) ;;
-            libc.so.6|libm.so.6|libdl.so.2|libpthread.so.0|librt.so.1|libgcc_s.so.1|libstdc++.so.6) ;;
-            # The dynamic loader, for __tls_get_addr (the Rust library's
-            # thread-locals): ld-linux-aarch64.so.1 is on Harbour's list,
-            # and this is the host's twin of it.
-            ld-linux-aarch64.so.1|ld-linux-x86-64.so.2) ;;
-            *) fail "links $lib, which is not on Harbour's list" ;;
-        esac
-    done
-    [ "$status" -eq 0 ] && say "binary checks ($e engine): ok (needs: $(printf '%s ' $needed))"
+    elf_checks "$app" "host app, $e engine"
 done
 
-# 4. The project file's install layout.
+# 4. The project file's install layout. Built fresh each time: which
+# library it links changes between runs, and make would not relink.
 dir=$build/pro
+rm -rf "$dir"
 mkdir -p "$dir"
 cc -c -O2 -std=c11 -D_POSIX_C_SOURCE=200809L -fPIC -I"$root/crates/sukkula-ffi/include" \
     "$root/tests/cpp/stub/sukkula_stub.c" -o "$dir/sukkula_stub.o"
 ar rcs "$dir/libsukkula_stub.a" "$dir/sukkula_stub.o"
+# The real archive when there is one: thousands of Rust symbols that
+# -rdynamic must not export.
+pro_lib=$dir/libsukkula_stub.a
+[ "$engine" = rust ] && pro_lib=$rust_lib
 if (cd "$dir" && QMAKEFEATURES="$root/tests/cpp/sailfishapp/features" \
-        "$qmake" "$root/harbour-sukkula.pro" SUKKULA_RUST_LIB="$dir/libsukkula_stub.a" >/dev/null \
+        "$qmake" "$root/harbour-sukkula.pro" SUKKULA_RUST_LIB="$pro_lib" >/dev/null \
         && make -s >/dev/null && rm -rf "$dir/root" && make -s install INSTALL_ROOT="$dir/root" >/dev/null); then
     got=$(cd "$dir/root" && find . -type f | sed 's|^\./|/|' | sort)
     want=$( (
@@ -173,9 +195,15 @@ if (cd "$dir" && QMAKEFEATURES="$root/tests/cpp/sailfishapp/features" \
     for f in $(cd "$dir/root" && find . -type f -perm /022); do
         fail "group- or world-writable: $f"
     done
+    # Linked as the SDK links it, -rdynamic included: still main() alone.
+    elf_checks "$dir/root/usr/bin/harbour-sukkula" "harbour-sukkula.pro build"
 else
     fail "harbour-sukkula.pro did not build or install on the host"
 fi
 
-[ "$status" -eq 0 ] && say "cpp tests: ok" || say "cpp tests: FAIL"
+if [ "$status" -eq 0 ]; then
+    say "cpp tests: ok"
+else
+    say "cpp tests: FAIL"
+fi
 exit "$status"
