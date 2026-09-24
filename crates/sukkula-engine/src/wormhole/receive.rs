@@ -45,10 +45,15 @@ pub(super) async fn start(inner: Arc<Inner>, raw_code: String) -> Result<Transfe
     let code = code::parse(&raw_code)?;
     let servers = Servers::from_settings(&inner.ctx.settings().wormhole)?;
     let shutdown = inner.ctx.shutdown_token().clone();
-    let before = CatchUnwind::new(until_accepted(&inner, code, &servers));
-    let (accepted, session, their) = tokio::select! {
-        r = before => r.unwrap_or_else(|Panicked| Err(panicked()))?,
-        () = shutdown.cancelled() => return Err(cancelled()),
+    let (accepted, session, their) = {
+        let _slot = inner.connecting_slot().ok_or_else(|| {
+            ErrorInfo::new(ErrorCode::TooLarge, "too many receives are connecting")
+        })?;
+        let before = CatchUnwind::new(until_accepted(&inner, code, &servers));
+        tokio::select! {
+            r = before => r.unwrap_or_else(|Panicked| Err(panicked()))?,
+            () = shutdown.cancelled() => return Err(cancelled()),
+        }
     };
     let id = accepted.transfer.id();
     tokio::spawn(async move {

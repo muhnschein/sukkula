@@ -671,6 +671,42 @@ async fn oversized_and_endless_server_messages_are_cut_off() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn receives_that_are_still_connecting_are_bounded() {
+    // Nameplates nobody is behind: each receive waits in the key exchange
+    // until its timeout, holding a mailbox connection and a guard.
+    let n = sukkula_engine::wormhole::MAX_CONNECTING_RECEIVES;
+    let w = world(
+        Behaviour {
+            nameplates: (1..=n + 1).map(|i| i.to_string()).collect(),
+            ..Behaviour::default()
+        },
+        RelayMode::Honest,
+    )
+    .await;
+    let waiting: Vec<_> = (1..=n)
+        .map(|i| receive(&w.side, format!("{i}-guitarist-revenge")))
+        .collect();
+    let start = tokio::time::Instant::now();
+    while w.mb.connections.load(Ordering::SeqCst) < n {
+        assert!(start.elapsed() < DEADLINE);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let e = w
+        .side
+        .adapter
+        .receive_code(format!("{}-guitarist-revenge", n + 1))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, ErrorCode::TooLarge);
+    assert_eq!(w.mb.connections.load(Ordering::SeqCst), n);
+    for r in waiting {
+        assert_eq!(r.await.unwrap().unwrap_err().code, ErrorCode::Network);
+    }
+    // The slots come back.
+    honest_transfer_still_works(&w).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_unreachable_mailbox_fails_fast() {
     // A port nothing listens on.
     let spare = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -698,15 +734,14 @@ async fn a_lying_record_length_is_refused_before_anything_is_allocated() {
     .await;
     let (code, _peer) = library_sender(&w, "x.bin", 50_000, content(50_000)).await;
     let rx = receive(&w.side, code);
-    let start = tokio::time::Instant::now();
     match accept_and_finish(&w.side, rx).await {
-        Outcome::Failed { error } => assert_eq!(error.code, ErrorCode::Network),
+        // The guard cut the connection: a failed read, not a timeout.
+        Outcome::Failed { error } => {
+            assert_eq!(error.code, ErrorCode::Network);
+            assert_eq!(error.message, "the transit connection failed");
+        }
         other => panic!("{other:?}"),
     }
-    assert!(
-        start.elapsed() < Duration::from_secs(2),
-        "the guard cut the connection; no timeout was needed"
-    );
     assert_eq!(w.rl.paired.load(Ordering::SeqCst), 1);
     assert!(w.side.received().is_empty());
 }

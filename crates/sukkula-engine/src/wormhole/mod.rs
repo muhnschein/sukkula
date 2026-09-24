@@ -109,6 +109,7 @@ mod transit;
 mod wire;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use sukkula_core::Protocol;
@@ -149,6 +150,11 @@ const MAX_EMPTY_RECORDS: u32 = 16;
 
 /// Bound on the goodbye (an error message, the mailbox close).
 const CLEANUP_WAIT: Duration = Duration::from_secs(2);
+
+/// Receives that may be between a typed code and an answered offer at
+/// once. Each holds a mailbox connection and a guard, and the consent
+/// queue takes only two offers anyway (F-C3).
+pub const MAX_CONNECTING_RECEIVES: usize = 4;
 
 /// How long the receiver may take to type our code.
 pub const PEER_WAIT: Duration = Duration::from_secs(10 * 60);
@@ -208,6 +214,7 @@ pub fn adapter_with(ctx: Arc<Ctx>, tuning: Tuning) -> Arc<dyn Adapter> {
         inner: Arc::new(Inner {
             ctx,
             tuning: tuning.clamped(),
+            connecting: AtomicUsize::new(0),
         }),
     })
 }
@@ -215,6 +222,33 @@ pub fn adapter_with(ctx: Arc<Ctx>, tuning: Tuning) -> Arc<dyn Adapter> {
 struct Inner {
     ctx: Arc<Ctx>,
     tuning: Tuning,
+    /// Receives before their offer is answered.
+    connecting: AtomicUsize,
+}
+
+impl Inner {
+    /// A slot for one receive before its answer, if one is free.
+    fn connecting_slot(&self) -> Option<Slot<'_>> {
+        self.connecting
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < MAX_CONNECTING_RECEIVES).then_some(n.saturating_add(1))
+            })
+            .ok()
+            .map(|_| Slot(&self.connecting))
+    }
+}
+
+/// Gives its slot back when dropped.
+struct Slot<'a>(&'a AtomicUsize);
+
+impl Drop for Slot<'_> {
+    fn drop(&mut self) {
+        let _ = self
+            .0
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                Some(n.saturating_sub(1))
+            });
+    }
 }
 
 struct WormholeAdapter {
