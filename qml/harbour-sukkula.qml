@@ -84,8 +84,14 @@ ApplicationWindow {
             var items = appWindow.pendingShare
             appWindow.pendingShare = null
             var main = pageStack.find(function (page) { return page.objectName === "mainPage" })
-            pageStack.replaceAbove(main, Qt.resolvedUrl("pages/SendPage.qml"),
-                                   { engine: sukkula, items: items })
+            var props = { engine: sukkula, items: items }
+            if (main) {
+                // Whatever was above the main page goes: one Send page.
+                pageStack.replaceAbove(main, Qt.resolvedUrl("pages/SendPage.qml"), props)
+            } else {
+                // Never replaceAbove(null): that would take the main page too.
+                pageStack.push(Qt.resolvedUrl("pages/SendPage.qml"), props)
+            }
         }
     }
 

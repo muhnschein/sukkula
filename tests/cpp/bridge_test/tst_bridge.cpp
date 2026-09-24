@@ -256,6 +256,42 @@ private slots:
 #endif
     }
 
+    void aBurstArrivesWholeInOrderAndBounded()
+    {
+#ifdef SUKKULA_STUB_ENGINE
+        Bridge bridge;
+        Sink sink;
+        connect(&bridge, eventSignal, &sink, &Sink::take);
+        QVERIFY(bridge.start());
+        QVERIFY(waitFor([&] { return sink.events.size() >= 3; }));
+        sink.events.clear();
+        QCOMPARE(bridge.command(QStringLiteral("{\"v\":1,\"id\":21,\"stub\":\"burst\"}")), int(SUKKULA_OK));
+        // The GUI thread looks away for a while: the engine thread must
+        // wait at the bound rather than queue 5000 events.
+        QThread::msleep(200);
+        QVERIFY(bridge.undelivered() <= Bridge::MaxUndelivered);
+        QVERIFY(bridge.undelivered() >= Bridge::MaxUndelivered / 2);
+        int most = 0;
+        QVERIFY(waitFor([&] {
+            most = qMax(most, bridge.undelivered());
+            return sink.events.size() == 5001;
+        }, 20000));
+        QVERIFY(most <= Bridge::MaxUndelivered);
+        for (int i = 0; i < 5000; i++) {
+            const QJsonObject o = QJsonDocument::fromJson(sink.events[i].toUtf8()).object();
+            if (o.value(QStringLiteral("bytes")).toInt() != i) {
+                QFAIL(qPrintable(QStringLiteral("event %1 out of order: %2").arg(i).arg(sink.events[i])));
+            }
+        }
+        QCOMPARE(typeOf(sink.events.last()), QStringLiteral("reply"));
+        QCOMPARE(bridge.undelivered(), 0);
+        QCOMPARE(sink.offThread, 0);
+        bridge.stop();
+#else
+        QSKIP("needs the stub engine");
+#endif
+    }
+
     void destroyingTheBridgeMidBurstIsSafe()
     {
 #ifdef SUKKULA_STUB_ENGINE

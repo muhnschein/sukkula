@@ -7,6 +7,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMetaObject>
+#include <QMutexLocker>
 #include <QStandardPaths>
 
 #include <sukkula.h>
@@ -51,7 +52,8 @@ bool Bridge::start()
     }
     // Sailjail grants ~/.local/share/<OrganizationName>/<ApplicationName>,
     // which is what AppDataLocation is once main() has set both names; and
-    // Downloads, where received files go (spec §2, S3).
+    // Downloads, where received files go (spec §2, S3). The two are
+    // siblings, as the engine requires.
     const QString data = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     const QString downloads = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
     const QByteArray config
@@ -64,7 +66,13 @@ bool Bridge::start()
             Q_ARG(QString,
                   QStringLiteral("{\"type\":\"fatal\",\"error\":{\"code\":\"storage\","
                                  "\"message\":\"no usable home directory\"}}")));
+        QMutexLocker lock(&m_lock);
+        m_undelivered++;
         return false;
+    }
+    {
+        QMutexLocker lock(&m_lock);
+        m_stopping = false;
     }
     m_engine = sukkula_start(config.constData(), &Bridge::onEvent, this);
     return m_engine != nullptr;
@@ -89,18 +97,40 @@ void Bridge::stop()
 {
     SukkulaEngine *engine = m_engine;
     m_engine = nullptr;
+    if (!engine) {
+        return;
+    }
+    {
+        // A callback waiting for room must not keep sukkula_stop() waiting.
+        QMutexLocker lock(&m_lock);
+        m_stopping = true;
+        m_drained.wakeAll();
+    }
     // Blocks until every engine thread is done; after this the callback
     // is never called again and `this` may go.
     sukkula_stop(engine);
     // Events the engine posted before it stopped have not been delivered
     // yet; they would describe an engine that no longer exists.
-    if (engine) {
-        QCoreApplication::removePostedEvents(this, QEvent::MetaCall);
-    }
+    QCoreApplication::removePostedEvents(this, QEvent::MetaCall);
+    QMutexLocker lock(&m_lock);
+    m_undelivered = 0;
+}
+
+int Bridge::undelivered() const
+{
+    QMutexLocker lock(&m_lock);
+    return m_undelivered;
 }
 
 void Bridge::deliver(const QString &json)
 {
+    {
+        QMutexLocker lock(&m_lock);
+        if (m_undelivered > 0) {
+            m_undelivered--;
+        }
+        m_drained.wakeAll();
+    }
     emit event(json);
 }
 
@@ -116,10 +146,24 @@ void Bridge::onEvent(const char *json, void *userdata)
     }
     const QString copy = QString::fromUtf8(json, int(length));
     auto *self = static_cast<Bridge *>(userdata);
-    // Queued, always: this is an engine thread, and QML may only be
-    // touched from the GUI thread. The posted event belongs to `self`, so
-    // if `self` is destroyed before it runs, Qt discards it -- and `self`
-    // cannot be destroyed while this call is running, because ~Bridge()
-    // waits in sukkula_stop() for it to return.
+    {
+        // Wait for room, in slices, for as long as the GUI thread is behind
+        // -- unless stop() has begun, which is waiting for this call. The
+        // GUI thread never waits for this thread otherwise: sukkula_command
+        // never blocks.
+        QMutexLocker lock(&self->m_lock);
+        while (self->m_undelivered >= MaxUndelivered && !self->m_stopping) {
+            self->m_drained.wait(&self->m_lock, 100);
+        }
+        if (self->m_stopping) {
+            return;
+        }
+        self->m_undelivered++;
+    }
+    // Queued, always: QML may only be touched from the GUI thread; never
+    // blocking-queued, which would deadlock against stop(). The posted
+    // event belongs to `self`, so if `self` is destroyed before it runs,
+    // Qt discards it -- and `self` cannot be destroyed while this call is
+    // running, because ~Bridge() waits in sukkula_stop() for it to return.
     QMetaObject::invokeMethod(self, "deliver", Qt::QueuedConnection, Q_ARG(QString, copy));
 }
