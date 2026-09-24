@@ -377,6 +377,31 @@ mod tests {
     }
 
     #[test]
+    fn a_file_owned_by_someone_else_is_refused() {
+        if !rustix::process::geteuid().is_root() {
+            eprintln!("skipped: not root, cannot chown");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        store.write("key.pem", b"planted").unwrap();
+        rustix::fs::chown(
+            dir.path().join("key.pem"),
+            Some(rustix::fs::Uid::from_raw(4242)),
+            None,
+        )
+        .unwrap();
+        assert!(matches!(
+            store.read_secret("key.pem", 100),
+            Err(StoreError::NotRegular(_))
+        ));
+        assert!(matches!(
+            store.read("key.pem", 100),
+            Err(StoreError::NotRegular(_))
+        ));
+    }
+
+    #[test]
     fn oversized_files_are_refused() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path()).unwrap();

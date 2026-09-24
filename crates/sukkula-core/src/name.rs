@@ -10,7 +10,9 @@
 //!    is dropped, so `../../.bashrc` and `C:\x\y.txt` become `.bashrc` and
 //!    `y.txt`.
 //! 2. NUL, control, bidirectional and invisible characters are removed, and
-//!    whitespace becomes single spaces ([`crate::text::classify`]).
+//!    whitespace becomes single spaces ([`crate::text::classify`]). A
+//!    combining mark is kept only on a base that is not a dot, and at most
+//!    [`MAX_COMBINING_RUN`] in a row.
 //! 3. Leading dots and spaces are removed: no hidden files, no `.` or `..`.
 //! 4. Trailing dots and spaces are removed.
 //! 5. The name is shortened to [`MAX_NAME_BYTES`] bytes on a character
@@ -24,6 +26,14 @@ use crate::text::{Class, classify, truncate_bytes};
 
 /// What a name with nothing usable in it becomes.
 pub const FALLBACK_NAME: &str = "received-file";
+
+// `numbered` falls back to FALLBACK_NAME as the stem, next to the longest
+// suffix (` (4294967295)`, 13 bytes) and the longest kept extension; all of
+// it must fit the cap, or a numbered name could outgrow S1.
+const _: () = assert!(
+    FALLBACK_NAME.len() + 13 + 1 + MAX_EXTENSION_BYTES <= MAX_NAME_BYTES,
+    "S1: the numbered fallback must fit MAX_NAME_BYTES"
+);
 
 /// One path component that satisfies S1. Construct it with [`sanitize`].
 #[derive(Clone, PartialEq, Eq, Hash)]

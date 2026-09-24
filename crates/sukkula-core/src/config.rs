@@ -40,13 +40,25 @@ pub struct Settings {
 }
 
 /// LocalSend settings.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct LocalSendSettings {
     /// Receive over LocalSend (F-C1).
     pub enabled: bool,
     /// A PIN senders must supply (F-LS4). Off by default.
     pub pin: Option<String>,
+}
+
+impl std::fmt::Debug for LocalSendSettings {
+    /// S9: the PIN is a shared secret, so a `{:?}` of the settings -- in a
+    /// log line, a panic message -- says whether there is one, not what it
+    /// is.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LocalSendSettings")
+            .field("enabled", &self.enabled)
+            .field("pin", &self.pin.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 /// Quick Share visibility (F-QS4). Contacts-only needs Google account keys.
@@ -298,6 +310,17 @@ mod tests {
         assert_eq!(s.clone().validate(), Err(ConfigError::BadUrl("relay")));
         assert!(!ConfigError::BadPin.to_string().is_empty());
         assert!(ConfigError::BadUrl("relay").to_string().contains("relay"));
+    }
+
+    #[test]
+    fn the_pin_never_shows_in_debug_output() {
+        let mut s = Settings::default();
+        s.localsend.pin = Some("48151623".into());
+        let shown = format!("{s:?}");
+        assert!(!shown.contains("48151623"), "{shown}");
+        assert!(shown.contains("<redacted>"));
+        s.localsend.pin = None;
+        assert!(format!("{s:?}").contains("pin: None"));
     }
 
     #[test]

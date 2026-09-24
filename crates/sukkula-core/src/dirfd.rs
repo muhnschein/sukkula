@@ -202,6 +202,30 @@ mod tests {
         assert!(!dir.path().join("nowhere").exists());
     }
 
+    /// Only testable where the tests may give a directory away: as root, as
+    /// in the CI container. Elsewhere it says so and passes.
+    #[test]
+    fn a_directory_owned_by_someone_else_is_refused() {
+        if !rustix::process::geteuid().is_root() {
+            eprintln!("skipped: not root, cannot chown");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let theirs = dir.path().join("theirs");
+        std::fs::create_dir(&theirs).unwrap();
+        rustix::fs::chown(&theirs, Some(rustix::fs::Uid::from_raw(4242)), None).unwrap();
+        assert!(matches!(open(&theirs, Share::Nothing), Err(DirError::NotPlain)));
+        let root = open(dir.path(), Share::ReadOnly).unwrap();
+        assert!(matches!(
+            open_at(&root, "theirs", Share::Nothing),
+            Err(DirError::NotPlain)
+        ));
+        // And its mode is left alone: not ours to change.
+        std::fs::set_permissions(&theirs, std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(open(&theirs, Share::Nothing).is_err());
+        assert_eq!(mode(&theirs), 0o777);
+    }
+
     #[test]
     fn io_errors_are_reported_as_such() {
         // Creating under a regular file fails with ENOTDIR from mkdir, which
