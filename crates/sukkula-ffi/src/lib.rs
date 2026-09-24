@@ -6,9 +6,9 @@
 //! Exactly three things, each commented where it happens:
 //!
 //! 1. Exporting unmangled symbols (`#[unsafe(no_mangle)]`).
-//! 2. Reading a C string the shell passed in ([`read_c_str`]): at most
+//! 2. Reading a C string the shell passed in (`read_c_str`): at most
 //!    [`MAX_MESSAGE_BYTES`] + 1 bytes, one at a time, never past its NUL.
-//! 3. Calling the shell's callback ([`Callback::deliver`]) with a string
+//! 3. Calling the shell's callback (`Callback::deliver`) with a string
 //!    that lives until the call returns.
 //!
 //! Engine handles are never dereferenced. `sukkula_start` hands out an

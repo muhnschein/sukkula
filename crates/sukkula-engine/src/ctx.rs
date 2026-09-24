@@ -192,6 +192,7 @@ impl Ctx {
         // checked only after consent, on purpose: checked before, it would
         // let any peer on the LAN measure the phone's free space by
         // bisection without the user ever seeing an offer.
+        // CONTRACT: same signature; Busy can now come before consent.
         if self.transfers.active() >= MAX_ACTIVE_TRANSFERS {
             return Err(Declined::Busy);
         }

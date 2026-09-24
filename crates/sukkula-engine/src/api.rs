@@ -42,11 +42,13 @@ pub const MAX_LISTED_FILES: usize = 50;
 /// [`Event::Reply`] has been handed to the UI. One more is refused without
 /// a reply (`SUKKULA_ERR_BUSY` at the C ABI), so a UI stuck in a loop costs
 /// bounded memory rather than an ever longer queue.
+// CONTRACT: new (additive), with SUKKULA_ERR_BUSY in sukkula.h.
 pub const MAX_IN_FLIGHT_COMMANDS: usize = 64;
 
 /// Longest [`ErrorInfo::message`], in characters. Messages are for logs;
 /// the cap keeps a serde error that quotes a 60 KiB command from making
 /// its reply 60 KiB long.
+// CONTRACT: new (additive).
 pub const MAX_ERROR_MESSAGE_CHARS: usize = 256;
 
 /// What the shell passes to `sukkula_start`.
@@ -513,6 +515,7 @@ impl ErrorInfo {
     /// or unbounded length there.
     #[must_use]
     pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
+        // CONTRACT: same signature; the message is now sanitised and capped.
         let message: String = message.into();
         ErrorInfo {
             code,

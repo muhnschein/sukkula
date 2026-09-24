@@ -108,6 +108,8 @@ pub struct Engine {
 }
 
 /// Why [`Engine::try_command`] did not take a command. No reply follows.
+// CONTRACT: new (additive), with Engine::try_command{,_json}; re-exported
+// from the crate root. Engine's existing methods keep their signatures.
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
 pub enum Refused {
     /// [`MAX_IN_FLIGHT_COMMANDS`] commands are waiting for their replies.
@@ -302,7 +304,7 @@ impl Engine {
     ///   events still queued are dropped; the delivery thread, which is the
     ///   caller, ends as soon as the sink returns.
     /// - From inside another engine's sink, this engine's delivery thread
-    ///   is waited for at most [`STOP_TIMEOUT`]: the two sinks could be
+    ///   is waited for at most 3 seconds (`STOP_TIMEOUT`): the two sinks could be
     ///   waiting for each other.
     /// - Otherwise, events emitted before the gate closes -- including
     ///   those the teardown itself emits -- are delivered first.

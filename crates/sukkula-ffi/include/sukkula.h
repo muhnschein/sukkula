@@ -51,6 +51,7 @@ typedef void (*sukkula_event_cb)(const char *event_json, void *userdata);
 #define SUKKULA_ERR_TOO_LONG -3  /* command_json is over 64 KiB; nothing was parsed */
 #define SUKKULA_ERR_PANIC    -4  /* the engine failed internally; see the log */
 #define SUKKULA_ERR_BUSY     -5  /* 64 commands await their reply; nothing was parsed, try again after one */
+/* CONTRACT: SUKKULA_ERR_BUSY is new (additive; covered by the rule above). */
 
 /*
  * Starts an engine with a StartConfig (api.rs), e.g.
