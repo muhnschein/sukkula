@@ -15,7 +15,7 @@ use crate::utils::{is_not_self_ip, parse_mdns_endpoint_info, parse_mdns_name};
 pub const MAX_DISCOVERED_ENDPOINTS: usize = 64;
 
 /// How long stopping waits for the mDNS daemon thread to acknowledge.
-const SHUTDOWN_WAIT: Duration = Duration::from_secs(1);
+const SHUTDOWN_WAIT: Duration = Duration::from_millis(500);
 
 /// Which addresses a service may be reached at, and which interfaces the
 /// daemon listens on: the embedding application's reach policy.

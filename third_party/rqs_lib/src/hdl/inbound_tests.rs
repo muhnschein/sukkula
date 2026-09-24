@@ -161,6 +161,23 @@ async fn bad_file_lists_are_refused_before_consent() {
                 .is_err()
         );
     }
+    // Files and a text at once: which would the user be accepting?
+    let (mut ir, _peer) = ready(TransferState::ReceivedPairedKeyResult);
+    let mixed = IntroductionFrame {
+        file_metadata: vec![file(1, "a", 1)],
+        text_metadata: vec![TextMetadata {
+            payload_id: Some(9),
+            size: Some(1),
+            r#type: Some(text_metadata::Type::Text.into()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    assert!(
+        ir.process_transfer_setup(&introduction(mixed))
+            .await
+            .is_err()
+    );
     for size in [-1, MAX_TEXT_PAYLOAD_LENGTH + 1] {
         let (mut ir, _peer) = ready(TransferState::ReceivedPairedKeyResult);
         let intro = IntroductionFrame {

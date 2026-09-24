@@ -44,7 +44,11 @@ pub(super) struct Peers {
 pub(super) fn start(shared: &Arc<Shared>) -> Result<Running, ErrorInfo> {
     let token = shared.ctx.shutdown_token().child_token();
     // Peers from an earlier round may have gone; they are found again if not.
-    let old: Vec<String> = lock(&shared.peers).by_id.drain().map(|(id, _)| id).collect();
+    let old: Vec<String> = lock(&shared.peers)
+        .by_id
+        .drain()
+        .map(|(id, _)| id)
+        .collect();
     for id in old {
         shared.ctx.emit(Event::PeerLost { peer: id });
     }
@@ -63,7 +67,10 @@ pub(super) fn start(shared: &Arc<Shared>) -> Result<Running, ErrorInfo> {
         tasks.push(tokio::spawn(consume(shared.clone(), rx, token.clone())));
     }
     if shared.ctx.settings().quickshare.ble_nudge {
-        tasks.push(ble::spawn(shared.options.system_bus.clone(), token.clone()));
+        match shared.system_bus() {
+            Some(bus) => tasks.push(ble::spawn(bus, token.clone())),
+            None => tracing::debug!("quickshare: no system bus named in test mode; no BLE nudge"),
+        }
     }
     Ok(Running {
         token,
@@ -123,7 +130,13 @@ fn found_or_lost(shared: &Arc<Shared>, info: EndpointInfo) {
     }
     let name = info.name.unwrap_or_default();
     let device_type = info.rtype.unwrap_or(rqs_lib::DeviceType::Unknown);
-    let _ = insert(shared, endpoint_id, SocketAddr::new(ip, port), &name, device_type);
+    let _ = insert(
+        shared,
+        endpoint_id,
+        SocketAddr::new(ip, port),
+        &name,
+        device_type,
+    );
 }
 
 /// Adds or updates a peer and reports it. `None` when the table is full.

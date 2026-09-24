@@ -81,7 +81,11 @@ pub(super) async fn start(shared: &Arc<Shared>) -> Result<Running, ErrorInfo> {
         }));
     }
     *lock(&shared.own_endpoint) = Some(endpoint);
-    tasks.push(tokio::spawn(accept_loop(shared.clone(), listener, token.clone())));
+    tasks.push(tokio::spawn(accept_loop(
+        shared.clone(),
+        listener,
+        token.clone(),
+    )));
     Ok(Running {
         token,
         tasks,
@@ -365,9 +369,7 @@ async fn receive(
                         .map_err(Ended::Failed)?;
                     open.insert(chunk.payload_id, incoming);
                 }
-                let incoming = open
-                    .get_mut(&chunk.payload_id)
-                    .ok_or_else(protocol_error)?;
+                let incoming = open.get_mut(&chunk.payload_id).ok_or_else(protocol_error)?;
                 incoming.write(&chunk.body).await.map_err(|e| {
                     if transfer.is_cancelled() {
                         Ended::CancelledHere
@@ -376,9 +378,7 @@ async fn receive(
                     }
                 })?;
                 if chunk.last {
-                    let incoming = open
-                        .remove(&chunk.payload_id)
-                        .ok_or_else(protocol_error)?;
+                    let incoming = open.remove(&chunk.payload_id).ok_or_else(protocol_error)?;
                     let placed = incoming.commit().await.map_err(Ended::Failed)?;
                     saved.push(placed.name.as_str().to_owned());
                     pending.remove(&chunk.payload_id);
@@ -410,4 +410,3 @@ async fn receive(
     let _ = within(GOODBYE, ir.disconnection()).await;
     Ok(saved)
 }
-

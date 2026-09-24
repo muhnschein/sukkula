@@ -1,0 +1,218 @@
+Use RustCrypto's aes and cbc for the D2D channel instead of libaes
+
+The encrypted channel after the UKEY2 handshake is AES-256-CBC with
+PKCS#7 padding and an HMAC. Upstream uses libaes for it, and libaes's
+Cipher::cbc_decrypt has two defects that matter here:
+
+- it XORs each block with the IV by indexing `iv[i]` for i in 0..16
+  without checking the IV's length, and the IV comes from the peer's
+  SecureMessage header. Any peer can complete the unauthenticated UKEY2
+  handshake, compute valid HMACs, and send a 1-byte IV: the connection
+  task panics on an index out of bounds, before any consent;
+- with auto padding it accepts any padding: a last byte of 0 or of more
+  than 16 is used as a length without a check.
+
+libaes is also a table-based AES, whose timing depends on the key and
+data.
+
+utils gains aes_cbc_encrypt and aes_cbc_decrypt on the `aes` and `cbc`
+crates (constant-time, with AES instructions where the CPU has them),
+which check key and IV lengths and the padding and return an error
+instead; both handlers use them. Unit tests cover a round trip, short
+IVs, a short key, partial blocks and a wrong key.
+---
+ Cargo.toml          |  4 +++-
+ src/hdl/inbound.rs  | 14 +++++---------
+ src/hdl/outbound.rs | 17 +++++------------
+ src/utils.rs        | 39 +++++++++++++++++++++++++++++++++++++++
+ 4 files changed, 52 insertions(+), 22 deletions(-)
+
+diff --git a/Cargo.toml b/Cargo.toml
+index 822a065..0e3a915 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -6,15 +6,17 @@ authors = ["martichou"]
+ # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+ 
+ [dependencies]
++# RustCrypto AES in place of libaes (see utils::aes_cbc_decrypt).
++aes = "0.8"
+ anyhow = "1.0"
+ base64 = "0.22"
+ bytes = "1.10"
++cbc = { version = "0.1", features = ["alloc"] }
+ directories = "6.0"
+ get_if_addrs = "0.5"
+ hex = "0.4"
+ hkdf = "0.12"
+ hmac = "0.12"
+-libaes = "0.7"
+ log = "0.4"
+ mdns-sd = { git = "https://github.com/Martichou/mdns-sd", branch = "unsolicited" }
+ mime_guess = "2.0"
+diff --git a/src/hdl/inbound.rs b/src/hdl/inbound.rs
+index 7aba457..69d8a64 100644
+--- a/src/hdl/inbound.rs
++++ b/src/hdl/inbound.rs
+@@ -6,7 +6,6 @@ use std::time::Duration;
+ use anyhow::{Context, anyhow};
+ use bytes::Bytes;
+ use hmac::{Hmac, Mac};
+-use libaes::{AES_256_KEY_LEN, Cipher};
+ use p256::ecdh::diffie_hellman;
+ use p256::elliptic_curve::sec1::{FromEncodedPoint, ToEncodedPoint};
+ use p256::{EncodedPoint, PublicKey};
+@@ -37,8 +36,9 @@ use crate::securemessage::{
+ use crate::sharing_nearby::wifi_credentials_metadata::SecurityType;
+ use crate::sharing_nearby::{paired_key_result_frame, text_metadata};
+ use crate::utils::{
+-    DeviceType, RemoteDeviceInfo, encode_point, gen_ecdsa_keypair, gen_random, get_download_dir,
+-    hkdf_extract_expand, stream_read_exact, to_four_digit_string,
++    DeviceType, RemoteDeviceInfo, aes_cbc_decrypt, aes_cbc_encrypt, encode_point,
++    gen_ecdsa_keypair, gen_random, get_download_dir, hkdf_extract_expand, stream_read_exact,
++    to_four_digit_string,
+ };
+ use crate::{location_nearby_connections, sharing_nearby};
+ 
+@@ -528,9 +528,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
+         let msg_data = header_and_body.body;
+         let key = self.state.decrypt_key.as_ref().unwrap();
+ 
+-        let mut cipher = Cipher::new_256(key[..AES_256_KEY_LEN].try_into()?);
+-        cipher.set_auto_padding(true);
+-        let decrypted = cipher.cbc_decrypt(header_and_body.header.iv(), &msg_data);
++        let decrypted = aes_cbc_decrypt(key, header_and_body.header.iv(), &msg_data)?;
+ 
+         let d2d_msg = DeviceToDeviceMessage::decode(&*decrypted)?;
+ 
+@@ -1389,9 +1387,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
+         let msg_data = d2d_msg.encode_to_vec();
+         let iv = gen_random(16);
+ 
+-        let mut cipher = Cipher::new_256(&key[..AES_256_KEY_LEN].try_into().unwrap());
+-        cipher.set_auto_padding(true);
+-        let encrypted = cipher.cbc_encrypt(&iv, &msg_data);
++        let encrypted = aes_cbc_encrypt(key, &iv, &msg_data)?;
+ 
+         let hb = HeaderAndBody {
+             body: encrypted,
+diff --git a/src/hdl/outbound.rs b/src/hdl/outbound.rs
+index bab571e..28f5b28 100644
+--- a/src/hdl/outbound.rs
++++ b/src/hdl/outbound.rs
+@@ -8,7 +8,6 @@ use std::time::Duration;
+ use anyhow::anyhow;
+ use bytes::Bytes;
+ use hmac::{Hmac, Mac};
+-use libaes::{AES_256_KEY_LEN, Cipher};
+ use p256::ecdh::diffie_hellman;
+ use p256::elliptic_curve::sec1::{FromEncodedPoint, ToEncodedPoint};
+ use p256::{EncodedPoint, PublicKey};
+@@ -43,8 +42,8 @@ use crate::sharing_nearby::{
+     FileMetadata, IntroductionFrame, file_metadata, paired_key_result_frame,
+ };
+ use crate::utils::{
+-    DeviceType, RemoteDeviceInfo, encode_point, gen_ecdsa_keypair, gen_random, hkdf_extract_expand,
+-    stream_read_exact, to_four_digit_string,
++    DeviceType, RemoteDeviceInfo, aes_cbc_decrypt, aes_cbc_encrypt, encode_point,
++    gen_ecdsa_keypair, gen_random, hkdf_extract_expand, stream_read_exact, to_four_digit_string,
+ };
+ use crate::{DEVICE_NAME, location_nearby_connections, sharing_nearby};
+ 
+@@ -459,9 +458,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OutboundRequest<S> {
+         let msg_data = header_and_body.body;
+         let key = self.state.decrypt_key.as_ref().unwrap();
+ 
+-        let mut cipher = Cipher::new_256(key[..AES_256_KEY_LEN].try_into()?);
+-        cipher.set_auto_padding(true);
+-        let decrypted = cipher.cbc_decrypt(header_and_body.header.iv(), &msg_data);
++        let decrypted = aes_cbc_decrypt(key, header_and_body.header.iv(), &msg_data)?;
+ 
+         let d2d_msg = DeviceToDeviceMessage::decode(&*decrypted)?;
+ 
+@@ -825,9 +822,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OutboundRequest<S> {
+         }
+         let header_and_body = HeaderAndBody::decode(&*smsg.header_and_body)?;
+         let key = self.state.decrypt_key.as_ref().unwrap();
+-        let mut cipher = Cipher::new_256(key[..AES_256_KEY_LEN].try_into()?);
+-        cipher.set_auto_padding(true);
+-        let decrypted = cipher.cbc_decrypt(header_and_body.header.iv(), &header_and_body.body);
++        let decrypted = aes_cbc_decrypt(key, header_and_body.header.iv(), &header_and_body.body)?;
+         let d2d_msg = DeviceToDeviceMessage::decode(&*decrypted)?;
+ 
+         let seq = self.get_client_seq_inc().await;
+@@ -1379,9 +1374,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OutboundRequest<S> {
+         let msg_data = d2d_msg.encode_to_vec();
+         let iv = gen_random(16);
+ 
+-        let mut cipher = Cipher::new_256(&key[..AES_256_KEY_LEN].try_into().unwrap());
+-        cipher.set_auto_padding(true);
+-        let encrypted = cipher.cbc_encrypt(&iv, &msg_data);
++        let encrypted = aes_cbc_encrypt(key, &iv, &msg_data)?;
+ 
+         let hb = HeaderAndBody {
+             body: encrypted,
+diff --git a/src/utils.rs b/src/utils.rs
+index 2221d77..7d097ae 100644
+--- a/src/utils.rs
++++ b/src/utils.rs
+@@ -1,6 +1,8 @@
+ use std::net::Ipv4Addr;
+ use std::path::{Path, PathBuf};
+ 
++use aes::cipher::block_padding::Pkcs7;
++use aes::cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit};
+ use anyhow::anyhow;
+ use base64::Engine;
+ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+@@ -149,6 +151,24 @@ pub fn encode_point(unsigned: Bytes) -> Result<Vec<u8>, anyhow::Error> {
+     Ok(big_int.to_signed_bytes_be())
+ }
+ 
++/// AES-256-CBC with PKCS#7 padding, as the D2D channel uses.
++pub fn aes_cbc_encrypt(key: &[u8], iv: &[u8], data: &[u8]) -> Result<Vec<u8>, anyhow::Error> {
++    let enc = cbc::Encryptor::<aes::Aes256>::new_from_slices(key, iv)
++        .map_err(|_| anyhow!("bad AES key or IV length"))?;
++    Ok(enc.encrypt_padded_vec_mut::<Pkcs7>(data))
++}
++
++/// Decrypts AES-256-CBC, checking the IV length and the padding. libaes,
++/// used before, indexed the IV without checking its length (a peer-chosen
++/// IV of under 16 bytes panicked the connection), accepted any padding,
++/// and is a table-based AES whose timing depends on the key.
++pub fn aes_cbc_decrypt(key: &[u8], iv: &[u8], data: &[u8]) -> Result<Vec<u8>, anyhow::Error> {
++    let dec = cbc::Decryptor::<aes::Aes256>::new_from_slices(key, iv)
++        .map_err(|_| anyhow!("bad AES key or IV length"))?;
++    dec.decrypt_padded_vec_mut::<Pkcs7>(data)
++        .map_err(|_| anyhow!("bad padding"))
++}
++
+ pub fn hkdf_extract_expand(
+     salt: &[u8],
+     input: &[u8],
+@@ -224,6 +244,25 @@ pub fn is_not_self_ip(ip_address: &Ipv4Addr) -> bool {
+ mod tests {
+     use super::*;
+ 
++    #[test]
++    fn aes_cbc_round_trips_and_checks_its_inputs() {
++        let key = [7u8; 32];
++        let iv = [9u8; 16];
++        let ct = aes_cbc_encrypt(&key, &iv, b"hello").unwrap();
++        assert_eq!(aes_cbc_decrypt(&key, &iv, &ct).unwrap(), b"hello");
++        assert!(aes_cbc_decrypt(&key, &[], &ct).is_err(), "short IV");
++        assert!(aes_cbc_decrypt(&key, &iv[..15], &ct).is_err());
++        assert!(aes_cbc_decrypt(&key[..16], &iv, &ct).is_err(), "short key");
++        assert!(
++            aes_cbc_decrypt(&key, &iv, &ct[..15]).is_err(),
++            "not whole blocks"
++        );
++        assert!(
++            aes_cbc_decrypt(&[8u8; 32], &iv, &ct).is_err(),
++            "wrong key: bad padding"
++        );
++    }
++
+     #[test]
+     fn test_gen_and_parse_mdns_info() {
+         let device_name = "a_device_name";

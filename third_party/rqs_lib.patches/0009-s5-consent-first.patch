@@ -1,0 +1,70 @@
+S5: take no payload byte before the user accepted
+
+Quick Share asks the receiving user before any payload flows: the sender
+introduces the files or text, the receiver answers ACCEPT or REJECT, and
+only then do payload chunks follow. Upstream's receiver does not hold the
+sender to that:
+
+- A FILE chunk that arrives before the answer reaches
+  `file.as_ref().unwrap()` for a file that is only created on acceptance:
+  the task panics, which any sender can cause right after its
+  introduction.
+- The BYTES payload of an introduced text is taken whenever it arrives.
+  A sender that sends its text straight after the introduction has it
+  decoded, stored in the transfer metadata and reported to the
+  application as a finished transfer, the text included, while the
+  consent prompt is still up.
+- ConsentAccept is acted on in any state, including before an
+  introduction was received.
+
+Now a file or text payload chunk before acceptance ends the connection
+with an error, and accept_transfer works only while the transfer waits
+for consent. (Spec S5: no payload byte is written before the user
+accepts.)
+---
+ src/hdl/inbound.rs | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/src/hdl/inbound.rs b/src/hdl/inbound.rs
+index d67482d..4af3ab5 100644
+--- a/src/hdl/inbound.rs
++++ b/src/hdl/inbound.rs
+@@ -603,6 +603,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
+                             .text_payload
+                             .as_ref()
+                             .is_some_and(|t| t.get_i64_value() == payload_id);
++                        // Consent first: the text's bytes are only taken once the
++                        // user said yes. They used to be taken at any time, and
++                        // a text that arrived before the answer was reported as
++                        // a finished transfer.
++                        if is_text && self.state.state != TransferState::ReceivingFiles {
++                            return Err(anyhow!("text payload before the transfer was accepted"));
++                        }
+                         let max = if is_text {
+                             MAX_TEXT_PAYLOAD_LENGTH
+                         } else {
+@@ -732,6 +739,14 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
+                         info!("Processing PayloadType::File");
+                         let payload_id = header.id();
+ 
++                        // Consent first: no file byte is taken before the user
++                        // accepted. A chunk that came early used to reach
++                        // `file.as_ref().unwrap()` on a file not yet created,
++                        // and panic.
++                        if self.state.state != TransferState::ReceivingFiles {
++                            return Err(anyhow!("file payload before the transfer was accepted"));
++                        }
++
+                         let file_internal = self
+                             .state
+                             .transferred_files
+@@ -1183,6 +1198,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
+     }
+ 
+     async fn accept_transfer(&mut self) -> Result<(), anyhow::Error> {
++        if self.state.state != TransferState::WaitingForUserConsent {
++            return Err(anyhow!("nothing to accept"));
++        }
+         let ids: Vec<i64> = self.state.transferred_files.keys().cloned().collect();
+ 
+         for id in ids {

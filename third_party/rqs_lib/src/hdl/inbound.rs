@@ -9,7 +9,9 @@ use sha2::{Digest, Sha256, Sha512};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 
-use super::frame::{FrameReader, MAX_HANDSHAKE_FRAME_LENGTH, SANE_FRAME_LENGTH, write_frame};
+use super::frame::{
+    FrameReader, MAX_HANDSHAKE_FRAME_LENGTH, MAX_SETUP_FRAME_LENGTH, SANE_FRAME_LENGTH, write_frame,
+};
 use super::info::{FileChunk, IncomingFile, IncomingText, InternalFileInfo, Introduction};
 use super::payload::{
     MAX_CONTROL_PAYLOAD_LENGTH, MAX_INTRODUCTION_FILES, MAX_TEXT_PAYLOAD_LENGTH, assemble,
@@ -116,11 +118,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
     }
 
     /// Reads the next frame. Cancel-safe; see [`FrameReader`].
+    ///
+    /// How large a frame may be depends on how far the sender got: a few
+    /// kilobytes during the plaintext handshake, one sharing frame until
+    /// the user accepted, file chunks only after.
     pub async fn read_frame(&mut self) -> Result<Vec<u8>, anyhow::Error> {
         let max = if self.is_handshaking() {
             MAX_HANDSHAKE_FRAME_LENGTH
-        } else {
+        } else if self.state.state == TransferState::ReceivingFiles {
             SANE_FRAME_LENGTH
+        } else {
+            MAX_SETUP_FRAME_LENGTH
         };
         self.reader.read_frame(&mut self.socket, max).await
     }
@@ -695,7 +703,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
             self.update_state(|e| {
                 e.state = TransferState::Cancelled;
             });
-            self.disconnection().await?;
+            // Best effort: a peer that cancelled may be gone already, and
+            // its cancel is what the application must hear either way.
+            let _ = self.disconnection().await;
             return Ok(Some(InboundEvent::Cancelled));
         }
 
@@ -839,7 +849,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
                 files,
                 text: None,
             }))
-        } else if introduction.text_metadata.len() == 1 {
+        } else if introduction.text_metadata.len() == 1 && introduction.file_metadata.is_empty() {
             trace!("process_introduction: handling text_metadata");
             let Some(meta) = introduction.text_metadata.first() else {
                 return Err(anyhow!("Missing required fields"));

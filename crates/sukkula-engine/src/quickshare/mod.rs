@@ -66,8 +66,11 @@ pub const MAX_INBOUND_CONNECTIONS: usize = 4;
 pub const MAX_CONNECTIONS_PER_IP: usize = 2;
 
 /// How long stopping waits for a task to wind down before leaving it to
-/// the engine's own shutdown.
-const STOP_WAIT: Duration = Duration::from_millis(1500);
+/// the engine's own shutdown. The hub gives an adapter 3 s to stop
+/// discovery and then receiving; each gets less than half. The waits
+/// inside are shorter still: 0.5 s each for the mDNS goodbye and daemon,
+/// 0.5 s and a tick for the BLE nudge to unregister.
+const STOP_WAIT: Duration = Duration::from_millis(1250);
 
 /// How long to wait for a peer's TCP connection when sending.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -114,7 +117,8 @@ pub struct Options {
     /// Where the TCP listener binds. IPv4, as Quick Share peers resolve us
     /// over IPv4 only.
     pub listen: SocketAddr,
-    /// The system bus for the BLE nudge; `None` for the environment's.
+    /// The system bus for the BLE nudge; `None` for the environment's
+    /// (and, with loopback allowed, for none: see `Shared::system_bus`).
     pub system_bus: Option<String>,
     /// The waits.
     pub timeouts: Timeouts,
@@ -166,10 +170,31 @@ pub(crate) struct Shared {
 }
 
 impl Shared {
-    /// The reach policy (S7) as rqs_lib's mDNS code takes it.
+    /// The reach policy (S7) as rqs_lib's mDNS code takes it: which
+    /// interfaces mDNS runs on, and which announced addresses count.
+    ///
+    /// With loopback allowed -- the test switch, `StartConfig.allow_loopback`,
+    /// which the shell never sets -- mDNS stays on loopback: a test run must
+    /// not announce this machine as a Quick Share receiver to the LAN it
+    /// happens to be on.
     fn addr_filter(&self) -> AddrFilter {
         let ctx = self.ctx.clone();
-        Arc::new(move |ip| ctx.permits(ip))
+        if ctx.reach().allow_loopback {
+            Arc::new(move |ip: IpAddr| ip.is_loopback() && ctx.permits(ip))
+        } else {
+            Arc::new(move |ip| ctx.permits(ip))
+        }
+    }
+
+    /// The system bus for the BLE nudge: the one [`Options`] names, else
+    /// the environment's -- except under the test switch, where a test
+    /// that did not name a bus gets none rather than the host's.
+    fn system_bus(&self) -> Option<Option<String>> {
+        match &self.options.system_bus {
+            Some(bus) => Some(Some(bus.clone())),
+            None if self.ctx.reach().allow_loopback => None,
+            None => Some(None),
+        }
     }
 }
 
@@ -215,8 +240,19 @@ impl QuickShareAdapter {
     /// id. For tests, which have no mDNS.
     #[doc(hidden)]
     #[must_use]
-    pub fn insert_peer(&self, endpoint_id: [u8; 4], addr: SocketAddr, name: &str) -> Option<String> {
-        discovery::insert(&self.shared, endpoint_id, addr, name, rqs_lib::DeviceType::Phone)
+    pub fn insert_peer(
+        &self,
+        endpoint_id: [u8; 4],
+        addr: SocketAddr,
+        name: &str,
+    ) -> Option<String> {
+        discovery::insert(
+            &self.shared,
+            endpoint_id,
+            addr,
+            name,
+            rqs_lib::DeviceType::Phone,
+        )
     }
 
     async fn start_receiving_inner(&self) -> Result<(), ErrorInfo> {
@@ -288,7 +324,10 @@ impl Adapter for QuickShareAdapter {
     ) -> BoxFuture<'_, Result<TransferId, ErrorInfo>> {
         Box::pin(async move {
             let SendTarget::QuickShare { peer } = target else {
-                return Err(ErrorInfo::new(ErrorCode::BadCommand, "not a Quick Share target"));
+                return Err(ErrorInfo::new(
+                    ErrorCode::BadCommand,
+                    "not a Quick Share target",
+                ));
             };
             send::start(&self.shared, &peer, items)
         })
@@ -368,7 +407,10 @@ async fn within<T, E>(
     match tokio::time::timeout(limit, fut).await {
         Ok(Ok(v)) => Ok(v),
         Ok(Err(_)) => Err(ErrorInfo::new(ErrorCode::Network, "the connection failed")),
-        Err(_) => Err(ErrorInfo::new(ErrorCode::Network, "the peer stopped responding")),
+        Err(_) => Err(ErrorInfo::new(
+            ErrorCode::Network,
+            "the peer stopped responding",
+        )),
     }
 }
 

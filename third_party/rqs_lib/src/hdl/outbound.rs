@@ -12,7 +12,9 @@ use sha2::{Digest, Sha256, Sha512};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 
-use super::frame::{FrameReader, MAX_HANDSHAKE_FRAME_LENGTH, SANE_FRAME_LENGTH, write_frame};
+use super::frame::{
+    FrameReader, MAX_HANDSHAKE_FRAME_LENGTH, MAX_SETUP_FRAME_LENGTH, SANE_FRAME_LENGTH, write_frame,
+};
 use super::info::{InternalFileInfo, OutgoingFile, OutgoingText};
 use super::payload::{MAX_CONTROL_PAYLOAD_LENGTH, assemble};
 use super::{InnerState, TextPayloadType, TransferState};
@@ -144,11 +146,14 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OutboundRequest<S> {
     }
 
     /// Reads the next frame. Cancel-safe; see [`FrameReader`].
+    ///
+    /// A receiver sends nothing but handshake and sharing frames, never
+    /// file data, so it gets no more room than one sharing frame.
     pub async fn read_frame(&mut self) -> Result<Vec<u8>, anyhow::Error> {
         let max = if self.is_handshaking() {
             MAX_HANDSHAKE_FRAME_LENGTH
         } else {
-            SANE_FRAME_LENGTH
+            MAX_SETUP_FRAME_LENGTH
         };
         self.reader.read_frame(&mut self.socket, max).await
     }
@@ -520,7 +525,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OutboundRequest<S> {
             self.update_state(|e| {
                 e.state = TransferState::Cancelled;
             });
-            self.disconnection().await?;
+            // Best effort: a peer that cancelled may be gone already, and
+            // its cancel is what the application must hear either way.
+            let _ = self.disconnection().await;
             return Ok(Some(OutboundEvent::Cancelled));
         }
 

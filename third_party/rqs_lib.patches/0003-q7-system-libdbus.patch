@@ -1,0 +1,36 @@
+Q7: link the system libdbus, never a vendored copy
+
+On aarch64 Linux the manifest adds `dbus` with the `vendored` feature. The
+library itself never uses `dbus`; the line is there so that feature
+unification turns on `libdbus-sys/vendored` for the BLE stack (bluer),
+which then compiles libdbus from source and links it statically into the
+binary on the one architecture Sukkula ships for.
+
+A static libdbus is a second D-Bus implementation in the process, next to
+the system's libdbus-1.so.3 that everything else (Qt, Sailfish's own
+libraries, Sukkula's Bluetooth code) uses, and one that the operating
+system's security updates never reach. Jolla's Harbour rules allow
+linking the system libdbus-1.so.3, and that is what the `dbus` crate
+does by default (through pkg-config).
+
+The dependency goes. Sukkula's own BLE nudge (F-QS2) uses the `dbus`
+crate over the system libdbus, and its cargo-deny policy refuses the
+`vendored` feature of `dbus` and `libdbus-sys` from any crate.
+---
+ Cargo.toml | 3 ---
+ 1 file changed, 3 deletions(-)
+
+diff --git a/Cargo.toml b/Cargo.toml
+index 2b85b06..8b554df 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -8,9 +8,6 @@ authors = ["martichou"]
+ [target.'cfg(target_os = "linux")'.dependencies]
+ bluer = { version = "0.17", features = ["bluetoothd", "l2cap"], optional = true }
+ 
+-[target.'cfg(all(target_arch = "aarch64", target_os = "linux"))'.dependencies]
+-dbus = { version = "0.9", features = ["vendored"] }
+-
+ [dependencies]
+ anyhow = "1.0"
+ base64 = "0.22"

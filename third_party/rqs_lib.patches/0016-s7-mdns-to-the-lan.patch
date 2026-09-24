@@ -1,0 +1,534 @@
+S7: keep mDNS to the LAN, bounded, and stoppable
+
+The mDNS code is open to anyone on the link, and upstream trusts it:
+
+- The daemons listen and announce on every interface, including a
+  mobile-data or VPN interface with a public address.
+- Discovery connects a TCP socket to every address a service announces,
+  one at a time, with no timeout, to see whether it answers: any host on
+  the link can make the phone open connections to addresses of its
+  choosing, and stall discovery for the OS's connect timeout on each.
+- Every resolved service is cached without limit.
+- When the daemon's channel fails, discovery logs and loops, and since
+  the channel never yields again it spins a core at 100 %.
+- Stopping waits for the goodbye with a blocking `recv()` on the async
+  runtime, which stalls a runtime thread for as long as the daemon takes
+  (forever if it is gone), and the daemon thread itself is never shut
+  down.
+- The announced device name is written with a one-byte length (`as u8`)
+  and, in the connection request, cut at 255 bytes wherever that falls:
+  a longer name wraps the length or splits a character and makes the
+  whole record unreadable for peers. The receiving parser also indexes
+  the record by hand.
+
+Both daemons now take an AddrFilter, the embedding application's reach
+policy (Sukkula's S7: private, link-local and unique-local addresses
+only): they run only on IPv4 interfaces whose address it accepts, and
+discovery reports only services at an accepted address, which nothing
+probes. At most 64 services are remembered, a failed channel ends
+discovery, the goodbye and the daemon shutdown are awaited without
+blocking and for at most half a second each, and dropping either type
+shuts its daemon down too. Announced names are cut to 128 bytes on a
+character boundary, and the endpoint-info parser uses bounds-checked
+reads. The service type is one constant.
+---
+ src/hdl/mdns.rs           |  51 +++++++---
+ src/hdl/mdns_discovery.rs | 201 ++++++++++++++++++++++++--------------
+ src/lib.rs                |   3 +-
+ src/utils.rs              |  77 +++++++++++----
+ 4 files changed, 225 insertions(+), 107 deletions(-)
+
+diff --git a/src/hdl/mdns.rs b/src/hdl/mdns.rs
+index dffdaad..67b6d88 100644
+--- a/src/hdl/mdns.rs
++++ b/src/hdl/mdns.rs
+@@ -1,10 +1,21 @@
+-use mdns_sd::{IfKind, ServiceDaemon, ServiceInfo};
++use std::time::Duration;
++
++use mdns_sd::{IfKind, IfPredicate, ServiceDaemon, ServiceInfo};
+ use tokio_util::sync::CancellationToken;
+ 
++use super::mdns_discovery::{AddrFilter, shutdown_daemon};
+ use crate::utils::{DeviceType, gen_mdns_endpoint_info, gen_mdns_name};
+ 
+ const INNER_NAME: &str = "MDnsServer";
+ 
++/// The Quick Share service type.
++pub const SERVICE_TYPE: &str = "_FC9F5ED42C8A._tcp.local.";
++
++/// How long stopping waits for the goodbye announcement to go out. Short:
++/// an embedding application stops everything within a few seconds, and a
++/// goodbye that did not make it only means peers forget us a little later.
++const UNREGISTER_WAIT: Duration = Duration::from_millis(500);
++
+ /// Announces this device as a Quick Share receiver for as long as
+ /// [`MDnsServer::run`] runs. Whether to announce at all (visibility) is the
+ /// embedding application's decision: it simply does not run one.
+@@ -14,11 +25,15 @@ pub struct MDnsServer {
+ }
+ 
+ impl MDnsServer {
++    /// Announces on the IPv4 interfaces whose address `filter` accepts --
++    /// the embedding application's reach policy -- and nowhere else: not on
++    /// a mobile-data or VPN interface with a public address.
+     pub fn new(
+         endpoint_id: [u8; 4],
+         service_port: u16,
+         device_name: &str,
+         device_type: DeviceType,
++        filter: AddrFilter,
+     ) -> Result<Self, anyhow::Error> {
+         let service_info =
+             Self::build_service(endpoint_id, service_port, device_name, device_type)?;
+@@ -26,7 +41,10 @@ impl MDnsServer {
+         let daemon = ServiceDaemon::new()?;
+         // Quick Share peers resolve us over IPv4 only (the fork this used to
+         // depend on published A records only).
+-        daemon.disable_interface(IfKind::IPv6)?;
++        daemon.disable_interface(IfKind::All)?;
++        daemon.enable_interface(IfKind::Predicate(IfPredicate::new(move |intf| {
++            intf.ip().is_ipv4() && filter(intf.ip())
++        })))?;
+ 
+         Ok(Self {
+             daemon,
+@@ -39,28 +57,30 @@ impl MDnsServer {
+         let monitor = self.daemon.monitor()?;
+         self.daemon.register(self.service_info.clone())?;
+ 
+-        loop {
++        let result = loop {
+             tokio::select! {
+                 _ = ctk.cancelled() => {
+                     info!("{INNER_NAME}: tracker cancelled, breaking");
+-                    break;
++                    break Ok(());
+                 }
+                 r = monitor.recv_async() => {
+                     match r {
+                         Ok(_) => continue,
+-                        Err(err) => return Err(err.into()),
++                        Err(err) => break Err(err.into()),
+                     }
+                 },
+             }
+-        }
++        };
+ 
+-        // Unregister the mDNS service - we're shutting down
+-        let receiver = self.daemon.unregister(self.service_info.get_fullname())?;
+-        if let Ok(event) = receiver.recv() {
+-            info!("MDnsServer: service unregistered: {:?}", &event);
++        // Unregister the mDNS service - we're shutting down. Waiting on the
++        // blocking `recv()`, as before, stalled a runtime thread for as long
++        // as the daemon took, or forever if it was gone.
++        if let Ok(receiver) = self.daemon.unregister(self.service_info.get_fullname()) {
++            let _ = tokio::time::timeout(UNREGISTER_WAIT, receiver.recv_async()).await;
+         }
++        shutdown_daemon(&self.daemon).await;
+ 
+-        Ok(())
++        result
+     }
+ 
+     fn build_service(
+@@ -77,7 +97,7 @@ impl MDnsServer {
+ 
+         let properties = [("n", endpoint_info)];
+         let si = ServiceInfo::new(
+-            "_FC9F5ED42C8A._tcp.local.",
++            SERVICE_TYPE,
+             &name,
+             &name, // Needs to be ASCII?
+             "",
+@@ -89,3 +109,10 @@ impl MDnsServer {
+         Ok(si)
+     }
+ }
++
++impl Drop for MDnsServer {
++    fn drop(&mut self) {
++        // The daemon thread outlives its handle unless told to stop.
++        let _ = self.daemon.shutdown();
++    }
++}
+diff --git a/src/hdl/mdns_discovery.rs b/src/hdl/mdns_discovery.rs
+index 5d516d4..9f857f9 100644
+--- a/src/hdl/mdns_discovery.rs
++++ b/src/hdl/mdns_discovery.rs
+@@ -1,13 +1,26 @@
+ use std::collections::HashMap;
++use std::net::IpAddr;
++use std::sync::Arc;
++use std::time::Duration;
+ 
+-use mdns_sd::{ServiceDaemon, ServiceEvent};
+-use tokio::net::TcpStream;
++use mdns_sd::{IfKind, IfPredicate, ServiceDaemon, ServiceEvent};
+ use tokio::sync::broadcast;
+ use tokio_util::sync::CancellationToken;
+ 
+ use crate::DeviceType;
+ use crate::utils::{is_not_self_ip, parse_mdns_endpoint_info, parse_mdns_name};
+ 
++/// Most services remembered at once. mDNS is open to anyone on the link,
++/// and every announcement used to add an entry, without limit.
++pub const MAX_DISCOVERED_ENDPOINTS: usize = 64;
++
++/// How long stopping waits for the mDNS daemon thread to acknowledge.
++const SHUTDOWN_WAIT: Duration = Duration::from_millis(500);
++
++/// Which addresses a service may be reached at, and which interfaces the
++/// daemon listens on: the embedding application's reach policy.
++pub type AddrFilter = Arc<dyn Fn(IpAddr) -> bool + Send + Sync>;
++
+ #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+ pub struct EndpointInfo {
+     pub fullname: String,
+@@ -25,20 +38,34 @@ pub struct EndpointInfo {
+ pub struct MDnsDiscovery {
+     daemon: ServiceDaemon,
+     sender: broadcast::Sender<EndpointInfo>,
++    filter: AddrFilter,
+ }
+ 
+ impl MDnsDiscovery {
+-    pub fn new(sender: broadcast::Sender<EndpointInfo>) -> Result<Self, anyhow::Error> {
++    /// Browses on the interfaces whose address `filter` accepts, and reports
++    /// only services at addresses it accepts.
++    pub fn new(
++        sender: broadcast::Sender<EndpointInfo>,
++        filter: AddrFilter,
++    ) -> Result<Self, anyhow::Error> {
+         let daemon = ServiceDaemon::new()?;
+-
+-        Ok(Self { daemon, sender })
++        let intf_filter = filter.clone();
++        daemon.disable_interface(IfKind::All)?;
++        daemon.enable_interface(IfKind::Predicate(IfPredicate::new(move |intf| {
++            intf.ip().is_ipv4() && intf_filter(intf.ip())
++        })))?;
++
++        Ok(Self {
++            daemon,
++            sender,
++            filter,
++        })
+     }
+ 
+     pub async fn run(self, ctk: CancellationToken) -> Result<(), anyhow::Error> {
+         info!("MDnsDiscovery: service starting");
+ 
+-        let service_type = "_FC9F5ED42C8A._tcp.local.";
+-        let receiver = self.daemon.browse(service_type)?;
++        let receiver = self.daemon.browse(super::SERVICE_TYPE)?;
+ 
+         // Map with fullname as key and EndpointInfo as value
+         let mut cache: HashMap<String, EndpointInfo> = HashMap::new();
+@@ -50,80 +77,104 @@ impl MDnsDiscovery {
+                     break;
+                 }
+                 r = receiver.recv_async() => {
+-                    match r {
+-                        Ok(event) => {
+-                            match event {
+-                                ServiceEvent::ServiceResolved(info) => {
+-                                    let port = info.get_port();
+-
+-                                    let ip_hash = info.get_addresses_v4();
+-                                    if ip_hash.is_empty() {
+-                                        continue;
+-                                    }
+-
+-                                    let ip = match ip_hash.iter().next() {
+-                                        Some(i) => i,
+-                                        None => continue,
+-                                    };
+-
+-                                    // Check that the IP is not a "self IP"
+-                                    if !is_not_self_ip(ip) {
+-                                        continue;
+-                                    }
+-
+-                                    // Decode the "n" text properties
+-                                    let n = match info.get_property("n") {
+-                                        Some(_n) => _n,
+-                                        None => continue,
+-                                    };
+-
+-                                    // Parse the endpoint info
+-                                    let (dt, dn) = match parse_mdns_endpoint_info(n.val_str()) {
+-                                        Ok(r) => r,
+-                                        Err(_) => continue
+-                                    };
+-
+-                                    let ip_port = format!("{ip}:{port}");
+-                                    let fullname = info.get_fullname().to_string();
+-                                    if TcpStream::connect(&ip_port).await.is_ok() {
+-                                        let ei = EndpointInfo {
+-                                            fullname: fullname.clone(),
+-                                            id: ip_port,
+-                                            endpoint_id: parse_mdns_name(&fullname),
+-                                            name: Some(dn),
+-                                            ip: Some(ip.to_string()),
+-                                            port: Some(port.to_string()),
+-                                            rtype: Some(dt),
+-                                            present: Some(true),
+-                                        };
+-                                        debug!("ServiceResolved: a {:?} at {:?}", ei.rtype, ei.id);
+-                                        cache.insert(fullname.clone(), ei.clone());
+-                                        let _ = self.sender.send(ei);
+-                                    }
+-                                }
+-                                ServiceEvent::ServiceRemoved(_, fullname) => {
+-                                    trace!("ServiceRemoved");
+-                                    if let Some(ei) = cache.remove(&fullname) {
+-                                        debug!("ServiceRemoved: forgetting a service");
+-                                        let _ = self.sender.send(EndpointInfo {
+-                                            fullname: ei.fullname,
+-                                            id: ei.id,
+-                                            endpoint_id: ei.endpoint_id,
+-                                            present: Some(false),
+-                                            ..Default::default()
+-                                        });
+-                                    }
+-                                }
+-                                ServiceEvent::SearchStarted(_) | ServiceEvent::SearchStopped(_) => {}
+-                                _ => {}
++                    let event = match r {
++                        Ok(event) => event,
++                        Err(err) => {
++                            // The daemon is gone; the channel will never
++                            // yield again. (Logging and looping, as before,
++                            // spun a core at 100 %.)
++                            error!("MDnsDiscovery: error: {}", err);
++                            break;
++                        }
++                    };
++                    match event {
++                        ServiceEvent::ServiceResolved(info) => {
++                            let fullname = info.get_fullname().to_string();
++                            if !cache.contains_key(&fullname)
++                                && cache.len() >= MAX_DISCOVERED_ENDPOINTS
++                            {
++                                continue;
++                            }
++                            let port = info.get_port();
++
++                            // The first address the policy accepts. Nothing
++                            // connects to it here: probing every announced
++                            // address meant opening TCP connections to hosts
++                            // any peer named, one at a time, each for as long
++                            // as the OS connect timeout.
++                            let Some(ip) = info
++                                .get_addresses_v4()
++                                .into_iter()
++                                .find(|ip| (self.filter)(IpAddr::V4(*ip)))
++                            else {
++                                continue;
++                            };
++
++                            // Check that the IP is not a "self IP"
++                            if !is_not_self_ip(&ip) {
++                                continue;
++                            }
++
++                            // Decode the "n" text properties
++                            let Some(n) = info.get_property("n") else {
++                                continue;
++                            };
++
++                            // Parse the endpoint info
++                            let Ok((dt, dn)) = parse_mdns_endpoint_info(n.val_str()) else {
++                                continue;
++                            };
++
++                            let ei = EndpointInfo {
++                                fullname: fullname.clone(),
++                                id: format!("{ip}:{port}"),
++                                endpoint_id: parse_mdns_name(&fullname),
++                                name: Some(dn),
++                                ip: Some(ip.to_string()),
++                                port: Some(port.to_string()),
++                                rtype: Some(dt),
++                                present: Some(true),
++                            };
++                            debug!("ServiceResolved: a {:?} at {:?}", ei.rtype, ei.id);
++                            cache.insert(fullname, ei.clone());
++                            let _ = self.sender.send(ei);
++                        }
++                        ServiceEvent::ServiceRemoved(_, fullname) => {
++                            trace!("ServiceRemoved");
++                            if let Some(ei) = cache.remove(&fullname) {
++                                debug!("ServiceRemoved: forgetting a service");
++                                let _ = self.sender.send(EndpointInfo {
++                                    fullname: ei.fullname,
++                                    id: ei.id,
++                                    endpoint_id: ei.endpoint_id,
++                                    present: Some(false),
++                                    ..Default::default()
++                                });
+                             }
+-                        },
+-                        Err(err) => error!("MDnsDiscovery: error: {}", err),
++                        }
++                        _ => {}
+                     }
+                 }
+             }
+         }
+ 
++        let _ = self.daemon.stop_browse(super::SERVICE_TYPE);
++        shutdown_daemon(&self.daemon).await;
+         Ok(())
+     }
+ }
++
++impl Drop for MDnsDiscovery {
++    fn drop(&mut self) {
++        // The daemon thread outlives its handle unless told to stop; a second
++        // shutdown after run() is harmless.
++        let _ = self.daemon.shutdown();
++    }
++}
++
++/// Stops the daemon thread and waits, briefly, until it has.
++pub(crate) async fn shutdown_daemon(daemon: &ServiceDaemon) {
++    if let Ok(status) = daemon.shutdown() {
++        let _ = tokio::time::timeout(SHUTDOWN_WAIT, status.recv_async()).await;
++    }
++}
+diff --git a/src/lib.rs b/src/lib.rs
+index 4d3a8bc..54ff8a2 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -7,7 +7,8 @@
+ //! back events (an introduction to show the user, chunks of an accepted
+ //! file, a text). It decides whether to accept, where bytes go and when to
+ //! give up. rqs_lib keeps no global state, spawns no task and never touches
+-//! the file system.
++//! the file system; the only thread it causes is mdns-sd's daemon, which
++//! [`MDnsServer::run`] and [`MDnsDiscovery::run`] stop before they return.
+ 
+ #[macro_use]
+ extern crate log;
+diff --git a/src/utils.rs b/src/utils.rs
+index e7ff3b7..aaf6988 100644
+--- a/src/utils.rs
++++ b/src/utils.rs
+@@ -44,21 +44,34 @@ pub struct RemoteDeviceInfo {
+     pub device_type: DeviceType,
+ }
+ 
++/// Longest device name announced, in bytes. The endpoint info travels in
++/// an mDNS TXT string (at most 255 bytes, base64) and in BLE adverts; a
++/// longer name used to be cut mid-character (or its one-byte length to
++/// wrap) and make the whole record unusable.
++pub const MAX_ENDPOINT_NAME_BYTES: usize = 128;
++
++/// `name`, cut to at most [`MAX_ENDPOINT_NAME_BYTES`] on a character
++/// boundary.
++fn endpoint_name(name: &str) -> &str {
++    let mut end = name.len().min(MAX_ENDPOINT_NAME_BYTES);
++    while !name.is_char_boundary(end) {
++        end -= 1;
++    }
++    &name[..end]
++}
++
+ impl RemoteDeviceInfo {
+     pub fn serialize(&self) -> Vec<u8> {
+         // 1 byte: Version(3 bits)|Visibility(1 bit)|Device Type(3 bits)|Reserved(1 bit)
+-        let mut endpoint_info: Vec<u8> = vec![((self.device_type.clone() as u8) << 1) & 0b111];
++        let mut endpoint_info: Vec<u8> = vec![((self.device_type.clone() as u8) << 1) & 0b1110];
+ 
+         // 16 bytes: unknown random bytes
+         endpoint_info.extend((0..16).map(|_| rand::rng().random_range(0..=255)));
+ 
+         // Device name in UTF-8 prefixed with 1-byte length
+-        let mut name_chars = self.name.as_bytes().to_vec();
+-        if name_chars.len() > 255 {
+-            name_chars.truncate(255);
+-        }
+-        endpoint_info.push(name_chars.len() as u8);
+-        endpoint_info.extend(name_chars);
++        let name = endpoint_name(&self.name).as_bytes();
++        endpoint_info.push(name.len() as u8);
++        endpoint_info.extend_from_slice(name);
+ 
+         endpoint_info
+     }
+@@ -106,9 +119,8 @@ pub fn gen_mdns_endpoint_info(device_type: u8, device_name: &str) -> String {
+ 
+     record.extend_from_slice(ENDPOINT_IDENTITY.as_slice());
+ 
+-    let device_name = device_name.as_bytes();
+-    let length = device_name.len() as u8;
+-    record.push(length);
++    let device_name = endpoint_name(device_name).as_bytes();
++    record.push(device_name.len() as u8);
+     record.extend_from_slice(device_name);
+ 
+     URL_SAFE_NO_PAD.encode(&record)
+@@ -116,17 +128,14 @@ pub fn gen_mdns_endpoint_info(device_type: u8, device_name: &str) -> String {
+ 
+ pub fn parse_mdns_endpoint_info(encoded_str: &str) -> Result<(DeviceType, String), anyhow::Error> {
+     let decoded_bytes = URL_SAFE_NO_PAD.decode(encoded_str)?;
+-    if decoded_bytes.len() < 19 {
++    let (Some(&flags), Some(&name_length)) = (decoded_bytes.first(), decoded_bytes.get(17)) else {
+         return Err(anyhow!("Invalid data length"));
+-    }
+-
+-    let device_type = (decoded_bytes[0] >> 1) & 0x7;
+-    let name_length = decoded_bytes[17] as usize;
+-    if 18 + name_length > decoded_bytes.len() {
+-        return Err(anyhow!("Invalid name length"));
+-    }
++    };
+ 
+-    let device_name_bytes = &decoded_bytes[18..18 + name_length];
++    let device_type = (flags >> 1) & 0x7;
++    let device_name_bytes = decoded_bytes
++        .get(18..18 + usize::from(name_length))
++        .ok_or_else(|| anyhow!("Invalid name length"))?;
+     let device_name = String::from_utf8(device_name_bytes.to_vec())?;
+ 
+     Ok((DeviceType::from_raw_value(device_type), device_name))
+@@ -288,6 +297,36 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn long_names_are_cut_on_a_character_boundary() {
++        let name = "ä".repeat(200);
++        let info = gen_mdns_endpoint_info(DeviceType::Phone as u8, &name);
++        let (_, parsed) = parse_mdns_endpoint_info(&info).unwrap();
++        assert!(parsed.len() <= MAX_ENDPOINT_NAME_BYTES);
++        assert!(name.starts_with(&parsed));
++        let rdi = RemoteDeviceInfo {
++            name,
++            device_type: DeviceType::Phone,
++        };
++        let bytes = rdi.serialize();
++        assert_eq!(usize::from(bytes[17]) + 18, bytes.len());
++        assert!(std::str::from_utf8(&bytes[18..]).is_ok());
++    }
++
++    #[test]
++    fn hostile_endpoint_info_is_an_error() {
++        for s in ["", "AA", "____", &URL_SAFE_NO_PAD.encode([0u8; 17])] {
++            assert!(parse_mdns_endpoint_info(s).is_err(), "{s}");
++        }
++        let mut record = vec![0u8; 18];
++        record[17] = 200;
++        assert!(parse_mdns_endpoint_info(&URL_SAFE_NO_PAD.encode(&record)).is_err());
++        record.truncate(17);
++        record.push(2);
++        record.extend_from_slice(&[0xff, 0xfe]);
++        assert!(parse_mdns_endpoint_info(&URL_SAFE_NO_PAD.encode(&record)).is_err());
++    }
++
+     #[test]
+     fn mdns_names_carry_the_endpoint_id() {
+         let name = gen_mdns_name(*b"Ab3z");

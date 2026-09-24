@@ -47,8 +47,10 @@ const HELLO_WAIT: Duration = Duration::from_secs(2);
 /// the properties first).
 const REGISTER_WAIT: Duration = Duration::from_secs(5);
 
-/// How long unregistering may take on the way out.
-pub const UNREGISTER_WAIT: Duration = Duration::from_secs(1);
+/// How long unregistering may take on the way out. With [`TICK`] this is
+/// the most stopping the nudge takes, well inside what the hub gives an
+/// adapter to stop (3 s, for discovery and receiving together).
+pub const UNREGISTER_WAIT: Duration = Duration::from_millis(500);
 
 /// Longest bus address accepted from the environment.
 const MAX_ADDRESS_BYTES: usize = 1024;
@@ -158,8 +160,13 @@ pub fn advertise(address: &str, token: &CancellationToken) -> Result<(), NudgeEr
     let hello = method_call(DBUS_NAME, DBUS_PATH, DBUS_IFACE, "Hello")?;
     nudge.call(hello, HELLO_WAIT, Some(token))?;
 
-    let register = method_call(BLUEZ_NAME, ADAPTER_PATH, MANAGER_IFACE, "RegisterAdvertisement")?
-        .append2(object_path()?, PropMap::new());
+    let register = method_call(
+        BLUEZ_NAME,
+        ADAPTER_PATH,
+        MANAGER_IFACE,
+        "RegisterAdvertisement",
+    )?
+    .append2(object_path()?, PropMap::new());
     let reply = nudge.call(register, REGISTER_WAIT, Some(token))?;
     // BlueZ's unique name: the only caller whose Release counts.
     nudge.bluez = reply.sender().map(|s| s.to_string());
@@ -169,8 +176,12 @@ pub fn advertise(address: &str, token: &CancellationToken) -> Result<(), NudgeEr
 
     if !nudge.released
         && nudge.channel.is_connected()
-        && let Ok(unregister) =
-            method_call(BLUEZ_NAME, ADAPTER_PATH, MANAGER_IFACE, "UnregisterAdvertisement")
+        && let Ok(unregister) = method_call(
+            BLUEZ_NAME,
+            ADAPTER_PATH,
+            MANAGER_IFACE,
+            "UnregisterAdvertisement",
+        )
     {
         let unregister = unregister.append1(object_path()?);
         let _ = nudge.call(unregister, UNREGISTER_WAIT, None);
@@ -268,8 +279,8 @@ impl Nudge {
                     _ => error_reply(call, "org.freedesktop.DBus.Error.InvalidArgs"),
                 },
                 (ADVERTISEMENT_IFACE, "Release") => {
-                    let from_bluez = self.bluez.is_some()
-                        && call.sender().map(|s| s.to_string()) == self.bluez;
+                    let from_bluez =
+                        self.bluez.is_some() && call.sender().map(|s| s.to_string()) == self.bluez;
                     if from_bluez {
                         self.released = true;
                         Message::new_method_return(call)
@@ -341,6 +352,11 @@ fn error_reply(call: &Message, name: &'static str) -> Option<Message> {
 /// Builds a method call from constant names; `Malformed` if one is not
 /// valid. The dbus crate's `From<&str>` conversions panic instead.
 fn method_call(dest: &str, path: &str, iface: &str, member: &str) -> Result<Message, NudgeError> {
+    // An interior NUL would be cut off silently by the C string conversion
+    // and the call would go somewhere else.
+    if [dest, path, iface, member].iter().any(|s| s.contains('\0')) {
+        return Err(NudgeError::Malformed);
+    }
     let dest = BusName::new(dest).map_err(|_| NudgeError::Malformed)?;
     let path = Path::new(path).map_err(|_| NudgeError::Malformed)?;
     let iface = Interface::new(iface).map_err(|_| NudgeError::Malformed)?;
@@ -422,10 +438,26 @@ mod tests {
         assert_eq!(props["Type"].0.as_str(), Some("broadcast"));
         let data = &props["ServiceData"];
         let mut iter = data.0.as_iter().unwrap();
-        assert_eq!(iter.next().and_then(|k| k.as_str().map(str::to_owned)).as_deref(), Some(SERVICE_UUID));
+        assert_eq!(
+            iter.next()
+                .and_then(|k| k.as_str().map(str::to_owned))
+                .as_deref(),
+            Some(SERVICE_UUID)
+        );
         assert!(object_path().is_ok());
-        assert!(method_call(BLUEZ_NAME, ADAPTER_PATH, MANAGER_IFACE, "RegisterAdvertisement").is_ok());
-        assert_eq!(method_call("", "/", "a.b", "c").err(), Some(NudgeError::Malformed));
+        assert!(
+            method_call(
+                BLUEZ_NAME,
+                ADAPTER_PATH,
+                MANAGER_IFACE,
+                "RegisterAdvertisement"
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            method_call("", "/", "a.b", "c").err(),
+            Some(NudgeError::Malformed)
+        );
     }
 
     #[test]

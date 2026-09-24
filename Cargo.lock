@@ -3107,14 +3107,18 @@ name = "sukkula-engine"
 version = "0.1.0"
 dependencies = [
  "dbus",
+ "hmac 0.12.1",
  "localsend",
  "magic-wormhole",
+ "p256",
  "proptest",
+ "prost",
  "qrcode",
  "rqs_lib",
  "rustix",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "sukkula-core",
  "tempfile",
  "thiserror",

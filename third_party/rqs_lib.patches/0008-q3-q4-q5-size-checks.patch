@@ -1,0 +1,494 @@
+Q3, Q4, Q5: check every size a peer declares, and cap what is buffered
+
+Every size in a Quick Share frame is the peer's claim. Upstream uses them
+before checking them:
+
+- Q3: a BYTES payload (the sharing frames that set a transfer up, and
+  texts) is refused only when its declared total_size is over 5 MiB, so
+  a negative size passes, and `Vec::with_capacity(total_size as usize)`
+  turns it into a capacity near 2^64: the allocation fails and the
+  process aborts ("capacity overflow"), before any consent, on both the
+  receiving and the sending side.
+- Q4: the buffer then grows by whatever the chunks carry, never checked
+  against the declared size, and a finished buffer stays in the map for
+  the life of the connection; any number of payload ids can be open at
+  once. A peer can make the receiver hold unbounded memory before the
+  user has seen anything.
+- Q5: file sizes in the introduction are summed with `as u64`, so a
+  negative size wraps the total the user is asked to accept, and nothing
+  limits the number of files or keeps payload ids unique (two files
+  with one id share one book-keeping entry and one output file).
+- A file chunk is checked against the declared size with unchecked
+  addition, and a last chunk that ends the file short is taken as the
+  whole file: the transfer is reported finished with a truncated file.
+
+The new hdl/payload.rs reassembles BYTES payloads for both handlers:
+sizes below zero and over a cap (256 KiB for a sharing frame, 64 KiB for
+a text) are refused, nothing is allocated from a declared size (only
+from bytes that arrived), a payload never grows past what it declared,
+every chunk must declare the same size, a finished or refused payload is
+forgotten, and at most two are reassembled at once.
+
+The introduction is refused (Status REJECT) when a file size is below
+zero, more than 1000 files are offered, or a payload id repeats; a text
+must declare 0 to 64 KiB and come alone. File chunks use checked
+arithmetic, the last chunk may carry data, and it must end the file at
+exactly its declared size.
+---
+ src/hdl/inbound.rs  | 109 +++++++++++++++-----------
+ src/hdl/mod.rs      |   3 +-
+ src/hdl/outbound.rs |  38 +++------
+ src/hdl/payload.rs  | 183 ++++++++++++++++++++++++++++++++++++++++++++
+ 4 files changed, 260 insertions(+), 73 deletions(-)
+
+diff --git a/src/hdl/inbound.rs b/src/hdl/inbound.rs
+index 69d8a64..d67482d 100644
+--- a/src/hdl/inbound.rs
++++ b/src/hdl/inbound.rs
+@@ -20,6 +20,9 @@ use super::{InnerState, TransferState};
+ use crate::channel::{self, ChannelMessage, MessageClient, TransferAction, TransferKind};
+ use crate::hdl::TextPayloadInfo;
+ use crate::hdl::info::{InternalFileInfo, TransferMetadata, TransferPayload, TransferPayloadKind};
++use crate::hdl::payload::{
++    MAX_CONTROL_PAYLOAD_LENGTH, MAX_INTRODUCTION_FILES, MAX_TEXT_PAYLOAD_LENGTH, assemble,
++};
+ use crate::location_nearby_connections::payload_transfer_frame::{
+     PacketType, PayloadChunk, PayloadHeader, payload_header,
+ };
+@@ -595,42 +598,28 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
+                         info!("Processing PayloadType::Bytes");
+                         let payload_id = header.id();
+ 
+-                        if header.total_size() > SANE_FRAME_LENGTH.into() {
+-                            self.state.payload_buffers.remove(&payload_id);
+-                            return Err(anyhow!(
+-                                "Payload too large: {} bytes",
+-                                header.total_size()
+-                            ));
+-                        }
+-
+-                        self.state
+-                            .payload_buffers
+-                            .entry(payload_id)
+-                            .or_insert_with(|| Vec::with_capacity(header.total_size() as usize));
+-
+-                        // Get the current length of the buffer, if it exists, without holding a mutable borrow.
+-                        let buffer_len = self.state.payload_buffers.get(&payload_id).unwrap().len();
+-                        if chunk.offset() != buffer_len as i64 {
+-                            self.state.payload_buffers.remove(&payload_id);
+-                            return Err(anyhow!(
+-                                "Unexpected chunk offset: {}, expected: {}",
+-                                chunk.offset(),
+-                                buffer_len
+-                            ));
+-                        }
+-
+-                        let buffer = self.state.payload_buffers.get_mut(&payload_id).unwrap();
+-                        if let Some(body) = &chunk.body {
+-                            buffer.extend(body);
+-                        }
+-
+-                        if (chunk.flags() & 1) == 1 {
++                        let is_text = self
++                            .state
++                            .text_payload
++                            .as_ref()
++                            .is_some_and(|t| t.get_i64_value() == payload_id);
++                        let max = if is_text {
++                            MAX_TEXT_PAYLOAD_LENGTH
++                        } else {
++                            MAX_CONTROL_PAYLOAD_LENGTH
++                        };
++                        let assembled = assemble(
++                            &mut self.state.payload_buffers,
++                            payload_id,
++                            header.total_size(),
++                            max,
++                            chunk,
++                        )?;
++
++                        if let Some(mut buffer) = assembled {
+                             debug!("Chunk flags & 1 == 1 ?? End of data ??");
+ 
+-                            if self.state.text_payload.is_some()
+-                                && self.state.text_payload.as_ref().unwrap().get_i64_value()
+-                                    == payload_id
+-                            {
++                            if is_text {
+                                 info!("Transfer finished");
+ 
+                                 match self.state.text_payload.clone().unwrap() {
+@@ -702,7 +691,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
+                                             }
+                                             SecurityType::Open => "".into(),
+                                             SecurityType::WpaPsk | SecurityType::Wep => {
+-                                                parse_password_payload(buffer)
++                                                parse_password_payload(&mut buffer)
+                                                     .inspect_err(|err| error!("{err:#}"))
+                                                     .unwrap_or_default()
+                                             }
+@@ -760,11 +749,22 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
+                             ));
+                         }
+ 
+-                        let chunk_size = chunk.body().len();
+-                        if current_offset + chunk_size as i64 > file_internal.total_size {
++                        let chunk_size = i64::try_from(chunk.body().len())?;
++                        let after = current_offset
++                            .checked_add(chunk_size)
++                            .ok_or_else(|| anyhow!("file offset overflow"))?;
++                        if after > file_internal.total_size {
+                             return Err(anyhow!(
+                                 "Transferred file size exceeds previously specified value: {} vs {}",
+-                                current_offset + chunk_size as i64,
++                                after,
++                                file_internal.total_size
++                            ));
++                        }
++                        let last = (chunk.flags() & 1) == 1;
++                        if last && after != file_internal.total_size {
++                            return Err(anyhow!(
++                                "file ended after {} of {} bytes",
++                                after,
+                                 file_internal.total_size
+                             ));
+                         }
+@@ -775,18 +775,21 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
+                                 .as_ref()
+                                 .unwrap()
+                                 .write_all_at(chunk.body(), current_offset as u64)?;
+-                            file_internal.bytes_transferred += chunk_size as i64;
++                            file_internal.bytes_transferred = after;
+ 
+                             self.update_state(
+                                 |e| {
+                                     if let Some(tmd) = e.transfer_metadata.as_mut() {
+-                                        tmd.ack_bytes += chunk_size as u64;
++                                        tmd.ack_bytes += chunk.body().len() as u64;
+                                     }
+                                 },
+                                 true,
+                             )
+                             .await;
+-                        } else if (chunk.flags() & 1) == 1 {
++                        }
++                        // The last chunk may carry data too; it ends the file
++                        // either way (and only at its declared size, above).
++                        if last {
+                             self.state.transferred_files.remove(&payload_id);
+                             if self.state.transferred_files.is_empty() {
+                                 info!("Transfer finished");
+@@ -955,6 +958,20 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
+ 
+         if !introduction.file_metadata.is_empty() && introduction.text_metadata.is_empty() {
+             trace!("process_introduction: handling file_metadata");
++            // Sizes are the peer's claim: a negative one used to wrap the
++            // total announced to the user (`as u64`), and a duplicate
++            // payload id made two files share one book-keeping entry.
++            let files_ok = introduction.file_metadata.len() <= MAX_INTRODUCTION_FILES
++                && introduction.file_metadata.iter().all(|f| f.size() >= 0);
++            let mut ids = std::collections::HashSet::new();
++            let unique = introduction
++                .file_metadata
++                .iter()
++                .all(|f| ids.insert(f.payload_id()));
++            if !files_ok || !unique {
++                self.reject_transfer(None).await?;
++                return Err(anyhow!("malformed file list"));
++            }
+             let mut files_name = Vec::with_capacity(introduction.file_metadata.len());
+             let mut total_bytes: u64 = 0;
+ 
+@@ -1013,7 +1030,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
+                     total_size: file.size(),
+                     file: None,
+                 };
+-                total_bytes += info.total_size as u64;
++                // Not negative (checked above); a sum past u64 stays at the
++                // top rather than wrapping to a small number.
++                total_bytes = total_bytes.saturating_add(info.total_size.unsigned_abs());
+                 self.state.transferred_files.insert(file.payload_id(), info);
+                 files_name.push(resolved_name.clone());
+             }
+@@ -1038,9 +1057,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
+                 true,
+             )
+             .await;
+-        } else if introduction.text_metadata.len() == 1 {
++        } else if introduction.text_metadata.len() == 1 && introduction.file_metadata.is_empty() {
+             trace!("process_introduction: handling text_metadata");
+             let meta = introduction.text_metadata.first().unwrap();
++            if !(0..=MAX_TEXT_PAYLOAD_LENGTH).contains(&meta.size()) {
++                self.reject_transfer(None).await?;
++                return Err(anyhow!("text size out of range"));
++            }
+ 
+             match meta.r#type() {
+                 text_metadata::Type::Url => {
+diff --git a/src/hdl/mod.rs b/src/hdl/mod.rs
+index c1d4644..f791909 100644
+--- a/src/hdl/mod.rs
++++ b/src/hdl/mod.rs
+@@ -16,6 +16,7 @@ mod mdns;
+ pub use mdns::*;
+ mod outbound;
+ pub use outbound::*;
++pub mod payload;
+ 
+ #[allow(dead_code)]
+ #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+@@ -72,7 +73,7 @@ pub struct InnerState {
+     // pub text_payload_id: i64,
+     // pub text_is_url: bool,
+     // pub wifi_ssid: Option<String>,
+-    pub payload_buffers: HashMap<i64, Vec<u8>>,
++    pub payload_buffers: HashMap<i64, payload::BytePayload>,
+ }
+ 
+ #[derive(Debug, Clone)]
+diff --git a/src/hdl/outbound.rs b/src/hdl/outbound.rs
+index 28f5b28..5193a02 100644
+--- a/src/hdl/outbound.rs
++++ b/src/hdl/outbound.rs
+@@ -20,6 +20,7 @@ use tokio::sync::broadcast::error::TryRecvError;
+ use tokio::sync::broadcast::{Receiver, Sender};
+ 
+ use super::info::{InternalFileInfo, TransferMetadata, TransferPayload, TransferPayloadKind};
++use super::payload::{MAX_CONTROL_PAYLOAD_LENGTH, assemble};
+ use super::{InnerState, TransferState};
+ use crate::channel::{self, ChannelMessage, MessageClient, TransferAction, TransferKind};
+ use crate::location_nearby_connections::bandwidth_upgrade_negotiation_frame::upgrade_path_info::Medium;
+@@ -503,36 +504,15 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OutboundRequest<S> {
+                         info!("Processing PayloadType::Bytes");
+                         let payload_id = header.id();
+ 
+-                        if header.total_size() > SANE_FRAME_LENGTH.into() {
+-                            self.state.payload_buffers.remove(&payload_id);
+-                            return Err(anyhow!(
+-                                "Payload too large: {} bytes",
+-                                header.total_size()
+-                            ));
+-                        }
+-
+-                        self.state
+-                            .payload_buffers
+-                            .entry(payload_id)
+-                            .or_insert_with(|| Vec::with_capacity(header.total_size() as usize));
+-
+-                        // Get the current length of the buffer, if it exists, without holding a mutable borrow.
+-                        let buffer_len = self.state.payload_buffers.get(&payload_id).unwrap().len();
+-                        if chunk.offset() != buffer_len as i64 {
+-                            self.state.payload_buffers.remove(&payload_id);
+-                            return Err(anyhow!(
+-                                "Unexpected chunk offset: {}, expected: {}",
+-                                chunk.offset(),
+-                                buffer_len
+-                            ));
+-                        }
+-
+-                        let buffer = self.state.payload_buffers.get_mut(&payload_id).unwrap();
+-                        if let Some(body) = &chunk.body {
+-                            buffer.extend(body);
+-                        }
++                        let assembled = assemble(
++                            &mut self.state.payload_buffers,
++                            payload_id,
++                            header.total_size(),
++                            MAX_CONTROL_PAYLOAD_LENGTH,
++                            chunk,
++                        )?;
+ 
+-                        if (chunk.flags() & 1) == 1 {
++                        if let Some(buffer) = assembled {
+                             debug!("Chunk flags & 1 == 1 ?? End of data ??");
+ 
+                             let inner_frame = sharing_nearby::Frame::decode(buffer.as_slice())?;
+diff --git a/src/hdl/payload.rs b/src/hdl/payload.rs
+new file mode 100644
+index 0000000..f60a109
+--- /dev/null
++++ b/src/hdl/payload.rs
+@@ -0,0 +1,183 @@
++//! Reassembly of BYTES payloads: the sharing frames that set a transfer up,
++//! and texts.
++//!
++//! Every size here is the peer's claim and is checked before it is used:
++//! a declared size below zero is refused (it used to become a huge
++//! `usize` in `Vec::with_capacity` and abort the process), nothing is
++//! allocated from a declared size (only from bytes that arrived), a
++//! payload never grows past what it declared, all its chunks must declare
++//! the same size, and only a few payloads may be in flight at once.
++
++use std::collections::HashMap;
++
++use anyhow::anyhow;
++
++use crate::location_nearby_connections::payload_transfer_frame::PayloadChunk;
++
++/// Largest byte payload other than a text: the sharing frames that set a
++/// transfer up (introduction, response, cancel, ...). An introduction with
++/// a thousand files and long names stays well under this.
++pub const MAX_CONTROL_PAYLOAD_LENGTH: i64 = 256 * 1024;
++
++/// Largest text payload taken.
++pub const MAX_TEXT_PAYLOAD_LENGTH: i64 = 64 * 1024;
++
++/// Most byte payloads being reassembled at once. Senders send one at a
++/// time (a text may overlap a control frame); each payload id used to get
++/// a buffer of its own, without limit.
++pub const MAX_PENDING_BYTE_PAYLOADS: usize = 2;
++
++/// Most files one introduction may offer.
++pub const MAX_INTRODUCTION_FILES: usize = 1000;
++
++/// A byte payload being reassembled.
++#[derive(Debug, Default)]
++pub struct BytePayload {
++    declared: usize,
++    data: Vec<u8>,
++}
++
++/// Adds one chunk of byte payload `id`, which declares `total_size` bytes
++/// and may be at most `max` bytes. Returns the whole payload once its last
++/// chunk is in, and forgets it.
++pub fn assemble(
++    buffers: &mut HashMap<i64, BytePayload>,
++    id: i64,
++    total_size: i64,
++    max: i64,
++    chunk: &PayloadChunk,
++) -> Result<Option<Vec<u8>>, anyhow::Error> {
++    let result = assemble_inner(buffers, id, total_size, max, chunk);
++    if !matches!(result, Ok(None)) {
++        buffers.remove(&id);
++    }
++    result
++}
++
++fn assemble_inner(
++    buffers: &mut HashMap<i64, BytePayload>,
++    id: i64,
++    total_size: i64,
++    max: i64,
++    chunk: &PayloadChunk,
++) -> Result<Option<Vec<u8>>, anyhow::Error> {
++    if total_size < 0 {
++        return Err(anyhow!("byte payload declares a negative size"));
++    }
++    if total_size > max {
++        return Err(anyhow!("byte payload too large: {total_size} bytes"));
++    }
++    let declared = usize::try_from(total_size)?;
++    if !buffers.contains_key(&id) && buffers.len() >= MAX_PENDING_BYTE_PAYLOADS {
++        return Err(anyhow!("too many byte payloads in flight"));
++    }
++    let buffer = buffers.entry(id).or_insert_with(|| BytePayload {
++        declared,
++        data: Vec::new(),
++    });
++    if buffer.declared != declared {
++        return Err(anyhow!("byte payload changed its declared size"));
++    }
++    if chunk.offset() != i64::try_from(buffer.data.len())? {
++        return Err(anyhow!(
++            "Unexpected chunk offset: {}, expected: {}",
++            chunk.offset(),
++            buffer.data.len()
++        ));
++    }
++    let body = chunk.body();
++    let after = buffer
++        .data
++        .len()
++        .checked_add(body.len())
++        .ok_or_else(|| anyhow!("byte payload overflow"))?;
++    if after > buffer.declared {
++        return Err(anyhow!("byte payload longer than it declared"));
++    }
++    buffer.data.extend_from_slice(body);
++
++    if (chunk.flags() & 1) == 1 {
++        if buffer.data.len() != buffer.declared {
++            return Err(anyhow!("byte payload shorter than it declared"));
++        }
++        return Ok(Some(std::mem::take(&mut buffer.data)));
++    }
++    Ok(None)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn chunk(offset: i64, body: &[u8], last: bool) -> PayloadChunk {
++        PayloadChunk {
++            offset: Some(offset),
++            flags: Some(i32::from(last)),
++            body: Some(body.to_vec()),
++            ..Default::default()
++        }
++    }
++
++    #[test]
++    fn a_payload_reassembles_and_is_forgotten() {
++        let mut b = HashMap::new();
++        assert_eq!(
++            assemble(&mut b, 1, 5, 10, &chunk(0, b"he", false)).unwrap(),
++            None
++        );
++        assert_eq!(
++            assemble(&mut b, 1, 5, 10, &chunk(2, b"llo", true)).unwrap(),
++            Some(b"hello".to_vec())
++        );
++        assert!(b.is_empty());
++    }
++
++    #[test]
++    fn negative_huge_and_changing_sizes_are_refused() {
++        let mut b = HashMap::new();
++        assert!(assemble(&mut b, 1, -1, 10, &chunk(0, b"", true)).is_err());
++        assert!(assemble(&mut b, 1, i64::MIN, 10, &chunk(0, b"", true)).is_err());
++        assert!(assemble(&mut b, 1, 11, 10, &chunk(0, b"", true)).is_err());
++        assert!(
++            assemble(&mut b, 2, 4, 10, &chunk(0, b"ab", false))
++                .unwrap()
++                .is_none()
++        );
++        assert!(assemble(&mut b, 2, 9, 10, &chunk(2, b"cd", true)).is_err());
++        assert!(b.is_empty(), "a refused payload is dropped");
++    }
++
++    #[test]
++    fn a_payload_cannot_outgrow_its_declared_size() {
++        let mut b = HashMap::new();
++        assert!(assemble(&mut b, 1, 3, 10, &chunk(0, b"abcd", false)).is_err());
++        assert!(
++            assemble(&mut b, 1, 3, 10, &chunk(0, b"ab", false))
++                .unwrap()
++                .is_none()
++        );
++        assert!(assemble(&mut b, 1, 3, 10, &chunk(2, b"cd", false)).is_err());
++        assert!(assemble(&mut b, 1, 3, 10, &chunk(0, b"a", true)).is_err());
++    }
++
++    #[test]
++    fn short_payloads_and_bad_offsets_are_refused() {
++        let mut b = HashMap::new();
++        assert!(assemble(&mut b, 1, 3, 10, &chunk(0, b"ab", true)).is_err());
++        assert!(assemble(&mut b, 1, 3, 10, &chunk(1, b"ab", false)).is_err());
++    }
++
++    #[test]
++    fn only_a_few_payloads_are_in_flight() {
++        let mut b = HashMap::new();
++        for id in 0..MAX_PENDING_BYTE_PAYLOADS as i64 {
++            assert!(
++                assemble(&mut b, id, 5, 10, &chunk(0, b"a", false))
++                    .unwrap()
++                    .is_none()
++            );
++        }
++        assert!(assemble(&mut b, 99, 5, 10, &chunk(0, b"a", false)).is_err());
++        assert_eq!(b.len(), MAX_PENDING_BYTE_PAYLOADS);
++    }
++}

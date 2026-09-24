@@ -6,8 +6,9 @@
 //! [`OutboundRequest`], and drives the protocol one frame at a time, getting
 //! back events (an introduction to show the user, chunks of an accepted
 //! file, a text). It decides whether to accept, where bytes go and when to
-//! give up. rqs_lib keeps no global state, spawns nothing and never touches
-//! the file system.
+//! give up. rqs_lib keeps no global state, spawns no task and never touches
+//! the file system; the only thread it causes is mdns-sd's daemon, which
+//! [`MDnsServer::run`] and [`MDnsDiscovery::run`] stop before they return.
 
 #[macro_use]
 extern crate log;

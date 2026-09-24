@@ -11,8 +11,10 @@ const INNER_NAME: &str = "MDnsServer";
 /// The Quick Share service type.
 pub const SERVICE_TYPE: &str = "_FC9F5ED42C8A._tcp.local.";
 
-/// How long stopping waits for the goodbye announcement to go out.
-const UNREGISTER_WAIT: Duration = Duration::from_secs(1);
+/// How long stopping waits for the goodbye announcement to go out. Short:
+/// an embedding application stops everything within a few seconds, and a
+/// goodbye that did not make it only means peers forget us a little later.
+const UNREGISTER_WAIT: Duration = Duration::from_millis(500);
 
 /// Announces this device as a Quick Share receiver for as long as
 /// [`MDnsServer::run`] runs. Whether to announce at all (visibility) is the

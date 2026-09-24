@@ -12,7 +12,7 @@ publish.workspace = true
 default = ["localsend", "quickshare", "wormhole", "bluetooth"]
 # One feature per protocol, so each can be built and tested alone (spec §3).
 localsend = ["dep:localsend"]
-quickshare = ["dep:rqs_lib", "dep:dbus"]
+quickshare = ["dep:rqs_lib", "dep:dbus", "dep:rustix"]
 wormhole = ["dep:magic-wormhole", "dep:qrcode"]
 bluetooth = ["dep:dbus"]
 
@@ -37,6 +37,9 @@ magic-wormhole = { version = "=0.8.1", default-features = false, features = ["tr
 qrcode = { version = "0.14", default-features = false, optional = true }
 # BlueZ obexd over the system libdbus-1.so.3 (Harbour-allowed). Never `vendored`.
 dbus = { version = "0.9", optional = true }
+# Quick Share opens files to send with O_NONBLOCK (a FIFO swapped in must
+# not block a thread forever). Already in the tree through sukkula-core.
+rustix = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true
@@ -45,6 +48,13 @@ proptest.workspace = true
 # when it is one. Already in the tree through sukkula-core.
 rustix.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros", "net", "io-util", "fs", "test-util"] }
+# tests/quickshare.rs: a hostile Quick Share sender that does the UKEY2
+# handshake and builds its frames itself. The versions rqs_lib uses, so
+# nothing new enters Cargo.lock.
+prost = "0.13"
+p256 = { version = "0.13", features = ["ecdh"] }
+hmac = "0.12"
+sha2.workspace = true
 
 [lints]
 workspace = true

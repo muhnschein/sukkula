@@ -14,6 +14,13 @@ pub const SANE_FRAME_LENGTH: usize = 5 * 1024 * 1024;
 /// hold no more than this per connection.
 pub const MAX_HANDSHAKE_FRAME_LENGTH: usize = 32 * 1024;
 
+/// Largest frame accepted once the connection is encrypted but before any
+/// payload was accepted: one sharing frame (at most
+/// [`MAX_CONTROL_PAYLOAD_LENGTH`](super::payload::MAX_CONTROL_PAYLOAD_LENGTH))
+/// with its protobuf and encryption overhead. A sender that nobody has said
+/// yes to, and a receiver, which never sends file data, get no more.
+pub const MAX_SETUP_FRAME_LENGTH: usize = 260 * 1024;
+
 /// Most bytes asked of the socket in one read.
 const READ_CHUNK: usize = 64 * 1024;
 

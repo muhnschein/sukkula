@@ -23,8 +23,9 @@ pub const MAX_CONTROL_PAYLOAD_LENGTH: i64 = 256 * 1024;
 pub const MAX_TEXT_PAYLOAD_LENGTH: i64 = 64 * 1024;
 
 /// Most byte payloads being reassembled at once. Senders send one at a
-/// time; each payload id used to get a buffer of its own, without limit.
-pub const MAX_PENDING_BYTE_PAYLOADS: usize = 4;
+/// time (a text may overlap a control frame); each payload id used to get
+/// a buffer of its own, without limit.
+pub const MAX_PENDING_BYTE_PAYLOADS: usize = 2;
 
 /// Most files one introduction may offer.
 pub const MAX_INTRODUCTION_FILES: usize = 1000;
