@@ -1,0 +1,653 @@
+No panic on anything a peer sends during or after the handshake
+
+The UKEY2 handshake is unauthenticated: any device on the network can run
+it, so everything it carries is hostile input. Upstream panics on some of
+it, and each panic ends the connection task in the middle of whatever it
+held (on the receiving side, possibly a half-written file):
+
+- finalize_key_exchange builds the peer's P-256 point from the two
+  coordinates it sent and `unwrap()`s PublicKey::from_encoded_point,
+  which is None for any point that is not on the curve. One ClientFinish
+  with made-up coordinates panics the receiver (and a ServerInit the
+  sender) before anything is authenticated. The coordinates are also
+  decoded wrongly: a longer one is cut to its last 32 bytes whatever the
+  rest holds, and a shorter one (Java's BigInteger drops leading zero
+  bytes, about one key in 128) is used as is and fails.
+- Both handlers start with `encryption_done: true`, so a keep-alive or a
+  disconnection sent before the key exchange (an application cancelling
+  a transfer that is still handshaking) reaches `encrypt_key.unwrap()`.
+- Keys, the commitment, the handshake messages and the own key's
+  coordinates are all reached through `unwrap()`; the sequence counters
+  overflow after 2^31 frames (a panic with overflow checks on).
+- The sender panics on a local file name that is not UTF-8.
+
+utils::decode_p256_point decodes a coordinate the way Java writes it
+(sign byte, leading zeros dropped), refuses one that is longer, and
+returns an error for a point not on the curve. Every `unwrap()` on the
+handshake path is an error instead, both handlers start unencrypted, and
+the sequence counters use checked arithmetic. The connection request's
+endpoint info is parsed with bounds-checked reads, and the device type is
+taken from the right bits (3 to 1 of the flags byte; upstream masked the
+wrong ones). Unit tests cover the coordinate encodings, off-curve points
+and garbage.
+
+Findings: spec §5 (no crash from any input), S10. Report: docs/UPSTREAM-QUICKSHARE.md R1, R6, R16.
+---
+ src/hdl/inbound.rs  | 152 +++++++++++++++++++++++++-------------------
+ src/hdl/outbound.rs | 145 +++++++++++++++++++++++++-----------------
+ src/utils.rs        |  56 +++++++++++++++-
+ 3 files changed, 228 insertions(+), 125 deletions(-)
+
+diff --git a/src/hdl/inbound.rs b/src/hdl/inbound.rs
+index 8d08862..9a01e99 100644
+--- a/src/hdl/inbound.rs
++++ b/src/hdl/inbound.rs
+@@ -7,8 +7,7 @@ use anyhow::anyhow;
+ use bytes::Bytes;
+ use hmac::{Hmac, Mac};
+ use p256::ecdh::diffie_hellman;
+-use p256::elliptic_curve::sec1::{FromEncodedPoint, ToEncodedPoint};
+-use p256::{EncodedPoint, PublicKey};
++use p256::elliptic_curve::sec1::ToEncodedPoint;
+ use prost::Message;
+ use rand::Rng;
+ use sha2::{Digest, Sha256, Sha512};
+@@ -41,8 +40,9 @@ use crate::securemessage::{
+ };
+ use crate::sharing_nearby::{paired_key_result_frame, text_metadata};
+ use crate::utils::{
+-    DeviceType, RemoteDeviceInfo, aes_cbc_decrypt, aes_cbc_encrypt, encode_point,
+-    gen_ecdsa_keypair, gen_random, get_download_dir, hkdf_extract_expand, to_four_digit_string,
++    DeviceType, RemoteDeviceInfo, aes_cbc_decrypt, aes_cbc_encrypt, decode_p256_point,
++    encode_point, gen_ecdsa_keypair, gen_random, get_download_dir, hkdf_extract_expand,
++    to_four_digit_string,
+ };
+ use crate::{location_nearby_connections, sharing_nearby};
+ 
+@@ -121,7 +121,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
+                 server_seq: 0,
+                 client_seq: 0,
+                 state: TransferState::Initial,
+-                encryption_done: true,
++                // No keys until the UKEY2 exchange is done: until then a
++                // keep-alive or goodbye goes out in plaintext rather than
++                // reaching an unwrap of a key that is not there.
++                encryption_done: false,
+                 ..Default::default()
+             },
+             sender,
+@@ -318,25 +321,22 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
+             .as_ref()
+             .ok_or_else(|| anyhow!("Missing endpoint info"))?;
+ 
+-        // Check if endpoint info length is greater than 17
+-        if endpoint_info.len() <= 17 {
++        // 1 byte of flags, 16 of identity, 1 of name length, then the name.
++        let (Some(&flags), Some(&device_name_length)) =
++            (endpoint_info.first(), endpoint_info.get(17))
++        else {
+             return Err(anyhow!("Endpoint info too short"));
+-        }
+-
+-        let device_name_length = endpoint_info[17] as usize;
+-        // Validate length including device name
+-        if endpoint_info.len() < device_name_length + 18 {
+-            return Err(anyhow!(
+-                "Endpoint info too short to contain the device name"
+-            ));
+-        }
++        };
++        let name_bytes = endpoint_info
++            .get(18..18 + usize::from(device_name_length))
++            .ok_or_else(|| anyhow!("Endpoint info too short to contain the device name"))?;
+ 
+         // Extract and validate device name based on length
+-        let device_name = std::str::from_utf8(&endpoint_info[18..(18 + device_name_length)])
++        let device_name = std::str::from_utf8(name_bytes)
+             .map_err(|_| anyhow!("Device name is not valid UTF-8"))?;
+ 
+-        // Parsing the device type
+-        let raw_device_type = (endpoint_info[0] & 7) >> 1_usize;
++        // Parsing the device type: bits 3..1 of the flags byte.
++        let raw_device_type = (flags >> 1) & 7;
+ 
+         Ok(RemoteDeviceInfo {
+             name: device_name.to_string(),
+@@ -404,8 +404,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
+         let (secret_key, public_key) = gen_ecdsa_keypair();
+ 
+         let encoded_point = public_key.to_encoded_point(false);
+-        let x = encoded_point.x().unwrap();
+-        let y = encoded_point.y().unwrap();
++        let (Some(x), Some(y)) = (encoded_point.x(), encoded_point.y()) else {
++            return Err(anyhow!("own key has no coordinates"));
++        };
+ 
+         let pkey = GenericPublicKey {
+             r#type: PublicKeyType::EcP256.into(),
+@@ -458,7 +459,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
+         }
+ 
+         let sha512 = Sha512::digest(frame_data);
+-        if self.state.cipher_commitment.as_ref().unwrap().commitment() != sha512.as_slice() {
++        let commitment = self
++            .state
++            .cipher_commitment
++            .as_ref()
++            .ok_or_else(|| anyhow!("UKey2: no commitment"))?;
++        if commitment.commitment() != &sha512[..] {
+             error!("cipher_commitment isn't equals to sha512(frame_data)");
+             return Err(anyhow!("UKey2: cipher_commitment != sha512"));
+         }
+@@ -542,7 +548,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
+         &mut self,
+         smsg: &SecureMessage,
+     ) -> Result<(), anyhow::Error> {
+-        let mut hmac = HmacSha256::new_from_slice(self.state.recv_hmac_key.as_ref().unwrap())?;
++        let hmac_key = self
++            .state
++            .recv_hmac_key
++            .as_ref()
++            .ok_or_else(|| anyhow!("no keys yet"))?;
++        let mut hmac = HmacSha256::new_from_slice(hmac_key)?;
+         hmac.update(&smsg.header_and_body);
+         if !hmac
+             .finalize()
+@@ -556,13 +567,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
+         let header_and_body = HeaderAndBody::decode(&*smsg.header_and_body)?;
+ 
+         let msg_data = header_and_body.body;
+-        let key = self.state.decrypt_key.as_ref().unwrap();
++        let key = self
++            .state
++            .decrypt_key
++            .as_ref()
++            .ok_or_else(|| anyhow!("no keys yet"))?;
+ 
+         let decrypted = aes_cbc_decrypt(key, header_and_body.header.iv(), &msg_data)?;
+ 
+         let d2d_msg = DeviceToDeviceMessage::decode(&*decrypted)?;
+ 
+-        let seq = self.get_client_seq_inc().await;
++        let seq = self.get_client_seq_inc().await?;
+         if d2d_msg.sequence_number() != seq {
+             return Err(anyhow!(
+                 "Error d2d_msg.sequence_number invalid ({} vs {})",
+@@ -1051,7 +1066,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
+             .await;
+         } else if introduction.text_metadata.len() == 1 && introduction.file_metadata.is_empty() {
+             trace!("process_introduction: handling text_metadata");
+-            let meta = introduction.text_metadata.first().unwrap();
++            let Some(meta) = introduction.text_metadata.first() else {
++                return Err(anyhow!("Missing required fields"));
++            };
+             if !(0..=MAX_TEXT_PAYLOAD_LENGTH).contains(&meta.size()) {
+                 self.reject_transfer(None).await?;
+                 return Err(anyhow!("text size out of range"));
+@@ -1218,29 +1235,24 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
+             .ec_p256_public_key
+             .ok_or_else(|| anyhow!("Missing required fields"))?;
+ 
+-        let mut bytes = vec![0x04];
+-        // Ensure no more than 32 bytes for the keys
+-        if peer_p256_key.x.len() > 32 {
+-            bytes.extend_from_slice(&peer_p256_key.x[peer_p256_key.x.len() - 32..]);
+-        } else {
+-            bytes.extend_from_slice(&peer_p256_key.x);
+-        }
+-        if peer_p256_key.y.len() > 32 {
+-            bytes.extend_from_slice(&peer_p256_key.y[peer_p256_key.y.len() - 32..]);
+-        } else {
+-            bytes.extend_from_slice(&peer_p256_key.y);
+-        }
+-
+-        let encoded_point = EncodedPoint::from_bytes(bytes)?;
+-        let peer_key = PublicKey::from_encoded_point(&encoded_point).unwrap();
+-        let priv_key = self.state.private_key.as_ref().unwrap();
++        let peer_key = decode_p256_point(&peer_p256_key.x, &peer_p256_key.y)?;
++        let priv_key = self
++            .state
++            .private_key
++            .as_ref()
++            .ok_or_else(|| anyhow!("no key pair"))?;
+ 
+         let dhs = diffie_hellman(priv_key.to_nonzero_scalar(), peer_key.as_affine());
+         let derived_secret = Sha256::digest(dhs.raw_secret_bytes());
+ 
+         let mut ukey_info: Vec<u8> = vec![];
+-        ukey_info.extend_from_slice(self.state.client_init_msg_data.as_ref().unwrap());
+-        ukey_info.extend_from_slice(self.state.server_init_data.as_ref().unwrap());
++        let client_init = self.state.client_init_msg_data.as_ref();
++        let server_init = self.state.server_init_data.as_ref();
++        let (Some(client_init), Some(server_init)) = (client_init, server_init) else {
++            return Err(anyhow!("UKEY2 messages missing"));
++        };
++        ukey_info.extend_from_slice(client_init);
++        ukey_info.extend_from_slice(server_init);
+ 
+         let auth_label = "UKEY2 v1 auth".as_bytes();
+         let next_label = "UKEY2 v1 next".as_bytes();
+@@ -1369,11 +1381,15 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
+ 
+     async fn encrypt_and_send(&mut self, frame: &OfflineFrame) -> Result<(), anyhow::Error> {
+         let d2d_msg = DeviceToDeviceMessage {
+-            sequence_number: Some(self.get_server_seq_inc().await),
++            sequence_number: Some(self.get_server_seq_inc().await?),
+             message: Some(frame.encode_to_vec()),
+         };
+ 
+-        let key = self.state.encrypt_key.as_ref().unwrap();
++        let key = self
++            .state
++            .encrypt_key
++            .as_ref()
++            .ok_or_else(|| anyhow!("no keys yet"))?;
+         let msg_data = d2d_msg.encode_to_vec();
+         let iv = gen_random(16);
+ 
+@@ -1396,7 +1412,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
+             },
+         };
+ 
+-        let mut hmac = HmacSha256::new_from_slice(self.state.send_hmac_key.as_ref().unwrap())?;
++        let hmac_key = self
++            .state
++            .send_hmac_key
++            .as_ref()
++            .ok_or_else(|| anyhow!("no keys yet"))?;
++        let mut hmac = HmacSha256::new_from_slice(hmac_key)?;
+         hmac.update(&hb.encode_to_vec());
+         let result = hmac.finalize();
+ 
+@@ -1431,28 +1452,25 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
+         write_frame(&mut self.socket, &data).await
+     }
+ 
+-    async fn get_server_seq_inc(&mut self) -> i32 {
+-        self.update_state(
+-            |e| {
+-                e.server_seq += 1;
+-            },
+-            false,
+-        )
+-        .await;
+-
+-        self.state.server_seq
++    // Sequence numbers are i32 and only count up; one that would wrap ends
++    // the connection rather than overflowing (a panic with overflow checks,
++    // a repeated number without).
++    async fn get_server_seq_inc(&mut self) -> Result<i32, anyhow::Error> {
++        self.state.server_seq = self
++            .state
++            .server_seq
++            .checked_add(1)
++            .ok_or_else(|| anyhow!("sequence number exhausted"))?;
++        Ok(self.state.server_seq)
+     }
+ 
+-    async fn get_client_seq_inc(&mut self) -> i32 {
+-        self.update_state(
+-            |e| {
+-                e.client_seq += 1;
+-            },
+-            false,
+-        )
+-        .await;
+-
+-        self.state.client_seq
++    async fn get_client_seq_inc(&mut self) -> Result<i32, anyhow::Error> {
++        self.state.client_seq = self
++            .state
++            .client_seq
++            .checked_add(1)
++            .ok_or_else(|| anyhow!("sequence number exhausted"))?;
++        Ok(self.state.client_seq)
+     }
+ 
+     async fn update_state<F>(&mut self, f: F, inform: bool)
+diff --git a/src/hdl/outbound.rs b/src/hdl/outbound.rs
+index 67a6400..e44b5d1 100644
+--- a/src/hdl/outbound.rs
++++ b/src/hdl/outbound.rs
+@@ -9,8 +9,7 @@ use anyhow::anyhow;
+ use bytes::Bytes;
+ use hmac::{Hmac, Mac};
+ use p256::ecdh::diffie_hellman;
+-use p256::elliptic_curve::sec1::{FromEncodedPoint, ToEncodedPoint};
+-use p256::{EncodedPoint, PublicKey};
++use p256::elliptic_curve::sec1::ToEncodedPoint;
+ use prost::Message;
+ use rand::Rng;
+ use sha2::{Digest, Sha256, Sha512};
+@@ -46,8 +45,8 @@ use crate::sharing_nearby::{
+     FileMetadata, IntroductionFrame, file_metadata, paired_key_result_frame,
+ };
+ use crate::utils::{
+-    DeviceType, RemoteDeviceInfo, aes_cbc_decrypt, aes_cbc_encrypt, encode_point,
+-    gen_ecdsa_keypair, gen_random, hkdf_extract_expand, to_four_digit_string,
++    DeviceType, RemoteDeviceInfo, aes_cbc_decrypt, aes_cbc_encrypt, decode_p256_point,
++    encode_point, gen_ecdsa_keypair, gen_random, hkdf_extract_expand, to_four_digit_string,
+ };
+ use crate::{DEVICE_NAME, location_nearby_connections, sharing_nearby};
+ 
+@@ -104,7 +103,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OutboundRequest<S> {
+                 server_seq: 0,
+                 client_seq: 0,
+                 state: TransferState::Initial,
+-                encryption_done: true,
++                // No keys until the UKEY2 exchange is done: until then a
++                // keep-alive or goodbye goes out in plaintext rather than
++                // reaching an unwrap of a key that is not there.
++                encryption_done: false,
+                 transfer_metadata: Some(TransferMetadata {
+                     source: Some(rdi),
+                     destination: None,
+@@ -290,8 +292,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OutboundRequest<S> {
+         let (secret_key, public_key) = gen_ecdsa_keypair();
+ 
+         let encoded_point = public_key.to_encoded_point(false);
+-        let x = encoded_point.x().unwrap();
+-        let y = encoded_point.y().unwrap();
++        let (Some(x), Some(y)) = (encoded_point.x(), encoded_point.y()) else {
++            return Err(anyhow!("own key has no coordinates"));
++        };
+ 
+         let pkey = GenericPublicKey {
+             r#type: PublicKeyType::EcP256.into(),
+@@ -385,8 +388,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OutboundRequest<S> {
+         };
+ 
+         self.finalize_key_exchange(server_public_key).await?;
+-        self.send_frame(self.state.ukey_client_finish_msg_data.clone().unwrap())
+-            .await?;
++        let client_finish = self
++            .state
++            .ukey_client_finish_msg_data
++            .clone()
++            .ok_or_else(|| anyhow!("UKey2: no ClientFinish prepared"))?;
++        self.send_frame(client_finish).await?;
+ 
+         let frame = location_nearby_connections::OfflineFrame {
+             version: Some(location_nearby_connections::offline_frame::Version::V1.into()),
+@@ -473,7 +480,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OutboundRequest<S> {
+         &mut self,
+         smsg: &SecureMessage,
+     ) -> Result<(), anyhow::Error> {
+-        let mut hmac = HmacSha256::new_from_slice(self.state.recv_hmac_key.as_ref().unwrap())?;
++        let hmac_key = self
++            .state
++            .recv_hmac_key
++            .as_ref()
++            .ok_or_else(|| anyhow!("no keys yet"))?;
++        let mut hmac = HmacSha256::new_from_slice(hmac_key)?;
+         hmac.update(&smsg.header_and_body);
+         if !hmac
+             .finalize()
+@@ -487,13 +499,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OutboundRequest<S> {
+         let header_and_body = HeaderAndBody::decode(&*smsg.header_and_body)?;
+ 
+         let msg_data = header_and_body.body;
+-        let key = self.state.decrypt_key.as_ref().unwrap();
++        let key = self
++            .state
++            .decrypt_key
++            .as_ref()
++            .ok_or_else(|| anyhow!("no keys yet"))?;
+ 
+         let decrypted = aes_cbc_decrypt(key, header_and_body.header.iv(), &msg_data)?;
+ 
+         let d2d_msg = DeviceToDeviceMessage::decode(&*decrypted)?;
+ 
+-        let seq = self.get_client_seq_inc().await;
++        let seq = self.get_client_seq_inc().await?;
+         if d2d_msg.sequence_number() != seq {
+             return Err(anyhow!(
+                 "Error d2d_msg.sequence_number invalid ({} vs {})",
+@@ -728,7 +744,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OutboundRequest<S> {
+                         payload_id: Some(
+                             rand::rng().random::<i64>().unsigned_abs() as i64 & i64::MAX,
+                         ),
+-                        name: Some(fname.to_os_string().into_string().unwrap()),
++                        name: Some(
++                            fname
++                                .to_str()
++                                .ok_or_else(|| anyhow!("file name is not UTF-8"))?
++                                .to_owned(),
++                        ),
+                         size: Some(fmetadata.size() as i64),
+                         mime_type: Some(ftype),
+                         r#type: Some(meta_type.into()),
+@@ -813,7 +834,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OutboundRequest<S> {
+         let data = self.read_frame().await?;
+ 
+         let smsg = SecureMessage::decode(&*data)?;
+-        let mut hmac = HmacSha256::new_from_slice(self.state.recv_hmac_key.as_ref().unwrap())?;
++        let hmac_key = self
++            .state
++            .recv_hmac_key
++            .as_ref()
++            .ok_or_else(|| anyhow!("no keys yet"))?;
++        let mut hmac = HmacSha256::new_from_slice(hmac_key)?;
+         hmac.update(&smsg.header_and_body);
+         if !hmac
+             .finalize()
+@@ -824,11 +850,15 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OutboundRequest<S> {
+             return Err(anyhow!("hmac!=signature"));
+         }
+         let header_and_body = HeaderAndBody::decode(&*smsg.header_and_body)?;
+-        let key = self.state.decrypt_key.as_ref().unwrap();
++        let key = self
++            .state
++            .decrypt_key
++            .as_ref()
++            .ok_or_else(|| anyhow!("no keys yet"))?;
+         let decrypted = aes_cbc_decrypt(key, header_and_body.header.iv(), &header_and_body.body)?;
+         let d2d_msg = DeviceToDeviceMessage::decode(&*decrypted)?;
+ 
+-        let seq = self.get_client_seq_inc().await;
++        let seq = self.get_client_seq_inc().await?;
+         if d2d_msg.sequence_number() != seq {
+             return Err(anyhow!(
+                 "seq invalid ({} vs {})",
+@@ -1212,29 +1242,24 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OutboundRequest<S> {
+             .ec_p256_public_key
+             .ok_or_else(|| anyhow!("Missing required fields"))?;
+ 
+-        let mut bytes = vec![0x04];
+-        // Ensure no more than 32 bytes for the keys
+-        if peer_p256_key.x.len() > 32 {
+-            bytes.extend_from_slice(&peer_p256_key.x[peer_p256_key.x.len() - 32..]);
+-        } else {
+-            bytes.extend_from_slice(&peer_p256_key.x);
+-        }
+-        if peer_p256_key.y.len() > 32 {
+-            bytes.extend_from_slice(&peer_p256_key.y[peer_p256_key.y.len() - 32..]);
+-        } else {
+-            bytes.extend_from_slice(&peer_p256_key.y);
+-        }
+-
+-        let encoded_point = EncodedPoint::from_bytes(bytes)?;
+-        let peer_key = PublicKey::from_encoded_point(&encoded_point).unwrap();
+-        let priv_key = self.state.private_key.as_ref().unwrap();
++        let peer_key = decode_p256_point(&peer_p256_key.x, &peer_p256_key.y)?;
++        let priv_key = self
++            .state
++            .private_key
++            .as_ref()
++            .ok_or_else(|| anyhow!("no key pair"))?;
+ 
+         let dhs = diffie_hellman(priv_key.to_nonzero_scalar(), peer_key.as_affine());
+         let derived_secret = Sha256::digest(dhs.raw_secret_bytes());
+ 
+         let mut ukey_info: Vec<u8> = vec![];
+-        ukey_info.extend_from_slice(self.state.client_init_msg_data.as_ref().unwrap());
+-        ukey_info.extend_from_slice(self.state.server_init_data.as_ref().unwrap());
++        let client_init = self.state.client_init_msg_data.as_ref();
++        let server_init = self.state.server_init_data.as_ref();
++        let (Some(client_init), Some(server_init)) = (client_init, server_init) else {
++            return Err(anyhow!("UKEY2 messages missing"));
++        };
++        ukey_info.extend_from_slice(client_init);
++        ukey_info.extend_from_slice(server_init);
+ 
+         let auth_label = "UKEY2 v1 auth".as_bytes();
+         let next_label = "UKEY2 v1 next".as_bytes();
+@@ -1369,11 +1394,15 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OutboundRequest<S> {
+ 
+     async fn encrypt_and_send(&mut self, frame: &OfflineFrame) -> Result<(), anyhow::Error> {
+         let d2d_msg = DeviceToDeviceMessage {
+-            sequence_number: Some(self.get_server_seq_inc().await),
++            sequence_number: Some(self.get_server_seq_inc().await?),
+             message: Some(frame.encode_to_vec()),
+         };
+ 
+-        let key = self.state.encrypt_key.as_ref().unwrap();
++        let key = self
++            .state
++            .encrypt_key
++            .as_ref()
++            .ok_or_else(|| anyhow!("no keys yet"))?;
+         let msg_data = d2d_msg.encode_to_vec();
+         let iv = gen_random(16);
+ 
+@@ -1396,7 +1425,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OutboundRequest<S> {
+             },
+         };
+ 
+-        let mut hmac = HmacSha256::new_from_slice(self.state.send_hmac_key.as_ref().unwrap())?;
++        let hmac_key = self
++            .state
++            .send_hmac_key
++            .as_ref()
++            .ok_or_else(|| anyhow!("no keys yet"))?;
++        let mut hmac = HmacSha256::new_from_slice(hmac_key)?;
+         hmac.update(&hb.encode_to_vec());
+         let result = hmac.finalize();
+ 
+@@ -1431,28 +1465,25 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OutboundRequest<S> {
+         write_frame(&mut self.socket, &data).await
+     }
+ 
+-    async fn get_server_seq_inc(&mut self) -> i32 {
+-        self.update_state(
+-            |e| {
+-                e.server_seq += 1;
+-            },
+-            false,
+-        )
+-        .await;
+-
+-        self.state.server_seq
++    // Sequence numbers are i32 and only count up; one that would wrap ends
++    // the connection rather than overflowing (a panic with overflow checks,
++    // a repeated number without).
++    async fn get_server_seq_inc(&mut self) -> Result<i32, anyhow::Error> {
++        self.state.server_seq = self
++            .state
++            .server_seq
++            .checked_add(1)
++            .ok_or_else(|| anyhow!("sequence number exhausted"))?;
++        Ok(self.state.server_seq)
+     }
+ 
+-    async fn get_client_seq_inc(&mut self) -> i32 {
+-        self.update_state(
+-            |e| {
+-                e.client_seq += 1;
+-            },
+-            false,
+-        )
+-        .await;
+-
+-        self.state.client_seq
++    async fn get_client_seq_inc(&mut self) -> Result<i32, anyhow::Error> {
++        self.state.client_seq = self
++            .state
++            .client_seq
++            .checked_add(1)
++            .ok_or_else(|| anyhow!("sequence number exhausted"))?;
++        Ok(self.state.client_seq)
+     }
+ 
+     async fn update_state<F>(&mut self, f: F, inform: bool)
+diff --git a/src/utils.rs b/src/utils.rs
+index 1444d0a..f124376 100644
+--- a/src/utils.rs
++++ b/src/utils.rs
+@@ -10,7 +10,8 @@ use bytes::Bytes;
+ use hkdf::Hkdf;
+ use num_bigint::{BigUint, ToBigInt};
+ use p256::elliptic_curve::rand_core::OsRng;
+-use p256::{PublicKey, SecretKey};
++use p256::elliptic_curve::sec1::FromEncodedPoint;
++use p256::{EncodedPoint, PublicKey, SecretKey};
+ use rand::{Rng, RngCore};
+ use serde::{Deserialize, Serialize};
+ use sha2::Sha256;
+@@ -139,6 +140,37 @@ pub fn encode_point(unsigned: Bytes) -> Result<Vec<u8>, anyhow::Error> {
+     Ok(big_int.to_signed_bytes_be())
+ }
+ 
++/// The peer's P-256 public key from the two coordinates of a UKEY2
++/// `EcP256PublicKey`: big-endian two's-complement integers, as Java's
++/// `BigInteger.toByteArray()` writes them -- so 33 bytes when the top bit is
++/// set and fewer than 32 when the value has leading zero bytes.
++///
++/// Upstream kept only the last 32 bytes of a longer coordinate (accepting
++/// any leading garbage), used a shorter one as is (so about one handshake
++/// in 128 failed on a coordinate with a leading zero byte), and then
++/// `unwrap()`ped `PublicKey::from_encoded_point`, which is `None` for any
++/// point not on the curve: a peer panicked the receiver with one frame,
++/// before anything was authenticated.
++pub fn decode_p256_point(x: &[u8], y: &[u8]) -> Result<PublicKey, anyhow::Error> {
++    fn coordinate(v: &[u8]) -> Result<[u8; 32], anyhow::Error> {
++        let start = v.iter().position(|b| *b != 0).unwrap_or(v.len());
++        let digits = &v[start..];
++        if digits.len() > 32 {
++            return Err(anyhow!("P-256 coordinate too long"));
++        }
++        let mut out = [0u8; 32];
++        out[32 - digits.len()..].copy_from_slice(digits);
++        Ok(out)
++    }
++    let point = EncodedPoint::from_affine_coordinates(
++        &coordinate(x)?.into(),
++        &coordinate(y)?.into(),
++        false,
++    );
++    Option::from(PublicKey::from_encoded_point(&point))
++        .ok_or_else(|| anyhow!("the peer's key is not a point on P-256"))
++}
++
+ /// AES-256-CBC with PKCS#7 padding, as the D2D channel uses.
+ pub fn aes_cbc_encrypt(key: &[u8], iv: &[u8], data: &[u8]) -> Result<Vec<u8>, anyhow::Error> {
+     let enc = cbc::Encryptor::<aes::Aes256>::new_from_slices(key, iv)
+@@ -232,6 +264,28 @@ pub fn is_not_self_ip(ip_address: &Ipv4Addr) -> bool {
+ mod tests {
+     use super::*;
+ 
++    #[test]
++    fn p256_coordinates_in_every_encoding() {
++        let (_, public) = gen_ecdsa_keypair();
++        let point = p256::elliptic_curve::sec1::ToEncodedPoint::to_encoded_point(&public, false);
++        let x = point.x().unwrap().to_vec();
++        let y = point.y().unwrap().to_vec();
++        assert_eq!(decode_p256_point(&x, &y).unwrap(), public);
++        // Java-style: a sign byte in front, or leading zeros dropped.
++        let mut x33 = vec![0u8];
++        x33.extend_from_slice(&x);
++        assert_eq!(decode_p256_point(&x33, &y).unwrap(), public);
++        let x_short: Vec<u8> = x.iter().copied().skip_while(|b| *b == 0).collect();
++        assert_eq!(decode_p256_point(&x_short, &y).unwrap(), public);
++        // Not canonical, not on the curve, empty: errors, never panics.
++        let mut x_garbage = vec![1u8];
++        x_garbage.extend_from_slice(&x);
++        assert!(decode_p256_point(&x_garbage, &y).is_err());
++        assert!(decode_p256_point(&[1], &[1]).is_err());
++        assert!(decode_p256_point(&[], &[]).is_err());
++        assert!(decode_p256_point(&[0xff; 64], &y).is_err());
++    }
++
+     #[test]
+     fn aes_cbc_round_trips_and_checks_its_inputs() {
+         let key = [7u8; 32];

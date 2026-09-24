@@ -5,6 +5,12 @@ members = [
     "crates/sukkula-engine",
     "crates/sukkula-ffi",
 ]
+# CONTRACT: vendored upstream code is a path dependency, not a member: a
+# path dependency inside the workspace directory otherwise becomes a member
+# on its own, and `cargo clippy --workspace -- -D warnings` / the workspace
+# lints would then judge upstream's code instead of its patches
+# (third_party/rqs_lib.patches) and the hostile-input tests.
+exclude = ["third_party"]
 
 [workspace.package]
 version = "0.1.0"

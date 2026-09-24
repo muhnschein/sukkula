@@ -23,7 +23,7 @@ localsend = [
     "dep:getrandom",
     "dep:rustix",
 ]
-quickshare = []
+quickshare = ["dep:rqs_lib", "dep:dbus", "dep:rustix"]
 wormhole = [
     "dep:magic-wormhole",
     "dep:qrcode",
@@ -66,9 +66,15 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"], optional = true }
 form_urlencoded = { version = "1", optional = true }
 getrandom = { workspace = true, optional = true }
-# O_NONBLOCK for opening a file to send, so a FIFO swapped in since the
-# hub's check cannot block the open. Already in the tree through core.
+# O_NONBLOCK for opening a file to send (LocalSend, Wormhole, Quick Share),
+# so a FIFO swapped in since the hub's check cannot block the open. Already
+# in the tree through core.
 rustix = { workspace = true, optional = true }
+# Quick Share: open-quickshare's rqs_lib, vendored with Sukkula's patches
+# (third_party/rqs_lib.patches, docs/UPSTREAM-QUICKSHARE.md). The BLE nudge
+# (F-QS2) uses the `dbus` dependency below, the same system libdbus-1 stack
+# as Bluetooth.
+rqs_lib = { path = "../../third_party/rqs_lib", optional = true }
 # Magic Wormhole, transfer protocol v1 only (spec §5).
 magic-wormhole = { version = "=0.8.1", default-features = false, features = ["transfer"], optional = true }
 qrcode = { version = "0.14", default-features = false, optional = true }
@@ -104,6 +110,13 @@ rcgen = "0.14"
 # when it is one. Already in the tree through sukkula-core.
 rustix.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros", "net", "io-util", "fs", "test-util"] }
+# tests/quickshare.rs: a hostile Quick Share sender that does the UKEY2
+# handshake and builds its frames itself. The versions rqs_lib uses, so
+# nothing new enters Cargo.lock.
+prost = "0.13"
+p256 = { version = "0.13", features = ["ecdh"] }
+hmac = "0.12"
+sha2.workspace = true
 
 [lints]
 workspace = true

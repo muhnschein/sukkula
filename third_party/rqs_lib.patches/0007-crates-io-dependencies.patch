@@ -1,0 +1,118 @@
+Take mdns-sd and if-addrs from crates.io
+
+mdns-sd comes from a git branch ("unsolicited") of a personal fork, not
+pinned to a commit, so what is built changes whenever the branch moves,
+and it cannot be vendored or audited as a release. The branch is mdns-sd
+0.10.4 plus two commits: `register_resend`, used only by the BLE
+re-announcement the earlier patch removed, and an `enable_addr_auto`
+variant that limits the published addresses to IPv4 or IPv6. 0.10.4 is
+from early 2024; the mDNS parser that every packet on the link reaches
+has had robustness fixes since.
+
+This uses mdns-sd 0.21 from crates.io. Its enable_addr_auto takes no
+argument; the daemon is told to leave IPv6 interfaces alone instead,
+which keeps the service to A records as before.
+
+get_if_addrs (0.5, last released in 2017, with its own C shim) is
+replaced by if-addrs, its maintained successor and the crate mdns-sd
+itself uses, for the one thing the library needs it for: telling our own
+addresses from a peer's.
+
+sys_metrics, the other git dependency, goes with the global device name
+in the patch that makes the embedding application name the device.
+
+Findings: spec §6 (git dependencies pinned, builds offline). Report: docs/UPSTREAM-QUICKSHARE.md R17.
+---
+ Cargo.toml      |  6 ++++--
+ src/hdl/mdns.rs | 11 ++++++++---
+ src/utils.rs    |  7 +++----
+ 3 files changed, 15 insertions(+), 9 deletions(-)
+
+diff --git a/Cargo.toml b/Cargo.toml
+index 0e3a915..df78e01 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -13,12 +13,14 @@ base64 = "0.22"
+ bytes = "1.10"
+ cbc = { version = "0.1", features = ["alloc"] }
+ directories = "6.0"
+-get_if_addrs = "0.5"
+ hex = "0.4"
+ hkdf = "0.12"
+ hmac = "0.12"
++# Only to tell our own addresses from a peer's; mdns-sd uses the same crate.
++if-addrs = "0.15"
+ log = "0.4"
+-mdns-sd = { git = "https://github.com/Martichou/mdns-sd", branch = "unsolicited" }
++# crates.io release instead of an unpinned git branch of a fork.
++mdns-sd = "0.21"
+ mime_guess = "2.0"
+ num-bigint = "0.4"
+ once_cell = "1.20"
+diff --git a/src/hdl/mdns.rs b/src/hdl/mdns.rs
+index 6b36be0..220e981 100644
+--- a/src/hdl/mdns.rs
++++ b/src/hdl/mdns.rs
+@@ -1,7 +1,7 @@
+ use std::sync::{Arc, Mutex};
+ use std::time::Duration;
+ 
+-use mdns_sd::{AddrType, ServiceDaemon, ServiceInfo};
++use mdns_sd::{IfKind, ServiceDaemon, ServiceInfo};
+ use tokio::sync::watch;
+ use tokio::time::{Instant, interval_at};
+ use tokio_util::sync::CancellationToken;
+@@ -47,8 +47,13 @@ impl MDnsServer {
+     ) -> Result<Self, anyhow::Error> {
+         let service_info = Self::build_service(endpoint_id, service_port, DeviceType::Laptop)?;
+ 
++        let daemon = ServiceDaemon::new()?;
++        // Quick Share peers resolve us over IPv4 only (the fork this used to
++        // depend on published A records only).
++        daemon.disable_interface(IfKind::IPv6)?;
++
+         Ok(Self {
+-            daemon: ServiceDaemon::new()?,
++            daemon,
+             service_info,
+             visibility_sender,
+             visibility_receiver,
+@@ -129,7 +134,7 @@ impl MDnsServer {
+             service_port,
+             &properties[..],
+         )?
+-        .enable_addr_auto(AddrType::V4);
++        .enable_addr_auto();
+ 
+         Ok(si)
+     }
+diff --git a/src/utils.rs b/src/utils.rs
+index 7d097ae..a7da6fd 100644
+--- a/src/utils.rs
++++ b/src/utils.rs
+@@ -1,4 +1,4 @@
+-use std::net::Ipv4Addr;
++use std::net::{IpAddr, Ipv4Addr};
+ use std::path::{Path, PathBuf};
+ 
+ use aes::cipher::block_padding::Pkcs7;
+@@ -7,7 +7,6 @@ use anyhow::anyhow;
+ use base64::Engine;
+ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+ use bytes::Bytes;
+-use get_if_addrs::get_if_addrs;
+ use hkdf::Hkdf;
+ use num_bigint::{BigUint, ToBigInt};
+ use p256::elliptic_curve::rand_core::OsRng;
+@@ -229,9 +228,9 @@ pub fn get_download_dir() -> PathBuf {
+ }
+ 
+ pub fn is_not_self_ip(ip_address: &Ipv4Addr) -> bool {
+-    if let Ok(if_addrs) = get_if_addrs() {
++    if let Ok(if_addrs) = if_addrs::get_if_addrs() {
+         for if_addr in if_addrs {
+-            if if_addr.ip() == *ip_address {
++            if if_addr.ip() == IpAddr::V4(*ip_address) {
+                 return false;
+             }
+         }
