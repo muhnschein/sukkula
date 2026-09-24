@@ -1,0 +1,83 @@
+[package]
+name = "sukkula-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+publish = false
+
+# Its own workspace on purpose, as in clove and vuo: cargo-fuzz builds with
+# nightly and its own flags, and a workspace member would drag libfuzzer-sys
+# and `arbitrary` into every ordinary `cargo build`, `cargo deny` and the
+# committed Cargo.lock. Building needs no nightly (`cargo check
+# --manifest-path fuzz/Cargo.toml` works on the pinned toolchain); only
+# running does. See README.md.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+serde_json = "1"
+sukkula-core = { path = "../crates/sukkula-core" }
+# No protocol features: the command and start-config parsers are
+# feature-independent, and leaving the protocol libraries out keeps the fuzz
+# build small and offline-friendly.
+sukkula-engine = { path = "../crates/sukkula-engine", default-features = false }
+
+[[bin]]
+name = "name_sanitize"
+path = "fuzz_targets/name_sanitize.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "text_display"
+path = "fuzz_targets/text_display.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "text_message"
+path = "fuzz_targets/text_message.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "offer_validate"
+path = "fuzz_targets/offer_validate.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "settings_json"
+path = "fuzz_targets/settings_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "hex"
+path = "fuzz_targets/hex.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "command_json"
+path = "fuzz_targets/command_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "start_config"
+path = "fuzz_targets/start_config.rs"
+test = false
+doc = false
+bench = false

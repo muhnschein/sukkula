@@ -1,0 +1,277 @@
+# The gate (spec §7). A change merges only when every job here is green.
+#
+# `make check` runs the same commands, job for job, minus the two that need
+# the network rather than the tree: deny (the advisory database) and vendor
+# (the upstream fetch); the Makefile says which. The device RPM, and Jolla's
+# own validator on it, are rpm.yml's: they need the Sailfish SDK.
+name: ci
+
+# `main` only: a bare `push:` beside `pull_request:` runs everything twice.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A new push supersedes the run in flight. `github.ref`, not `run_id`:
+# `head_ref` is set only for pull_request, so on a push a `run_id` fallback
+# would give every run a group of its own and nothing would be cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+# Nothing here writes: every job checks out, builds and reports through the
+# check run the runtime raises on its own. Saying so pins the floor, so a
+# step added later cannot quietly inherit a token that can push.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # A runner compiles once and throws the machine away, so incremental
+  # state is written, cached and never read.
+  CARGO_INCREMENTAL: 0
+  # The nightly the fuzzers build with. Pinned, so a nightly regression is
+  # a deliberate bump rather than a red pull request; scripts/fuzz-smoke.sh
+  # defaults to the same one.
+  SUKKULA_NIGHTLY: nightly-2026-09-15
+
+# Every action is pinned by commit, not tag: a tag on a third-party action
+# can be repointed at any commit by whoever owns it, and these run on every
+# pull request. .github/dependabot.yml moves the pins, with the version in
+# the trailing comment kept in step.
+jobs:
+  # Lints, tests and docs over the whole workspace. The toolchain comes
+  # from rust-toolchain.toml (1.97.1); rustup installs it, with clippy and
+  # rustfmt, on the first cargo call. Never `rustup update` here -- that
+  # would defeat the pin.
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # libdbus-1-dev: the bluetooth feature's `dbus` crate links the host's
+      # libdbus-1 through pkg-config, never a vendored one (Q7). dbus: the
+      # Bluetooth tests start a private dbus-daemon with a fake BlueZ on it,
+      # and fail with instructions rather than skip when there is none.
+      - run: ./ci/apt-install.sh dbus libdbus-1-dev pkg-config
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: rustc --version && cargo --version
+      - run: cargo fmt --all --check
+      # `--locked` on every cargo call that resolves dependencies: CI builds
+      # the Cargo.lock that was reviewed, not one cargo quietly updated on
+      # the runner -- and clippy, which runs first, must not be the one to
+      # rewrite it.
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
+      # Broken intra-doc links are errors.
+      - run: cargo doc --workspace --no-deps --locked
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  # Each protocol alone, and none (spec §3: "each protocol is a Cargo
+  # feature so it can be built and tested alone"). The default build turns
+  # every feature on, which hides a `use` that only compiles because another
+  # feature brought it in.
+  features:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        feature: [localsend, quickshare, wormhole, bluetooth, none]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: ./ci/apt-install.sh dbus libdbus-1-dev pkg-config
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: feature-${{ matrix.feature }}
+      # `none` is --no-default-features alone: the hub, the contract and
+      # sukkula-core with no protocol at all.
+      - name: clippy, ${{ matrix.feature }} alone
+        env:
+          FEATURE: ${{ matrix.feature }}
+        run: |
+          args=(--no-default-features)
+          [ "$FEATURE" = none ] || args+=(--features "$FEATURE")
+          cargo clippy -p sukkula-engine "${args[@]}" --all-targets --locked -- -D warnings
+      - name: test, ${{ matrix.feature }} alone
+        env:
+          FEATURE: ${{ matrix.feature }}
+        run: |
+          args=(--no-default-features)
+          [ "$FEATURE" = none ] || args+=(--features "$FEATURE")
+          cargo test -p sukkula-engine "${args[@]}" --locked
+
+  # Licences, RustSec advisories, duplicate versions, banned crates and
+  # permitted sources (spec §6), by deny.toml. cargo-deny from
+  # install-action at a pinned version rather than the deny action's
+  # bundled one, so the version deny.toml was written against is the one
+  # that reads it.
+  deny:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2.87.10
+        with:
+          tool: cargo-deny@0.20.2
+      - run: cargo deny --locked check
+
+  # The dependency budget over Cargo.lock and the phone's own graph (one
+  # TLS, D-Bus and crypto stack; no vendored libdbus; Bluetooth stacks and
+  # process spawning only with a written reason), proved by its selftest,
+  # and the lockfile rules (every git dependency pinned by rev, the lock
+  # current, nothing outside the tree).
+  deps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: ./ci/check-deps-selftest.sh
+      - run: ./ci/check-deps.sh
+      - run: ./ci/check-lockfile.sh
+
+  # The 60-second smoke run over every fuzz target (spec §7), from the
+  # committed seeds; targets come from `cargo fuzz list`, so a new one is
+  # fuzzed from the pull request that adds it. scripts/fuzz-smoke.sh
+  # carries the pitfalls (the toolchain file, the musl cargo-fuzz).
+  fuzz-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: ./ci/apt-install.sh libdbus-1-dev pkg-config
+      - run: rustup toolchain install "$SUKKULA_NIGHTLY" --profile minimal
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: fuzz
+          # rust-cache keys on the default toolchain, and this job builds
+          # with the nightly; without a key of its own the entry would
+          # collide with the stable jobs' and neither would hit.
+          key: fuzz-${{ env.SUKKULA_NIGHTLY }}
+      - uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2.87.10
+        with:
+          tool: cargo-fuzz@0.13.2
+      - run: ./scripts/fuzz-smoke.sh 60
+        env:
+          FUZZ_TOOLCHAIN: ${{ env.SUKKULA_NIGHTLY }}
+      # The reproducer is the finding; without it a red job is a rumour.
+      - if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/
+          if-no-files-found: ignore
+          retention-days: 30
+
+  # The C ABI under AddressSanitizer, UBSan and LSan: start/stop cycles,
+  # bad UTF-8, oversize commands, the callback on a foreign thread
+  # (spec §7). ci/ffi-harness/run.sh builds the library with the pinned
+  # toolchain and the harness with the first C compiler that can link a
+  # sanitized program -- the runner's gcc, whose libasan and libubsan come
+  # with it.
+  ffi-asan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: ./ci/apt-install.sh dbus libdbus-1-dev pkg-config
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: ffi-asan
+      - run: ./ci/ffi-harness/run.sh
+
+  # The engine cross-compiled for aarch64 on every pull request: no x86-only
+  # code, no host-only C dependency, the four entry points exported, and a
+  # probe linked against it within Harbour's libraries and the glibc every
+  # accepted phone has. Ubuntu's cross GCC here; the package itself is
+  # built with the SDK's, in rpm.yml (docs/BUILDING.md says why both).
+  cross:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: ./ci/apt-install.sh gcc-aarch64-linux-gnu g++-aarch64-linux-gnu binutils-aarch64-linux-gnu pkg-config
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: cross-aarch64
+      # The ELF judge first: rpm.yml trusts it with the real binary, so it
+      # is proved here, on binaries built wrong one way each.
+      - run: ./ci/check-elf-selftest.sh
+      - run: ./scripts/cross-build-rust.sh --host
+
+  # The QML: every file parses (qmllint), and the UI's own tests load the
+  # real pages against the Silica stand-ins in qml-stubs/, offscreen.
+  qml:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # qml-module-qtquick2 is the QtQuick runtime plugin, which the -dev
+      # packages do not pull in; qml-module-qttest is qmltestrunner's
+      # QtTest.
+      - run: >-
+          ./ci/apt-install.sh qtbase5-dev qtdeclarative5-dev qtdeclarative5-dev-tools
+          qml-module-qtquick2 qml-module-qttest qml-module-qtquick-window2
+          qml-module-qtquick-layouts qttools5-dev-tools
+      - run: ./ci/qml-lint.sh
+      - run: ./tests/run-qml-tests.sh
+        env:
+          QT_QPA_PLATFORM: offscreen
+
+  # What decides whether the RPM builds, installs and launches, checkable
+  # without the SDK: the spec parses (and has no bare macro in a comment),
+  # builds out of tree, the .desktop file validates, the rpm workflow stamps
+  # Release, the catalogs compile, every docs/*.md referenced exists, every
+  # shell script passes shellcheck and every workflow passes actionlint.
+  packaging:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: ./ci/apt-install.sh rpm desktop-file-utils shellcheck qttools5-dev-tools
+      # Pinned: a linter that moves under the gate moves the gate.
+      - run: pip install --user actionlint-py==1.7.12.25
+      # Strict: a checker that is not installed fails here, so the job
+      # cannot quietly stop checking when the lines above change.
+      - run: ./ci/packaging-lint.sh
+        env:
+          PACKAGING_LINT_STRICT: 1
+      # ci/apt-install.sh decides which apt sources every other job keeps.
+      # Getting that wrong deletes the archive and fails everything, so the
+      # rule is proved on a directory of the test's own.
+      - run: ./ci/apt-install-selftest.sh
+
+  # third_party/rqs_lib is open-quickshare's core_lib at the pinned commit
+  # plus its patches, and nothing else (spec §5). Its differences are the
+  # Q1-Q7 security fixes, so a stray edit, or a patch that stopped
+  # applying, fails here.
+  vendor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: ./ci/vendor-check-selftest.sh
+      - run: ./ci/vendor-check.sh
+
+  # What Harbour would reject, caught in the pull request that introduces
+  # it rather than at intake. Mandatory (spec §7). `sfdk check -s harbour`
+  # on the real RPM is the authority and runs in rpm.yml; this asks the same
+  # questions of the sources, plus Sukkula's own stricter policy
+  # (aarch64 and 5.2+ only, exactly Internet;Bluetooth;Downloads).
+  # docs/HARBOUR.md.
+  harbour:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # rpm for rpmspec (the %files layout), file for the icons.
+      - run: ./ci/apt-install.sh rpm file binutils
+      - run: ./ci/harbour-check.sh
+        env:
+          HARBOUR_CHECK_STRICT: 1
+      # The proof that the gate still bites, run even when the check above
+      # failed: a red check and a broken gate are different news.
+      - if: success() || failure()
+        run: ./ci/harbour-check-selftest.sh
