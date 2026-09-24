@@ -189,20 +189,23 @@ fn registry() -> MutexGuard<'static, Registry> {
     REGISTRY.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-fn register(engine: Engine) -> *mut SukkulaEngine {
-    let live = Arc::new(Live {
-        engine: RwLock::new(Some(engine)),
-    });
+/// Takes the next id, before the engine starts: a failure after the engine
+/// has emitted `started` could no longer be the one `fatal` event the
+/// header promises. `None` once ids no longer fit a pointer, which 2^60
+/// starts will not reach.
+fn reserve() -> Option<u64> {
     let mut reg = registry();
     let id = reg.next;
     reg.next = reg.next.saturating_add(1);
-    let handle = handle_for(id);
-    if !handle.is_null() {
-        reg.live.insert(id, live);
-    }
-    // A NULL handle (an id past what a pointer holds, which 2^60 starts
-    // will not reach) drops `live` here, which stops the engine.
-    handle
+    (!handle_for(id).is_null()).then_some(id)
+}
+
+fn register(id: u64, engine: Engine) -> *mut SukkulaEngine {
+    let live = Arc::new(Live {
+        engine: RwLock::new(Some(engine)),
+    });
+    registry().live.insert(id, live);
+    handle_for(id)
 }
 
 fn handle_for(id: u64) -> *mut SukkulaEngine {
@@ -306,14 +309,14 @@ pub unsafe extern "C" fn sukkula_start(
             ErrorInfo::new(ErrorCode::BadCommand, message)
         })?;
         let config = parse_start_config(json).map_err(ErrorInfo::from)?;
+        let id = reserve().ok_or_else(|| ErrorInfo::new(ErrorCode::Internal, "no handle left"))?;
         let events = cb.clone();
         let sink: EventSink = Arc::new(move |event| events.deliver(&event));
         let engine = Engine::start(config, sink)?;
-        Ok::<_, ErrorInfo>(register(engine))
+        Ok::<_, ErrorInfo>(register(id, engine))
     }));
     let failure = match outcome {
-        Ok(Ok(handle)) if !handle.is_null() => return handle,
-        Ok(Ok(_)) => ErrorInfo::new(ErrorCode::Internal, "no handle left"),
+        Ok(Ok(handle)) => return handle,
         Ok(Err(e)) => e,
         Err(_) => ErrorInfo::new(ErrorCode::Internal, "the engine failed internally"),
     };

@@ -24,6 +24,8 @@ kind after the language: `json command`, `json event` or `json config`.
 7. [Events](#events)
 8. [Error codes](#error-codes)
 9. [Values](#values)
+10. [Linking](#linking)
+11. [Testing](#testing)
 
 ## Functions
 
@@ -505,3 +507,45 @@ Every `error` is an object with a `code` for the UI to translate and a
 | Outcome | `transfer_finished` | `done`, `cancelled`, `failed` (see `error`) |
 | Device type | `peer_found` | `phone`, `tablet`, `computer`, `unknown` |
 | Quick Share visibility | settings | `hidden`, `everyone` (F-QS4) |
+
+## Linking
+
+`sukkula-ffi` is a `staticlib` (`libsukkula_ffi.a`, for the shell) and an
+`rlib` (for tests). The four functions above are the only symbols it
+exports for C.
+
+Link it with `-Wl,--as-needed`. rustc's own list of the system libraries a
+static library needs (`--print native-static-libs`) is
+`-lgcc_s -lutil -lrt -lpthread -lm -ldl -lc`, plus `-ldbus-1` once the
+Bluetooth adapter uses D-Bus. Nothing in the library refers to `libutil`,
+and `libutil.so.1` is not on Harbour's list of allowed libraries: without
+`--as-needed` a glibc older than 2.34 would record it as a dependency and
+the package would fail validation. Everything else on the list is allowed.
+
+The release profile keeps `panic = "unwind"`: `catch_unwind` at the
+boundary depends on it.
+
+## Testing
+
+| What | Where |
+| --- | --- |
+| Every function, return code and failure mode; callbacks checked on every event for thread, overlap and after-stop; stop from the callback; commands racing a stop | `crates/sukkula-ffi/tests/ffi.rs` |
+| 200 start/stop cycles leak no memory (a counting allocator), threads or file descriptors | `crates/sukkula-ffi/tests/ffi_cycles.rs` |
+| The header, the Rust constants and this page agree | `crates/sukkula-ffi/tests/header.rs` |
+| Every example on this page | `crates/sukkula-engine/tests/hub_docs.rs` |
+| The hub: delivery, bounds, replies after panics, races, hostile commands | `crates/sukkula-engine/src/hub.rs`, `crates/sukkula-engine/tests/hub.rs` |
+| The same, from C, under AddressSanitizer, UBSan and LeakSanitizer | `ci/ffi-harness/run.sh` |
+
+The C harness runs from any directory with
+
+```sh
+ci/ffi-harness/run.sh
+```
+
+It builds the static library for the host, links `ci/ffi-harness/harness.c`
+against it with `-fsanitize=address,undefined -fno-sanitize-recover=all`,
+runs it with leak checking on, and exits non-zero on any failed check or
+sanitizer report. `CC` picks the compiler (by default the first of clang,
+gcc and cc that can link a sanitized program), and
+`FFI_HARNESS_CARGO_ARGS=--no-default-features` builds the engine without
+protocols.

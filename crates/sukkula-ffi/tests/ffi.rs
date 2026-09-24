@@ -353,9 +353,13 @@ fn stop_from_inside_the_callback_is_safe() {
         }
     }));
     let h = start(dir.path(), &r);
-    // Queue a few so there is something the stop has to drop.
-    for id in 1..=5 {
-        assert_eq!(command(h, &get_settings(id)), SUKKULA_OK);
+    // Queue a few so there is usually something the stop has to drop. The
+    // reply to 1 may already have stopped the engine by the time the later
+    // ones go in, and then they are refused: both are right.
+    assert_eq!(command(h, &get_settings(1)), SUKKULA_OK);
+    for id in 2..=5 {
+        let rc = command(h, &get_settings(id));
+        assert!(rc == SUKKULA_OK || rc == SUKKULA_ERR_NULL, "{rc}");
     }
     for _ in 0..2000 {
         if done.load(Ordering::SeqCst) {

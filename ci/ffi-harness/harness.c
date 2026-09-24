@@ -604,9 +604,13 @@ static void test_callback_calls_in(void)
     make_config(config, sizeof config, "selfstop");
     shell_init(&s, stop_from_callback);
     h = start(config, &s);
-    int taken = h != NULL;
-    for (long long id = 1; taken && id <= 5; id++)
-        taken = command(h, get_settings(buf, sizeof buf, id)) == SUKKULA_OK;
+    /* The reply to 1 may stop the engine before 2..5 go in; then they are
+     * refused, which is right too. */
+    int taken = h != NULL && command(h, get_settings(buf, sizeof buf, 1)) == SUKKULA_OK;
+    for (long long id = 2; taken && id <= 5; id++) {
+        int32_t rc = command(h, get_settings(buf, sizeof buf, id));
+        taken = rc == SUKKULA_OK || rc == SUKKULA_ERR_NULL;
+    }
     for (int i = 0; i < 2000 && !atomic_load(&s.flag); i++)
         sleep_ms(5);
     int returned = atomic_load(&s.flag);
