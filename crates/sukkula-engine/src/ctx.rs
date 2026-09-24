@@ -186,6 +186,16 @@ impl Ctx {
     /// protocol level. The UI has already been told whatever it needs to be.
     pub async fn offer(self: &Arc<Self>, raw: RawOffer) -> Result<Accepted, Declined> {
         let offer = Offer::validate(raw).map_err(Declined::Invalid)?;
+        // Not worth asking the user about an offer that cannot run: they
+        // would see it accepted and then nothing happen. (Checked again
+        // below; a slot may go while the user thinks.) Free space is
+        // checked only after consent, on purpose: checked before, it would
+        // let any peer on the LAN measure the phone's free space by
+        // bisection without the user ever seeing an offer.
+        // CONTRACT: same signature; Busy can now come before consent.
+        if self.transfers.active() >= MAX_ACTIVE_TRANSFERS {
+            return Err(Declined::Busy);
+        }
         let id = self.consent.ask(&offer).await.map_err(Declined::Refused)?;
         if self.inbox.check_space(offer.total_bytes).is_err() {
             return Err(Declined::NoSpace);
@@ -559,4 +569,61 @@ pub async fn idle_timeout<T>(fut: impl std::future::Future<Output = T>) -> Resul
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sukkula_core::consent::ConsentEvent;
+    use sukkula_core::offer::RawFile;
+
+    fn ctx(dir: &std::path::Path) -> (Arc<Ctx>, Arc<Mutex<Vec<ConsentEvent>>>) {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let s = seen.clone();
+        let consent = ConsentBroker::new(Arc::new(move |e| s.lock().unwrap().push(e)));
+        let ctx = Ctx::new(
+            Settings::default(),
+            "Test Phone".into(),
+            Store::open(&dir.join("data")).unwrap(),
+            Inbox::open(&dir.join("dl")).unwrap(),
+            consent,
+            ReachPolicy {
+                allow_loopback: true,
+            },
+            Arc::new(|_| {}),
+        );
+        (Arc::new(ctx), seen)
+    }
+
+    #[tokio::test]
+    async fn a_busy_engine_declines_without_asking() {
+        let dir = tempfile::tempdir().unwrap();
+        let (ctx, seen) = ctx(dir.path());
+        let running: Vec<TransferHandle> = (0..MAX_ACTIVE_TRANSFERS)
+            .map(|_| {
+                ctx.transfers()
+                    .begin_views(
+                        &ctx,
+                        Direction::Outgoing,
+                        Protocol::LocalSend,
+                        "p",
+                        vec![],
+                        0,
+                    )
+                    .unwrap()
+            })
+            .collect();
+        let mut raw = RawOffer::new(Protocol::LocalSend, "Alice");
+        raw.files.push(RawFile {
+            name: "a.txt".into(),
+            size: 3,
+            ..RawFile::default()
+        });
+        assert_eq!(ctx.offer(raw).await.unwrap_err(), Declined::Busy);
+        assert!(seen.lock().unwrap().is_empty(), "the user was asked");
+        for t in running {
+            t.finish(Outcome::Cancelled, Vec::new());
+        }
+        assert_eq!(ctx.transfers().active(), 0);
+    }
 }

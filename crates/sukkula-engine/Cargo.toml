@@ -41,6 +41,9 @@ dbus = { version = "0.9", optional = true }
 [dev-dependencies]
 tempfile.workspace = true
 proptest.workspace = true
+# The hub's tests make a FIFO to prove /etc/hw-release is never opened
+# when it is one. Already in the tree through sukkula-core.
+rustix.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros", "net", "io-util", "fs", "test-util"] }
 
 [lints]
