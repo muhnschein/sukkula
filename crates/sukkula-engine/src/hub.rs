@@ -40,7 +40,7 @@ use std::future::Future;
 use std::io::{self, Read as _};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{JoinHandle, ThreadId};
 use std::time::Duration;
@@ -767,20 +767,13 @@ struct Permit(Arc<AtomicUsize>);
 
 impl Permit {
     fn acquire(count: &Arc<AtomicUsize>) -> Option<Permit> {
-        count
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-                (n < MAX_IN_FLIGHT_COMMANDS).then_some(n.saturating_add(1))
-            })
-            .ok()
-            .map(|_| Permit(count.clone()))
+        crate::slots::take(count, MAX_IN_FLIGHT_COMMANDS).then(|| Permit(count.clone()))
     }
 }
 
 impl Drop for Permit {
     fn drop(&mut self) {
-        let _ = self
-            .0
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1));
+        crate::slots::give_back(&self.0);
     }
 }
 
@@ -1421,6 +1414,7 @@ fn guess_mime(name: &str) -> Option<String> {
 )]
 mod tests {
     use super::*;
+    use std::sync::atomic::Ordering;
     use std::sync::mpsc;
     use std::time::Instant;
     use sukkula_core::consent::Closed;

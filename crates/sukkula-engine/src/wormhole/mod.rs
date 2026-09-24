@@ -109,7 +109,7 @@ mod transit;
 mod wire;
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
 
 use sukkula_core::Protocol;
@@ -229,12 +229,8 @@ struct Inner {
 impl Inner {
     /// A slot for one receive before its answer, if one is free.
     fn connecting_slot(&self) -> Option<Slot<'_>> {
-        self.connecting
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-                (n < MAX_CONNECTING_RECEIVES).then_some(n.saturating_add(1))
-            })
-            .ok()
-            .map(|_| Slot(&self.connecting))
+        crate::slots::take(&self.connecting, MAX_CONNECTING_RECEIVES)
+            .then_some(Slot(&self.connecting))
     }
 }
 
@@ -243,11 +239,7 @@ struct Slot<'a>(&'a AtomicUsize);
 
 impl Drop for Slot<'_> {
     fn drop(&mut self) {
-        let _ = self
-            .0
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-                Some(n.saturating_sub(1))
-            });
+        crate::slots::give_back(self.0);
     }
 }
 

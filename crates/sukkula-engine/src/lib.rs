@@ -20,6 +20,7 @@ pub mod adapter;
 pub mod api;
 pub mod ctx;
 mod hub;
+mod slots;
 
 #[cfg(feature = "bluetooth")]
 pub mod bluetooth;
