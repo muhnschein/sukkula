@@ -1,0 +1,280 @@
+# Builds the device RPM inside the Sailfish SDK, and runs Jolla's own
+# validator on it: the Harbour gate on the real package (spec §7).
+#
+# Not part of ci.yml: it pulls a multi-gigabyte SDK image and cross-builds
+# the whole engine, which is minutes of runner time nobody wants on every
+# push. It runs from the Actions tab, on a `v*` or `build-*` tag, and on
+# every pull request that touches what decides the package (the paths
+# below) -- because some Harbour rules only the built package can answer:
+# the Requires and Provides rpm generates from the binary, the libraries
+# and glibc versions the link ends up needing, whether main() survives the
+# strip. A dependency bump can change the first two without touching a line
+# of packaging, which is why Cargo.lock and every manifest are on the list.
+# UI-only changes (qml/, src/) are not: their Harbour questions are all
+# answerable from the sources, and ci.yml's `harbour` job asks them.
+#
+# aarch64 and Sailfish OS 5.2 only (spec §2): the SDK image below carries
+# that one target, and nothing here has a second.
+#
+# The route (docs/BUILDING.md): the engine is cross-compiled on the runner
+# by the pinned Rust with the SDK's own aarch64 GCC and target sysroot,
+# lifted out of the image; then mb2 builds the Qt shell against it inside
+# the image and makes the RPM. scripts/build-rpm.sh holds each step, and
+# `make rpm` runs the same ones.
+name: rpm
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: >
+          Cut a release: the version to publish, which has to be what
+          rpm/harbour-sukkula.spec says, run on main. The commit is tagged
+          v<version> and a GitHub release goes up with the package. Leave
+          empty for an ordinary build.
+        type: string
+        default: ""
+  push:
+    # `v*` for a release. `build-*` is a throwaway handle for running this
+    # before it reaches the default branch, since workflow_dispatch only
+    # becomes available once a workflow is on main.
+    tags: ["v*", "build-*"]
+  pull_request:
+    paths:
+      - "rpm/**"
+      - "harbour-sukkula.pro"
+      - "harbour-sukkula.desktop"
+      - "icons/**"
+      - "translations/**"
+      - "Cargo.lock"
+      - "**/Cargo.toml"
+      - "**/build.rs"
+      - "rust-toolchain.toml"
+      - "third_party/**"
+      - ".github/workflows/rpm.yml"
+      - "ci/build-sdk-image.sh"
+      - "ci/check-elf.sh"
+      - "ci/harbour-validate-rpm.sh"
+      - "ci/harbour/**"
+      - "scripts/build-rpm.sh"
+      - "scripts/cross-build-rust.sh"
+
+# A pull request's new push supersedes its run in flight; tags and
+# dispatches are their own groups.
+concurrency:
+  group: rpm-${{ github.event_name }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+# Reading the tree is all the workflow as a whole needs; each job says what
+# more it holds, so neither holds the other's.
+permissions:
+  contents: read
+
+jobs:
+  rpm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      # The derived SDK image lives in this repository's registry, and a
+      # run that finds none there publishes the one it had to build -- never
+      # from a pull request (see "Get the SDK image").
+      packages: write
+    env:
+      SFOS: "5.2.0.15"
+      ARCH: aarch64
+      RELEASE: ${{ inputs.release || '' }}
+      # Where the SDK's cross toolchain and sysroot are lifted to.
+      ROOTFS: /home/runner/sukkula-sdk
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Named for its inputs: the image's tag carries a hash of
+      # ci/build-sdk-image.sh and the spec's BuildRequires, so a pull
+      # request that changes either derives an image of its own and cannot
+      # replace the one main builds with.
+      - name: Name the SDK image this tree wants
+        run: |
+          image=$(./scripts/build-rpm.sh image)
+          echo "IMAGE=$image" >> "$GITHUB_ENV"
+          echo "SDK image: $image"
+
+      - name: Sign in to the registry
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: echo "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+
+      # ci/build-sdk-image.sh says what this image is and why it is not
+      # upstream's. Deriving one takes about as long as the rest of this
+      # job, so it is done once and published; a run that finds none
+      # derives it rather than failing -- and publishes it, unless the run
+      # is a pull request's, whose image stays on its own runner.
+      - name: Get the SDK image
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if docker pull -q "$IMAGE"; then
+            echo "using $IMAGE"
+          else
+            echo "::notice::no $IMAGE published yet; deriving one, which makes this run slower"
+            # Room for the upstream image and the flattened one at once.
+            sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+                        "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}"
+            ./ci/build-sdk-image.sh "$SFOS" "$ARCH" "$IMAGE"
+            if [ "$EVENT" != pull_request ]; then
+              docker push "$IMAGE" ||
+                echo "::warning::could not publish $IMAGE; the next run will derive it again"
+            fi
+          fi
+          id=$(docker image inspect --format '{{.Id}}' "$IMAGE")
+          echo "SDK_IMAGE_ID=${id#sha256:}" >> "$GITHUB_ENV"
+
+      # Every build would otherwise produce harbour-sukkula-0.1.0-1: the
+      # same NEVRA every time, so `rpm -U` on a phone that already has one
+      # does nothing while the file says it is new. The run number is
+      # monotonic, so each build is an upgrade of the last. A release
+      # builds the spec's own Release: 1, and has to say what the spec says.
+      #
+      # Digits and periods only: Harbour rejects any other character in
+      # Release (ci/harbour-check.sh reads the stamp below and checks it).
+      # A test build is told apart by the short SHA in its artifact name.
+      - name: Stamp the build so each one is its own package
+        run: |
+          short=$(git rev-parse --short HEAD)
+          version=$(sed -n 's/^Version:[[:space:]]*//p' rpm/harbour-sukkula.spec)
+          wanted=""
+          case "$GITHUB_REF" in
+            refs/tags/v*) wanted=${GITHUB_REF#refs/tags/v} ;;
+          esac
+          if [ -n "$RELEASE" ]; then
+            [ "$GITHUB_REF" = "refs/heads/main" ] || {
+              echo "::error::a release is cut on main, not on $GITHUB_REF"; exit 1; }
+            wanted=$RELEASE
+          fi
+          if [ -n "$wanted" ]; then
+            [ "$wanted" = "$version" ] || {
+              echo "::error::release $wanted, but rpm/harbour-sukkula.spec says Version: $version"; exit 1; }
+            release="1"
+          else
+            release="1.${GITHUB_RUN_NUMBER}"
+          fi
+          sed -i "s/^Release:.*/Release:    ${release}/" rpm/harbour-sukkula.spec
+          grep '^Version:\|^Release:' rpm/harbour-sukkula.spec
+          echo "SHORT_SHA=$short" >> "$GITHUB_ENV"
+
+      # The SDK's cross compilers are 32-bit x86 programs; rpm, cpio, file
+      # and binutils are what the checks after the build read the package
+      # with.
+      - name: Install host prerequisites
+        run: |
+          sudo dpkg --add-architecture i386
+          ./ci/apt-install.sh libc6:i386 libstdc++6:i386 zlib1g:i386 \
+            rpm rpm2cpio cpio file binutils
+
+      - name: Lift the cross toolchain and sysroot out of the image
+        run: ./scripts/build-rpm.sh lift "$IMAGE" "$ROOTFS"
+
+      # The engine's dependencies depend on the lockfile, the toolchain and
+      # the sysroot they were compiled against, and on nothing else.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: sdk-${{ env.SFOS }}-${{ env.SDK_IMAGE_ID }}
+
+      # The pinned Rust, the SDK's GCC 10, the 5.2 sysroot; then the four
+      # entry points, the native libraries and a probe link, checked.
+      - name: Cross-build the engine
+        run: ./scripts/build-rpm.sh engine "$ROOTFS"
+
+      - name: Build the RPM
+        run: ./scripts/build-rpm.sh package "$IMAGE"
+
+      - name: Show what was built
+        run: |
+          find RPMS -name '*.rpm' | sort | while read -r f; do
+            echo "== $f"
+            rpm -qip "$f"
+            echo "-- files"; rpm -qlp "$f"
+            echo "-- requires"; rpm -qp --requires "$f"
+            echo "-- provides"; rpm -qp --provides "$f"
+          done
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: harbour-sukkula-${{ env.ARCH }}-sfos${{ env.SFOS }}-${{ env.SHORT_SHA }}
+          path: RPMS/**/*.rpm
+          if-no-files-found: error
+          retention-days: 30
+
+      # The authority: Jolla's rpmvalidation.sh, the same script
+      # `sfdk check -s harbour` runs, at the commit ci/harbour/UPSTREAM pins,
+      # plus the binary rules ci/check-elf.sh reads off the ELF (stripped,
+      # main() exported, glibc no newer than the target's, the hardening).
+      # Any finding fails the job -- Sukkula waives nothing
+      # (ci/harbour/waivers.conf), so a red step here is a package Harbour
+      # would reject or query. After the upload, deliberately: a package
+      # Harbour would reject is still one worth having on a phone while
+      # working out why.
+      - name: Validate the RPM against Harbour's rules
+        run: |
+          rpm=$(find RPMS -name 'harbour-sukkula-*.aarch64.rpm' ! -name '*debug*' | sort | tail -1)
+          [ -n "$rpm" ] || { echo "::error::no RPM to validate"; exit 1; }
+          echo "Validating $rpm"
+          ./scripts/build-rpm.sh check "$rpm" "$ROOTFS"
+
+  # A release: the package the job above built and validated goes on a
+  # GitHub release named v<version>. Its own job so that `contents: write`
+  # is held only here, by a few commands, and never by the build running an
+  # SDK image with --privileged. From a `v*` tag the tag is there already
+  # and --verify-tag refuses to invent one; from a dispatch the release
+  # makes the tag, on the commit this run checked out.
+  release:
+    needs: rpm
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.release != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE: ${{ inputs.release || '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Fetch the package this run built
+        run: gh run download "$GITHUB_RUN_ID" --dir rpms
+
+      # The device package and its checksum, and nothing else.
+      - name: Gather the assets
+        run: |
+          mkdir -p assets
+          find rpms -name 'harbour-sukkula-*.aarch64.rpm' ! -name '*debug*' \
+               ! -name '*.src.rpm' -exec cp {} assets/ \;
+          [ -n "$(ls assets)" ] || { echo "::error::no device RPM to release"; exit 1; }
+          (cd assets && sha256sum -- * > SHA256SUMS)
+          cat assets/SHA256SUMS
+
+      - name: Publish the release
+        run: |
+          if [ -n "$RELEASE" ]; then
+            version=$RELEASE
+            where=(--target "$GITHUB_SHA")
+          else
+            version=${GITHUB_REF_NAME#v}
+            where=(--verify-tag)
+          fi
+          {
+            echo "Sukkula $version for the Jolla Phone 2026: Sailfish OS 5.2 and later, aarch64."
+            echo
+            echo "Built with the Sailfish SDK 5.2.0.15 and passed Jolla's Harbour validator"
+            echo "(rpmvalidation.sh) with no findings. Distributed through Harbour; this"
+            echo "page carries the same package for testing."
+          } > notes.md
+          gh release create "v$version" "${where[@]}" \
+            --title "Sukkula $version" \
+            --notes-file notes.md --generate-notes \
+            assets/*

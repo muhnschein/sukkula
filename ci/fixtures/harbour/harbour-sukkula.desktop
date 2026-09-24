@@ -1,0 +1,23 @@
+[Desktop Entry]
+Type=Application
+X-Nemo-Application-Type=silica-qt5
+Icon=harbour-sukkula
+Exec=harbour-sukkula
+Name=Sukkula
+Comment=Send and receive files
+Categories=Network;FileTransfer;
+X-Nemo-Single-Instance=yes
+X-Share-Methods=files;text
+
+[X-Share Method files]
+Description=Send via Sukkula
+SupportsMultipleFiles=yes
+
+[X-Share Method text]
+Description=Send via Sukkula
+Capabilities=text/*
+
+[X-Sailjail]
+Permissions=Internet;Bluetooth;Downloads
+OrganizationName=sukkula
+ApplicationName=sukkula

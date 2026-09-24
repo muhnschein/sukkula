@@ -1,0 +1,144 @@
+# Sukkula's build and check entry points.
+#
+# The rule, from vuo: `make check` runs exactly what CI's per-pull-request
+# gate runs (.github/workflows/ci.yml), job for job, from a clean checkout,
+# with no phone and no Sailfish SDK. Two jobs are left out because they need
+# the network rather than this tree -- `deny` (the RustSec advisory
+# database) and `vendor` (open-quickshare at the pinned commit) -- and are
+# targets of their own. The device RPM is `make rpm`, which needs Docker
+# and the SDK image; its Harbour validation is part of it.
+#
+# A missing tool fails, like CI's strict modes: a green `make check` that
+# skipped the QML, the cross build or the fuzzers is a green that means
+# nothing. The first run fetches the pinned toolchains (rustup), which is
+# network; nothing after that is.
+#
+# Host packages (Debian/Ubuntu):
+#   dbus libdbus-1-dev pkg-config            the bluetooth feature and its tests
+#   gcc-aarch64-linux-gnu g++-aarch64-linux-gnu binutils-aarch64-linux-gnu
+#   qtdeclarative5-dev-tools qml-module-qtquick2 qml-module-qttest
+#   qml-module-qtquick-window2 qml-module-qtquick-layouts qttools5-dev-tools
+#   rpm file binutils desktop-file-utils shellcheck
+# and: cargo install --locked cargo-fuzz cargo-deny; pip install actionlint-py
+
+CARGO ?= cargo
+# The nightly the fuzzers use; ci.yml pins the same.
+SUKKULA_NIGHTLY ?= nightly-2026-09-15
+FUZZ_SECONDS ?= 60
+FEATURES := localsend quickshare wormhole bluetooth none
+export SUKKULA_NIGHTLY
+
+.PHONY: all check fmt fmt-check lint test doc features deny deps lockfile \
+        fuzz-smoke ffi-asan cross qml packaging vendor harbour rpm sdk-image \
+        clean help
+
+all: check
+
+## check: every per-pull-request CI job that needs no network: test,
+## features, deps, fuzz-smoke, ffi-asan, cross, qml, packaging, harbour,
+## and the vendor check's selftest. Not deny or vendor (network), not rpm (SDK).
+check: fmt-check lint test doc features deps lockfile harbour packaging qml cross \
+       ffi-asan fuzz-smoke
+	./ci/vendor-check-selftest.sh
+	@echo "== make check passed (deny and vendor need the network: make deny vendor) =="
+
+## fmt: format the workspace
+fmt:
+	$(CARGO) fmt --all
+
+fmt-check:
+	@echo "== rustfmt =="
+	$(CARGO) fmt --all --check
+
+## lint: clippy over the workspace, tests included, warnings denied
+lint:
+	@echo "== clippy =="
+	$(CARGO) clippy --workspace --all-targets --locked -- -D warnings
+
+test:
+	@echo "== tests =="
+	$(CARGO) test --workspace --locked
+
+## doc: rustdoc, with broken intra-doc links as errors
+doc:
+	@echo "== rustdoc =="
+	RUSTDOCFLAGS="-D warnings" $(CARGO) doc --workspace --no-deps --locked
+
+## features: each protocol alone, and none (spec §3)
+features:
+	@for f in $(FEATURES); do \
+		if [ "$$f" = none ]; then args="--no-default-features"; \
+		else args="--no-default-features --features $$f"; fi; \
+		echo "== sukkula-engine $$args =="; \
+		$(CARGO) clippy -p sukkula-engine $$args --all-targets --locked -- -D warnings || exit 1; \
+		$(CARGO) test -p sukkula-engine $$args --locked || exit 1; \
+	done
+
+## deny: licences, advisories, duplicates, bans, sources (deny.toml). Network.
+deny:
+	@command -v cargo-deny >/dev/null 2>&1 || { \
+		echo "cargo-deny is not installed: cargo install --locked cargo-deny" >&2; exit 1; }
+	$(CARGO) deny --locked check
+
+## deps: the dependency budget (ci/check-deps.sh), proved by its selftest
+deps:
+	./ci/check-deps-selftest.sh
+	./ci/check-deps.sh
+
+## lockfile: committed, current, every git dependency pinned by rev
+lockfile:
+	./ci/check-lockfile.sh
+
+## fuzz-smoke: every cargo-fuzz target for FUZZ_SECONDS, from its seeds
+fuzz-smoke:
+	FUZZ_TOOLCHAIN=$(SUKKULA_NIGHTLY) ./scripts/fuzz-smoke.sh $(FUZZ_SECONDS)
+
+## ffi-asan: the C harness over the C ABI, under AddressSanitizer
+ffi-asan:
+	./ci/ffi-harness/run.sh
+
+## cross: the aarch64 engine. With SYSROOT=<SDK target sysroot> (and the SDK's
+## /opt/cross), the release route; without, the Ubuntu-GCC smoke CI runs.
+cross:
+	./ci/check-elf-selftest.sh
+ifdef SYSROOT
+	./scripts/cross-build-rust.sh --sdk "$(SYSROOT)"
+else
+	./scripts/cross-build-rust.sh --host
+endif
+
+## qml: qmllint over qml/, and the UI's QML tests offscreen
+qml:
+	./ci/qml-lint.sh
+	QT_QPA_PLATFORM=offscreen ./tests/run-qml-tests.sh
+
+## packaging: spec, desktop entry, catalogs, shellcheck, actionlint
+packaging:
+	PACKAGING_LINT_STRICT=1 ./ci/packaging-lint.sh
+	./ci/apt-install-selftest.sh
+
+## vendor: third_party/rqs_lib is upstream plus its patches. Network.
+vendor:
+	./ci/vendor-check-selftest.sh
+	./ci/vendor-check.sh
+
+## harbour: the source-level Harbour gate, then the proof that it bites
+harbour:
+	HARBOUR_CHECK_STRICT=1 ./ci/harbour-check.sh
+	./ci/harbour-check-selftest.sh
+
+## rpm: the device RPM, as rpm.yml builds it, then Jolla's validator on it.
+## Needs Docker and sudo (docs/BUILDING.md).
+rpm:
+	./scripts/build-rpm.sh all
+
+## sdk-image: derive the SDK image rpm builds with (docs/BUILDING.md)
+sdk-image:
+	./ci/build-sdk-image.sh 5.2.0.15 aarch64 "$$(./scripts/build-rpm.sh image)"
+
+clean:
+	$(CARGO) clean
+	rm -rf build-sfos RPMS .mb2
+
+help:
+	@grep -E '^## ' $(MAKEFILE_LIST) | sed 's/^## /  /'
