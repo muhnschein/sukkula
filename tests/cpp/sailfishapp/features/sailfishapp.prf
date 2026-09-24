@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# A host stand-in for libsailfishapp's qmake feature (its
+# data/sailfishapp.prf), so that tests/run-cpp-tests.sh can build the real
+# harbour-sukkula.pro with a desktop Qt and check what `make install` puts
+# where. It installs what the SDK's feature installs -- the binary to
+# /usr/bin, qml/ to /usr/share/$$TARGET, the desktop file, and the icons
+# named by SAILFISHAPP_ICONS -- and links tests/cpp/sailfishapp's
+# libsailfishapp stand-in instead of the real library. The SDK build uses
+# the SDK's own feature; this file is never used there.
+
+QT += quick qml
+
+target.path = /usr/bin
+
+!sailfishapp_no_deploy_qml {
+    qml.files = qml
+    qml.path = /usr/share/$${TARGET}
+    INSTALLS += qml
+}
+
+desktop.files = $${TARGET}.desktop
+desktop.path = /usr/share/applications
+
+isEmpty(SAILFISHAPP_ICONS) {
+    icon.files = $${TARGET}.png
+    icon.path = /usr/share/icons/hicolor/86x86/apps
+    INSTALLS += icon
+} else {
+    for(size, SAILFISHAPP_ICONS) {
+        icon$${size}.files = icons/$${size}/$${TARGET}.png
+        icon$${size}.path = /usr/share/icons/hicolor/$${size}/apps
+        INSTALLS += icon$${size}
+    }
+}
+
+INSTALLS += target desktop
+
+# The SDK's feature adds these; the booster needs position-independent
+# code.
+QMAKE_CXXFLAGS += -fPIC -fvisibility=hidden -fvisibility-inlines-hidden
+QMAKE_LFLAGS += -pie
+
+# In place of PKGCONFIG += sailfishapp.
+INCLUDEPATH += $$PWD/..
+SOURCES += $$PWD/../sailfishapp_host.cpp
+DEFINES += SUKKULA_SOURCE_ROOT=\\\"$$_PRO_FILE_PWD_\\\"
