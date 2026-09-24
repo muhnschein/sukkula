@@ -23,6 +23,7 @@
 
 pub mod config;
 pub mod consent;
+mod dirfd;
 pub mod hex;
 pub mod inbox;
 pub mod limits;

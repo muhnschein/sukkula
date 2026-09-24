@@ -241,4 +241,88 @@ mod tests {
         s.device_name = "Pekka\u{200B}".into();
         assert_eq!(s.effective_device_name("Jolla Phone"), "Pekka");
     }
+
+    #[test]
+    fn validation_is_idempotent_and_capped() {
+        let mut s = Settings {
+            device_name: format!("  \u{202E}{}\u{2066} ", "x".repeat(500)),
+            ..Settings::default()
+        };
+        s.localsend.pin = Some("\tABC123 ".into());
+        s.wormhole.mailbox_url = Some(" WSS://relay.example/v1 ".into());
+        let once = s.validate().unwrap();
+        assert_eq!(once.device_name.chars().count(), MAX_ALIAS_CHARS);
+        assert!(!once.device_name.contains('\u{202E}'));
+        assert_eq!(once.localsend.pin.as_deref(), Some("ABC123"));
+        assert_eq!(
+            once.wormhole.mailbox_url.as_deref(),
+            Some("WSS://relay.example/v1")
+        );
+        assert_eq!(once.clone().validate().unwrap(), once);
+        // What is saved reads back as what was validated.
+        let json = serde_json::to_string(&once).unwrap();
+        let back: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.validate().unwrap(), once);
+    }
+
+    #[test]
+    fn pin_and_url_edges() {
+        let mut s = Settings::default();
+        s.localsend.pin = Some("1".repeat(MAX_PIN_CHARS));
+        assert!(s.clone().validate().is_ok());
+        s.localsend.pin = Some("1".repeat(MAX_PIN_CHARS + 1));
+        assert_eq!(s.clone().validate(), Err(ConfigError::BadPin));
+        s.localsend.pin = Some("١٢٣٤".into()); // Arabic-Indic digits
+        assert_eq!(s.clone().validate(), Err(ConfigError::BadPin));
+        s.localsend.pin = None;
+        for bad in [
+            "ws://",
+            "wss://",
+            "ws:/x",
+            "file:///etc/passwd",
+            "ws://a\u{0}b",
+            "ws://ä",
+        ] {
+            s.wormhole.mailbox_url = Some(bad.into());
+            assert_eq!(
+                s.clone().validate(),
+                Err(ConfigError::BadUrl("mailbox")),
+                "{bad}"
+            );
+        }
+        s.wormhole.mailbox_url = Some(format!("ws://{}", "a".repeat(MAX_URL_BYTES)));
+        assert_eq!(s.clone().validate(), Err(ConfigError::BadUrl("mailbox")));
+        s.wormhole.mailbox_url = Some("   ".into());
+        assert_eq!(s.clone().validate().unwrap().wormhole.mailbox_url, None);
+        s.wormhole.relay_url = Some("ws://relay.example:4001".into());
+        assert_eq!(s.clone().validate(), Err(ConfigError::BadUrl("relay")));
+        assert!(!ConfigError::BadPin.to_string().is_empty());
+        assert!(ConfigError::BadUrl("relay").to_string().contains("relay"));
+    }
+
+    #[test]
+    fn the_file_format_is_strict() {
+        assert!(
+            serde_json::from_str::<Settings>(r#"{"quickshare":{"visibility":"contacts"}}"#)
+                .is_err()
+        );
+        let s: Settings =
+            serde_json::from_str(r#"{"quickshare":{"visibility":"hidden"},"bluetooth":{}}"#)
+                .unwrap();
+        assert_eq!(s.quickshare.visibility, Visibility::Hidden);
+        assert!(s.bluetooth.enabled);
+        assert!(serde_json::from_str::<Settings>(r#"{"wormhole":{"relay":"x"}}"#).is_err());
+        assert!(serde_json::from_str::<Settings>(r#"{"bluetooth":{"enabled":1}}"#).is_err());
+        assert!(serde_json::from_str::<Settings>("7").is_err());
+        // serde's derive also takes a struct as a positional array. That is
+        // the same fields through the same `validate`, not a way around it;
+        // one element too many is still refused.
+        let positional: Settings = serde_json::from_str("[]").unwrap();
+        assert_eq!(positional, Settings::default());
+        assert!(serde_json::from_str::<Settings>(r#"["", {}, {}, {}, {}, false, 1]"#).is_err());
+        assert_eq!(
+            serde_json::to_string(&Visibility::Everyone).unwrap(),
+            r#""everyone""#
+        );
+    }
 }
