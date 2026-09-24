@@ -11,7 +11,17 @@ publish.workspace = true
 [features]
 default = ["localsend", "quickshare", "wormhole", "bluetooth"]
 # One feature per protocol, so each can be built and tested alone (spec §3).
-localsend = ["dep:localsend"]
+localsend = [
+    "dep:localsend",
+    "dep:hyper",
+    "dep:hyper-util",
+    "dep:http-body-util",
+    "dep:bytes",
+    "dep:rustls",
+    "dep:tokio-rustls",
+    "dep:form_urlencoded",
+    "dep:getrandom",
+]
 quickshare = []
 wormhole = ["dep:magic-wormhole", "dep:qrcode"]
 bluetooth = ["dep:dbus"]
@@ -27,6 +37,21 @@ tokio-util = { workspace = true, features = ["rt"] }
 
 # LocalSend v2: the protocol authors' own core, pinned (spec §6).
 localsend = { git = "https://github.com/localsend/localsend", rev = "e768240d1ad95f0f162b852b5ff37bec71cde1ef", features = ["discovery"], optional = true }
+# The HTTPS layer of the LocalSend adapter. Every one of these is already in
+# the tree through `localsend` (same major versions, features it enables
+# anyway); they are named here because upstream's server and client cannot
+# enforce S4/S6/S7 before they parse (see src/localsend/mod.rs), so the adapter
+# drives hyper and rustls itself and takes only the DTOs, the certificate code
+# and multicast from upstream. No second TLS stack: rustls with ring, as spec
+# §6 lists.
+hyper = { version = "1", default-features = false, features = ["http1", "server", "client"], optional = true }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio"], optional = true }
+http-body-util = { version = "0.1", optional = true }
+bytes = { version = "1", optional = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"], optional = true }
+form_urlencoded = { version = "1", optional = true }
+getrandom = { workspace = true, optional = true }
 # Magic Wormhole, transfer protocol v1 only (spec §5).
 magic-wormhole = { version = "=0.8.1", default-features = false, features = ["transfer"], optional = true }
 qrcode = { version = "0.14", default-features = false, optional = true }
