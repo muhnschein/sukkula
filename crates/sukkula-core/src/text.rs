@@ -11,6 +11,8 @@
 
 use crate::limits::{MAX_COMBINING_RUN, MAX_MESSAGE_BYTES};
 
+mod marks;
+
 /// What happens to one character on its way to the screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Class {
@@ -36,18 +38,22 @@ pub fn classify(c: char) -> Class {
         0x09 => Class::Space,
         // C0 controls, DEL and C1 controls.
         0x00..=0x1F | 0x7F..=0x9F => Class::Drop,
-        // Every Unicode space separator (Zs).
-        0x20 | 0xA0 | 0x1680 | 0x2000..=0x200A | 0x202F | 0x205F | 0x3000 => Class::Space,
+        // Every Unicode space separator (Zs), and BRAILLE PATTERN BLANK:
+        // not a separator, but it draws nothing, so a run of it pads a name
+        // until the label elides whatever follows (`photo.jpg⠀⠀⠀⠀.exe`).
+        0x20 | 0xA0 | 0x1680 | 0x2000..=0x200A | 0x202F | 0x205F | 0x3000 | 0x2800 => Class::Space,
         // Bidirectional controls: embeddings, overrides, isolates, marks.
         0x061C | 0x200E | 0x200F | 0x202A..=0x202E | 0x2066..=0x2069 => Class::Drop,
-        // Zero-width and other invisible format characters (Cf), and the
-        // default-ignorable code points that render as nothing: soft hyphen,
-        // combining grapheme joiner, Arabic and Syriac format marks, Hangul
-        // fillers, Khmer inherent vowels, Mongolian selectors, zero-width
-        // space/joiners, word joiner and invisible operators, deprecated
-        // format characters, variation selectors, BOM, interlinear
-        // annotation, Kaithi/Egyptian/shorthand/musical format controls,
-        // and the tag and variation-selector-supplement planes.
+        // Every format character (Cf) of Unicode 16.0 and every
+        // Default_Ignorable_Code_Point, which between them are the
+        // characters that render as nothing: soft hyphen, combining grapheme
+        // joiner, Arabic and Syriac format marks, Hangul fillers, Khmer
+        // inherent vowels, Mongolian selectors, zero-width space/joiners,
+        // word joiner and invisible operators, deprecated format characters,
+        // variation selectors, BOM, interlinear annotation,
+        // Kaithi/Egyptian/shorthand/musical format controls, and the tag and
+        // variation-selector-supplement planes. Checked before the marks
+        // below, because several of these are also Mn.
         0xAD
         | 0x034F
         | 0x0600..=0x0605
@@ -79,17 +85,28 @@ pub fn classify(c: char) -> Class {
         // Noncharacters.
         0xFDD0..=0xFDEF => Class::Drop,
         _ if u & 0xFFFE == 0xFFFE => Class::Drop,
-        // The combining blocks Zalgo text is built from. Scripts whose
-        // letters are written with combining marks (Devanagari, Thai, ...)
-        // use their own blocks and are not limited.
-        0x0300..=0x036F
-        | 0x0483..=0x0489
-        | 0x1AB0..=0x1AFF
-        | 0x1DC0..=0x1DFF
-        | 0x20D0..=0x20FF
-        | 0xFE20..=0xFE2F => Class::Combining,
+        // Every nonspacing and enclosing mark, in every script. Thai tone
+        // marks and Hebrew cantillation stack as high as U+0300..U+036F do,
+        // so the cap applies to all of them; no script needs more than
+        // [`MAX_COMBINING_RUN`] on one base in ordinary writing.
+        _ if is_mark(u) => Class::Combining,
         _ => Class::Keep,
     }
+}
+
+/// Whether `u` is a nonspacing (Mn) or enclosing (Me) mark.
+fn is_mark(u: u32) -> bool {
+    marks::MARKS
+        .binary_search_by(|&(lo, hi)| {
+            if hi < u {
+                std::cmp::Ordering::Less
+            } else if lo > u {
+                std::cmp::Ordering::Greater
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        })
+        .is_ok()
 }
 
 /// True for a character that S2 never lets through, in any output of this
@@ -329,5 +346,134 @@ mod tests {
         assert_eq!(truncate_bytes("héllo", 2), "h");
         assert_eq!(truncate_bytes("héllo", 3), "hé");
         assert_eq!(truncate_bytes("abc", 10), "abc");
+        assert_eq!(truncate_bytes("€", 2), "");
+        assert_eq!(truncate_bytes("", 0), "");
+    }
+
+    #[test]
+    fn marks_table_is_sorted() {
+        let mut prev: Option<u32> = None;
+        for &(lo, hi) in marks::MARKS {
+            assert!(lo <= hi, "{lo:X}..{hi:X}");
+            assert!(hi <= 0x10_FFFF);
+            if let Some(p) = prev {
+                // Sorted, disjoint, and merged: adjacent ranges would be one.
+                assert!(lo > p.saturating_add(1), "{lo:X} after {p:X}");
+            }
+            prev = Some(hi);
+        }
+    }
+
+    #[test]
+    fn marks_are_found_at_range_edges() {
+        for (c, mark) in [
+            ('\u{2FF}', false),
+            ('\u{300}', true),
+            ('\u{36F}', true),
+            ('\u{370}', false),
+            ('\u{E48}', true),  // Thai tone mark
+            ('\u{591}', true),  // Hebrew accent
+            ('\u{64B}', true),  // Arabic fathatan
+            ('\u{20DD}', true), // enclosing circle
+            ('\u{E01EF}', true),
+            ('a', false),
+            ('\u{0}', false),
+            ('\u{10FFFF}', false),
+        ] {
+            assert_eq!(is_mark(u32::from(c)), mark, "{c:?}");
+        }
+    }
+
+    #[test]
+    fn script_mark_floods_are_cut_too() {
+        // Thai: one consonant under a tower of tone marks, the classic
+        // "overflowing text" trick. U+0E48 was not limited before.
+        let thai = format!("\u{E2A}{}", "\u{E49}".repeat(60));
+        assert_eq!(display(&thai, 64).chars().count(), 1 + MAX_COMBINING_RUN);
+        let hebrew = format!("\u{5D0}{}", "\u{596}".repeat(60));
+        assert_eq!(message(&hebrew).chars().count(), 1 + MAX_COMBINING_RUN);
+        let arabic = format!("\u{628}{}", "\u{651}".repeat(60));
+        assert_eq!(display(&arabic, 64).chars().count(), 1 + MAX_COMBINING_RUN);
+        // Ordinary text with marks is untouched.
+        assert_eq!(display("ภาษาไทย", 64), "ภาษาไทย");
+        assert_eq!(display("שָׁלוֹם", 64), "שָׁלוֹם");
+        assert_eq!(display("cafe\u{301}", 64), "cafe\u{301}");
+    }
+
+    #[test]
+    fn marks_that_are_also_invisible_stay_dropped() {
+        // CGJ, Mongolian and ordinary variation selectors, Khmer inherent
+        // vowels are Mn as well as default-ignorable; they must stay Drop.
+        for c in ['\u{34F}', '\u{180B}', '\u{FE0F}', '\u{E0100}', '\u{17B4}'] {
+            assert_eq!(classify(c), Class::Drop, "{c:?}");
+        }
+    }
+
+    #[test]
+    fn blank_padding_collapses() {
+        assert_eq!(classify('\u{2800}'), Class::Space);
+        assert!(is_forbidden('\u{2800}'));
+        assert_eq!(
+            display("photo.jpg\u{2800}\u{2800}\u{2800}\u{2800}.exe", 64),
+            "photo.jpg .exe"
+        );
+        assert_eq!(display("\u{2800}\u{3164}\u{FFA0}\u{115F}", 64), "");
+    }
+
+    #[test]
+    fn classes_cover_the_categories() {
+        assert_eq!(classify('a'), Class::Keep);
+        assert_eq!(classify('\t'), Class::Space);
+        assert_eq!(classify('\n'), Class::Newline);
+        assert_eq!(classify('\u{85}'), Class::Newline);
+        assert_eq!(classify('\u{2029}'), Class::Newline);
+        assert_eq!(classify('\u{7F}'), Class::Drop);
+        assert_eq!(classify('\u{E000}'), Class::Drop);
+        assert_eq!(classify('\u{FDD0}'), Class::Drop);
+        assert_eq!(classify('\u{1FFFE}'), Class::Drop);
+        assert_eq!(classify('\u{10FFFF}'), Class::Drop);
+        assert_eq!(classify('\u{301}'), Class::Combining);
+        assert!(!is_forbidden(' '));
+        assert!(!is_forbidden('\u{301}'));
+        assert!(is_forbidden('\n'));
+        assert!(is_forbidden('\u{A0}'));
+        assert!(!is_forbidden_in_message('\n'));
+        assert!(is_forbidden_in_message('\r'));
+        assert!(is_forbidden_in_message('\u{A0}'));
+        assert!(is_forbidden_in_message('\u{202E}'));
+        assert!(!is_forbidden_in_message('\u{301}'));
+    }
+
+    #[test]
+    fn display_edges() {
+        // A space before the cut is not left dangling before the ellipsis.
+        assert_eq!(display("abc defgh", 5), "abc…");
+        // Room for exactly the space and one more.
+        assert_eq!(display("ab cd", 4), "ab…");
+        // Nothing showable left over is not "more": no ellipsis.
+        assert_eq!(display("abc \u{200B}\t", 3), "abc");
+        // A lone combining mark on a space survives, one on nothing does not.
+        assert_eq!(display("a \u{301}", 64), "a \u{301}");
+        assert_eq!(display(" \u{301}", 64), "");
+        assert_eq!(display("abc", usize::MAX), "abc");
+        // The cut falls on a mark: the mark goes, the base stays.
+        assert_eq!(display("ab\u{301}c", 3), "ab…");
+    }
+
+    #[test]
+    fn message_edges() {
+        assert_eq!(message(""), "");
+        assert_eq!(message("\r\r\n"), "");
+        assert_eq!(message("a\r\r\nb"), "a\n\nb");
+        assert_eq!(message("a \n b"), "a\nb");
+        assert_eq!(message("a\n\u{301}b"), "a\nb");
+        assert_eq!(message("\u{301}a"), "a");
+        assert_eq!(message("a\u{A0}\u{3000}b"), "a b");
+        // A space that would push the message over the cap is not added.
+        let edge = format!("{} b", "a".repeat(MAX_MESSAGE_BYTES - 1));
+        let m = message(&edge);
+        assert_eq!(m.len(), MAX_MESSAGE_BYTES - 1);
+        let edge = format!("{}\u{301}", "a".repeat(MAX_MESSAGE_BYTES - 1));
+        assert_eq!(message(&edge).len(), MAX_MESSAGE_BYTES - 1);
     }
 }

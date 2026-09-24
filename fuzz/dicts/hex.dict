@@ -1,0 +1,11 @@
+# Digests: prefixes, separators and non-ASCII digit lookalikes.
+# Generated spelling: non-ASCII and controls as \xHH of their UTF-8.
+"0x"
+"0X"
+" "
+"\x09"
+"\xd9\xa0"
+"\xef\xbc\x90"
+"abcdef"
+"ABCDEF"
+"0123456789"

@@ -247,7 +247,9 @@ impl Offer {
 /// A MIME type is `type/subtype`, both RFC 6838 restricted names. Anything
 /// else is dropped; the offer is not refused over it.
 fn clean_mime(m: &str) -> Option<String> {
-    let m = m.trim();
+    // Parameters (`; charset=utf-8`) are dropped, not refused, and before
+    // the length check, so a long parameter does not cost a good type.
+    let m = m.split(';').next().unwrap_or("").trim();
     if m.is_empty() || m.len() > MAX_MIME_BYTES {
         return None;
     }
@@ -257,8 +259,6 @@ fn clean_mime(m: &str) -> Option<String> {
             && s.bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b"!#$&-^_.+".contains(&b))
     };
-    // Parameters (`; charset=utf-8`) are dropped, not refused.
-    let sub = sub.split(';').next().unwrap_or("").trim();
     (token(ty) && token(sub))
         .then(|| format!("{}/{}", ty.to_ascii_lowercase(), sub.to_ascii_lowercase()))
 }

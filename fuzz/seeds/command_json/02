@@ -1,0 +1,1 @@
+{"v":1,"id":9,"cmd":{"type":"send","target":{"protocol":"local_send","peer":"p1"},"items":[{"kind":"file","path":"/a"},{"kind":"text","text":"hi"}]}}
