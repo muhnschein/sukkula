@@ -74,6 +74,9 @@ proptest.workspace = true
 # magic-wormhole's own API refuses to (empty and oversized records). Already
 # in the tree through magic-wormhole.
 crypto_secretbox = "0.1"
+# The hub's tests make a FIFO to prove /etc/hw-release is never opened
+# when it is one. Already in the tree through sukkula-core.
+rustix.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros", "net", "io-util", "fs", "test-util"] }
 
 [lints]

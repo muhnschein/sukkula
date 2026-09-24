@@ -16,10 +16,14 @@ crate-type = ["staticlib", "rlib"]
 default = ["sukkula-engine/default"]
 
 [dependencies]
+sukkula-core.workspace = true
 sukkula-engine.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true
