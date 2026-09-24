@@ -1,0 +1,59 @@
+[Desktop Entry]
+Type=Application
+X-Nemo-Application-Type=silica-qt5
+Icon=harbour-sukkula
+Exec=harbour-sukkula
+Name=Sukkula
+Comment=Send and receive files nearby
+Comment[de]=Dateien in der Nähe senden und empfangen
+Comment[fi]=Lähetä ja vastaanota tiedostoja lähellä
+Comment[sv]=Skicka och ta emot filer i närheten
+Categories=Network;FileTransfer;
+# One instance: a share arrives at the app that is already running.
+X-Nemo-Single-Instance=yes
+
+# The Share menu (F-C6). Each method here has a group below and a
+# ShareProvider of the same name in qml/share/ShareTarget.qml, whose
+# qsTr() strings repeat these Description= values for the catalogues
+# (tests/qml/static_checks.py keeps the three in step).
+X-Share-Methods=files;text
+
+[X-Share Method files]
+Description=Send nearby
+Description[de]=In der Nähe senden
+Description[fi]=Lähetä lähelle
+Description[sv]=Skicka i närheten
+SupportsMultipleFiles=yes
+
+[X-Share Method text]
+Description=Send text nearby
+Description[de]=Text in der Nähe senden
+Description[fi]=Lähetä teksti lähelle
+Description[sv]=Skicka text i närheten
+Capabilities=text/*;text/x-url;text/uri-list
+SupportsMultipleFiles=no
+
+# Sailjail (spec §2): exactly Internet;Bluetooth;Downloads.
+#
+# Internet: LocalSend and Quick Share on the LAN, Magic Wormhole's mailbox
+# and relay. Bluetooth: BlueZ on the system bus and obexd on the session
+# bus, for Bluetooth sending and the Quick Share BLE nudge. Downloads:
+# received files go to ~/Downloads/Sukkula, staged in its .partial/ (S3).
+#
+# The data directory is ~/.local/share/sukkula/sukkula, from the two names
+# below; src/main.cpp sets the same names so AppDataLocation agrees.
+#
+# Files to send can only be ones the sandbox lets Sukkula read: anything
+# under ~/Downloads through the picker, and what other apps hand over
+# through the Share menu. Documents, Pictures and the rest would need
+# further permissions, which the spec does not grant.
+#
+# ExecDBus: the share sheet reaches the running app's ShareProvider on the
+# D-Bus name sukkula.sukkula (OrganizationName.ApplicationName, the one
+# name Sailjail lets the app own), and starts the app with this line when
+# it is not running.
+[X-Sailjail]
+Permissions=Internet;Bluetooth;Downloads
+OrganizationName=sukkula
+ApplicationName=sukkula
+ExecDBus=harbour-sukkula
