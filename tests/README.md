@@ -51,7 +51,7 @@ tst_consent.qml` runs single QML tests without the other stages.
    (F-C6); `[X-Sailjail]` is exactly `Internet;Bluetooth;Downloads` with
    the names `src/main.cpp` uses (§2); and every catalogue holds exactly
    the strings of the sources, all translated, with the same placeholders
-   (run `translations/update.sh` after changing a string).
+   (run `scripts/update-translations.sh` after changing a string).
 3. **The runner** (`tests/qml/runner`, built with qmake) loads each
    `tests/qml/tst_*.qml` with `qml-stubs/` and a fake bridge and runs its
    steps. On top of the tests' own assertions it fails a test on **any Qt

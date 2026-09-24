@@ -335,9 +335,9 @@ def check_translations():
         missing = set(wanted) - set(have)
         stale = set(have) - set(wanted)
         for key in sorted(missing, key=str):
-            fail(path, f"missing {key[0]}: {key[1]!r} (run translations/update.sh)")
+            fail(path, f"missing {key[0]}: {key[1]!r} (run scripts/update-translations.sh)")
         for key in sorted(stale, key=str):
-            fail(path, f"no longer in the sources {key[0]}: {key[1]!r} (run translations/update.sh)")
+            fail(path, f"no longer in the sources {key[0]}: {key[1]!r} (run scripts/update-translations.sh)")
         for key, message in have.items():
             if key not in wanted:
                 continue

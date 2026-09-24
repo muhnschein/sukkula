@@ -119,7 +119,7 @@ for e in $engines; do
 
     # 3. What Harbour reads from the binary.
     syms=$(readelf --dyn-syms -W "$app" | awk '$5 == "GLOBAL" && $7 != "UND" { print $8 }' | sed 's/@.*//' | sort -u)
-    [ "$syms" = main ] || fail "the binary exports more than main(): $(printf '%s ' $syms)"
+    [ "$syms" = main ] || fail "the binary exports more than main(): $(echo "$syms" | tr '\n' ' ')"
     readelf -d "$app" | grep -q 'BIND_NOW' || fail "no BIND_NOW (-z now)"
     readelf -lW "$app" | grep -q 'GNU_RELRO' || fail "no GNU_RELRO segment"
     readelf -hW "$app" | grep -q 'DYN' || fail "not a position-independent executable"
@@ -139,7 +139,7 @@ for e in $engines; do
             *) fail "links $lib, which is not on Harbour's list" ;;
         esac
     done
-    [ "$status" -eq 0 ] && say "binary checks ($e engine): ok (needs: $(printf '%s ' $needed))"
+    [ "$status" -eq 0 ] && say "binary checks ($e engine): ok (needs: $(echo "$needed" | tr '\n' ' '))"
 done
 
 # 4. The project file's install layout.
@@ -177,5 +177,5 @@ else
     fail "harbour-sukkula.pro did not build or install on the host"
 fi
 
-[ "$status" -eq 0 ] && say "cpp tests: ok" || say "cpp tests: FAIL"
+if [ "$status" -eq 0 ]; then say "cpp tests: ok"; else say "cpp tests: FAIL"; fi
 exit "$status"

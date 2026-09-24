@@ -8,7 +8,7 @@
 # (librsvg2-bin).
 set -eu
 
-here=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+here=$(CDPATH='' cd -- "$(dirname -- "$0")/../icons" && pwd)
 for size in 86 108 128 172; do
     mkdir -p "$here/${size}x${size}"
     rsvg-convert --width "$size" --height "$size" --keep-aspect-ratio \

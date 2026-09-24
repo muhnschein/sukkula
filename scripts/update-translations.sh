@@ -17,7 +17,7 @@ lupdate=${LUPDATE:-lupdate}
 "$lupdate" -silent -noobsolete -locations none -extensions qml,js \
     -source-language en -target-language en \
     "$root/qml" -ts "$root/translations/harbour-sukkula.ts"
-for lang in de fi sv; do
+for lang in de "fi" sv; do
     "$lupdate" -silent -noobsolete -locations none -extensions qml,js \
         -source-language en -target-language "$lang" \
         "$root/qml" -ts "$root/translations/harbour-sukkula-$lang.ts"
