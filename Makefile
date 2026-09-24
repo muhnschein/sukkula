@@ -16,7 +16,8 @@
 # Host packages (Debian/Ubuntu):
 #   dbus libdbus-1-dev pkg-config            the bluetooth feature and its tests
 #   gcc-aarch64-linux-gnu g++-aarch64-linux-gnu binutils-aarch64-linux-gnu
-#   qtdeclarative5-dev-tools qml-module-qtquick2 qml-module-qttest
+#   qtbase5-dev qtdeclarative5-dev qtdeclarative5-dev-tools g++ make
+#   qml-module-qtquick2 qml-module-qttest
 #   qml-module-qtquick-window2 qml-module-qtquick-layouts qttools5-dev-tools
 #   rpm file binutils desktop-file-utils shellcheck
 # and: cargo install --locked cargo-fuzz cargo-deny; pip install actionlint-py
@@ -28,17 +29,17 @@ FUZZ_SECONDS ?= 60
 FEATURES := localsend quickshare wormhole bluetooth none
 export SUKKULA_NIGHTLY
 
-.PHONY: all check fmt fmt-check lint test doc features deny deps lockfile \
-        fuzz-smoke ffi-asan cross qml packaging vendor harbour rpm sdk-image \
-        clean help
+.PHONY: all check fmt fmt-check lint test rqs-lib-tests doc features deny deps \
+        lockfile fuzz-lint fuzz-smoke ffi-asan cross qml cpp packaging vendor harbour \
+        rpm sdk-image clean help
 
 all: check
 
 ## check: every per-pull-request CI job that needs no network: test,
-## features, deps, fuzz-smoke, ffi-asan, cross, qml, packaging, harbour,
+## features, deps, fuzz-smoke, ffi-asan, cross, qml, cpp, packaging, harbour,
 ## and the vendor check's selftest. Not deny or vendor (network), not rpm (SDK).
-check: fmt-check lint test doc features deps lockfile harbour packaging qml cross \
-       ffi-asan fuzz-smoke
+check: fmt-check lint test rqs-lib-tests doc features deps lockfile harbour packaging \
+       qml cpp cross ffi-asan fuzz-smoke
 	./ci/vendor-check-selftest.sh
 	@echo "== make check passed (deny and vendor need the network: make deny vendor) =="
 
@@ -58,6 +59,12 @@ lint:
 test:
 	@echo "== tests =="
 	$(CARGO) test --workspace --locked
+
+## rqs-lib-tests: the vendored Quick Share library's own tests, from a copy,
+## on the versions Cargo.lock ships; third_party/ is left untouched
+rqs-lib-tests:
+	@echo "== rqs_lib's own tests =="
+	./ci/rqs-lib-tests.sh
 
 ## doc: rustdoc, with broken intra-doc links as errors
 doc:
@@ -89,8 +96,14 @@ deps:
 lockfile:
 	./ci/check-lockfile.sh
 
+## fuzz-lint: clippy over the fuzz crate (its own workspace), on the pinned
+## toolchain, so a target that stopped compiling fails before any fuzzing
+fuzz-lint:
+	@echo "== clippy, fuzz/ =="
+	$(CARGO) clippy --manifest-path fuzz/Cargo.toml --all-targets --locked -- -D warnings
+
 ## fuzz-smoke: every cargo-fuzz target for FUZZ_SECONDS, from its seeds
-fuzz-smoke:
+fuzz-smoke: fuzz-lint
 	FUZZ_TOOLCHAIN=$(SUKKULA_NIGHTLY) ./scripts/fuzz-smoke.sh $(FUZZ_SECONDS)
 
 ## ffi-asan: the C harness over the C ABI, under AddressSanitizer
@@ -111,6 +124,17 @@ endif
 qml:
 	./ci/qml-lint.sh
 	QT_QPA_PLATFORM=offscreen ./tests/run-qml-tests.sh
+
+## cpp: the C++ shell's host tests (tests/README.md), against the stub
+## engine and then the real one
+cpp:
+	@echo "== C++ tests, stub engine =="
+	./tests/run-cpp-tests.sh
+	@echo "== C++ tests, real engine =="
+	$(CARGO) build -p sukkula-ffi --locked
+	@t=$${CARGO_TARGET_DIR:-target}; case $$t in /*) ;; *) t="$(CURDIR)/$$t" ;; esac; \
+		echo "SUKKULA_ENGINE=rust SUKKULA_RUST_LIB=$$t/debug/libsukkula_ffi.a ./tests/run-cpp-tests.sh"; \
+		SUKKULA_ENGINE=rust SUKKULA_RUST_LIB="$$t/debug/libsukkula_ffi.a" ./tests/run-cpp-tests.sh
 
 ## packaging: spec, desktop entry, catalogs, shellcheck, actionlint
 packaging:

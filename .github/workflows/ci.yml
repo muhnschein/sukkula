@@ -64,6 +64,12 @@ jobs:
       # rewrite it.
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
+      # The vendored Quick Share library's own tests. third_party/ is not a
+      # workspace member, so `cargo test --workspace` never runs them; the
+      # script tests a copy, on the versions Cargo.lock ships, and leaves
+      # no Cargo.lock or target/ in the vendored tree for the vendor check
+      # to trip over.
+      - run: ./ci/rqs-lib-tests.sh
       # Broken intra-doc links are errors.
       - run: cargo doc --workspace --no-deps --locked
         env:
@@ -136,11 +142,15 @@ jobs:
   # committed seeds; targets come from `cargo fuzz list`, so a new one is
   # fuzzed from the pull request that adds it. scripts/fuzz-smoke.sh
   # carries the pitfalls (the toolchain file, the musl cargo-fuzz).
+  # Sixteen targets at 60 s each, plus an ASan build of the three network
+  # protocols' libraries: about half an hour on a hosted runner.
   fuzz-smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # libdbus-1-dev: the Quick Share targets build the engine's
+      # quickshare feature, whose BLE nudge links the system libdbus-1.
       - run: ./ci/apt-install.sh libdbus-1-dev pkg-config
       - run: rustup toolchain install "$SUKKULA_NIGHTLY" --profile minimal
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -153,6 +163,10 @@ jobs:
       - uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2.87.10
         with:
           tool: cargo-fuzz@0.13.2
+      # The fuzz crate is a workspace of its own, which the test job's
+      # clippy never sees: linted here on the pinned toolchain, before any
+      # fuzzing, so a target that stopped compiling is reported as that.
+      - run: cargo clippy --manifest-path fuzz/Cargo.toml --all-targets --locked -- -D warnings
       - run: ./scripts/fuzz-smoke.sh 60
         env:
           FUZZ_TOOLCHAIN: ${{ env.SUKKULA_NIGHTLY }}
@@ -219,6 +233,37 @@ jobs:
       - run: ./tests/run-qml-tests.sh
         env:
           QT_QPA_PLATFORM: offscreen
+
+  # The C++ shell (tests/README.md): the bridge under ASan and UBSan, the
+  # app as the phone builds it started offscreen on the real qml/, the
+  # binary's Harbour checks, and harbour-sukkula.pro's install layout.
+  # First against the stub engine, which needs no Rust; then against the
+  # real library, which also links it the way the RPM does. The packages
+  # are exactly what tests/run-cpp-tests.sh names: Qt Core, Gui, Qml, Quick
+  # and Test to build against (qtbase5-dev, qtdeclarative5-dev), the QtQuick
+  # runtime plugin the app loads (qml-module-qtquick2), lrelease
+  # (qttools5-dev-tools), g++ with its sanitizer runtimes, make, readelf
+  # (binutils), and for the real engine libdbus-1 through pkg-config.
+  cpp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: >-
+          ./ci/apt-install.sh qtbase5-dev qtdeclarative5-dev qml-module-qtquick2
+          qttools5-dev-tools g++ make binutils libdbus-1-dev pkg-config
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: cpp
+      - name: C++ tests, stub engine
+        run: ./tests/run-cpp-tests.sh
+      - run: cargo build -p sukkula-ffi --locked
+      # run-cpp-tests.sh runs the stub stages again here; what is new is
+      # every stage against target/debug/libsukkula_ffi.a.
+      - name: C++ tests, real engine
+        run: ./tests/run-cpp-tests.sh
+        env:
+          SUKKULA_ENGINE: rust
 
   # What decides whether the RPM builds, installs and launches, checkable
   # without the SDK: the spec parses (and has no bare macro in a comment),

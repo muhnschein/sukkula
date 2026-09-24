@@ -151,24 +151,8 @@ pub(super) fn insert(
         return None;
     }
     let id = peer_id(endpoint_id);
-    let name = text::display(raw_name, MAX_ALIAS_CHARS);
     let entry = PeerEntry {
-        peer: Peer {
-            id: id.clone(),
-            protocol: Protocol::QuickShare,
-            name: if name.is_empty() {
-                UNKNOWN_SENDER.to_owned()
-            } else {
-                name
-            },
-            model: None,
-            device_type: match device_type {
-                rqs_lib::DeviceType::Phone => DeviceType::Phone,
-                rqs_lib::DeviceType::Tablet => DeviceType::Tablet,
-                rqs_lib::DeviceType::Laptop => DeviceType::Computer,
-                rqs_lib::DeviceType::Unknown => DeviceType::Unknown,
-            },
-        },
+        peer: listed(endpoint_id, raw_name, device_type),
         addr,
     };
     let changed = {
@@ -182,6 +166,32 @@ pub(super) fn insert(
         shared.ctx.emit(Event::PeerFound { peer: entry.peer });
     }
     Some(id)
+}
+
+/// The peer the UI lists for an announcement: the id, the name after S2
+/// (never empty), the icon.
+pub(super) fn listed(
+    endpoint_id: [u8; 4],
+    raw_name: &str,
+    device_type: rqs_lib::DeviceType,
+) -> Peer {
+    let name = text::display(raw_name, MAX_ALIAS_CHARS);
+    Peer {
+        id: peer_id(endpoint_id),
+        protocol: Protocol::QuickShare,
+        name: if name.is_empty() {
+            UNKNOWN_SENDER.to_owned()
+        } else {
+            name
+        },
+        model: None,
+        device_type: match device_type {
+            rqs_lib::DeviceType::Phone => DeviceType::Phone,
+            rqs_lib::DeviceType::Tablet => DeviceType::Tablet,
+            rqs_lib::DeviceType::Laptop => DeviceType::Computer,
+            rqs_lib::DeviceType::Unknown => DeviceType::Unknown,
+        },
+    }
 }
 
 /// The peer with id `id`, if it is known.

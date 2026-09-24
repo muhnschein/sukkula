@@ -173,6 +173,26 @@ pub(super) fn screen(
     if !shared.ctx.permits(ip) {
         return None;
     }
+    let (port, fingerprint) = answerable(own_fingerprint, message)?;
+    // Last, so that only well-formed announcements spend the address's
+    // budget.
+    if !shared.ctx.allow_discovery(ip) {
+        return None;
+    }
+    Some(Candidate {
+        addr: SocketAddr::new(ip, port),
+        fingerprint,
+    })
+}
+
+/// The part of [`screen`] that looks at the announcement alone, so the
+/// fuzz target reaches it without a context: F-LS2 (HTTPS only), a port,
+/// and a well-formed fingerprint that is not ours. The port to answer on
+/// and the fingerprint to pin the answer to, uppercase.
+pub(super) fn answerable(
+    own_fingerprint: &str,
+    message: &MulticastMessageV2,
+) -> Option<(u16, String)> {
     if message.protocol != ProtocolType::Https || message.port == 0 {
         return None;
     }
@@ -180,15 +200,7 @@ pub(super) fn screen(
     if fingerprint == own_fingerprint {
         return None;
     }
-    // Last, so that only well-formed announcements spend the address's
-    // budget.
-    if !shared.ctx.allow_discovery(ip) {
-        return None;
-    }
-    Some(Candidate {
-        addr: SocketAddr::new(ip, message.port),
-        fingerprint,
-    })
+    Some((message.port, fingerprint))
 }
 
 async fn consume(

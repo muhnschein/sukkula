@@ -65,7 +65,7 @@ use self::identity::Identity;
 use self::peers::{Peers, Sighting};
 use self::server::Server;
 use crate::adapter::{Adapter, BoxFuture, Outgoing};
-use crate::api::{Direction, ErrorCode, ErrorInfo, Event, SendTarget, TransferId};
+use crate::api::{Direction, ErrorCode, ErrorInfo, Event, Peer, SendTarget, TransferId};
 use crate::ctx::Ctx;
 
 /// LocalSend's port, for HTTPS and for multicast.
@@ -386,6 +386,154 @@ pub fn offer_from_prepare_upload(body: &[u8]) -> Option<sukkula_core::offer::Off
     let offer = sukkula_core::offer::Offer::validate(raw).ok()?;
     // Every file keeps its id; a lone text keeps none.
     (offer.files.len() == ids.len()).then_some(offer)
+}
+
+/// Which of the other JSON bodies a peer sends a fuzz input is. Each is
+/// what discovery or a send reads from a peer before anything is shown or
+/// sent on the strength of it.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PeerDto {
+    /// A multicast announcement, up to the datagram upstream reads.
+    Announcement,
+    /// A `POST /register` to our server.
+    Register,
+    /// The answer to our `POST /register`.
+    RegisterResponse,
+    /// The answer to our `GET /info`.
+    InfoResponse,
+    /// The answer to our `POST /prepare-upload`: the receiver's session
+    /// id and a token per file it wants.
+    PrepareUploadResponse,
+}
+
+/// What the adapter makes of a [`PeerDto`].
+#[doc(hidden)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FromPeer {
+    /// An announcement worth answering: on this port, pinned to this
+    /// fingerprint (uppercase).
+    Answer {
+        /// The announced HTTPS port.
+        port: u16,
+        /// The fingerprint the answer's TLS handshake must see.
+        fingerprint: String,
+    },
+    /// A peer for the list, as `Event::PeerFound` carries it, and the port
+    /// a registering peer said its server is on.
+    Peer {
+        /// The peer, after S2.
+        peer: Peer,
+        /// `Register` only.
+        port: Option<u16>,
+    },
+    /// The request paths a send would upload to, one per offered file the
+    /// receiver asked for, in the order offered.
+    Uploads(Vec<String>),
+}
+
+/// The discovery and send side's parsing of `body` as `kind`, for a fuzz
+/// target (spec §7 "Parsers"): the same size cap, upstream DTO, checks and
+/// S2 as the adapter applies, in its order. `own` is our fingerprint and
+/// `proven` the one the peer's TLS certificate proved (both uppercase);
+/// `offered` the file ids a send offered. `None` where the adapter would
+/// refuse the body or ignore it.
+#[doc(hidden)]
+#[must_use]
+pub fn from_peer(
+    kind: PeerDto,
+    body: &[u8],
+    own: &str,
+    proven: &str,
+    offered: &[&str],
+) -> Option<FromPeer> {
+    use localsend::http::dto_v2::PrepareUploadResponseDtoV2;
+    use localsend::model::discovery::MulticastMessageV2;
+    // Upstream reads a datagram into a 64 KiB buffer and parses that; every
+    // HTTP body is read with the 64 KiB cap (`wire::read_json`).
+    const DATAGRAM_BYTES: usize = 65_536;
+    let cap = match kind {
+        PeerDto::Announcement => DATAGRAM_BYTES,
+        _ => sukkula_core::limits::MAX_MESSAGE_BYTES,
+    };
+    if body.len() > cap {
+        return None;
+    }
+    let peer = |alias: &str, model: Option<&str>, device: Option<&LsDeviceType>, port| {
+        let sighting = Sighting {
+            fingerprint: proven,
+            addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 2)), DEFAULT_PORT),
+            alias,
+            model,
+            device_type: wire::device_type(device),
+        };
+        Peers::default()
+            .upsert(&sighting, Instant::now())
+            .map(|peer| FromPeer::Peer { peer, port })
+    };
+    match kind {
+        PeerDto::Announcement => {
+            let m: MulticastMessageV2 = serde_json::from_slice(body).ok()?;
+            // Upstream drops our own echo before handing the message over.
+            if m.fingerprint == own {
+                return None;
+            }
+            let (port, fingerprint) = discovery::answerable(own, &m)?;
+            Some(FromPeer::Answer { port, fingerprint })
+        }
+        PeerDto::Register => {
+            // `server::register`, after its rate limit.
+            let dto: RegisterDtoV2 = serde_json::from_slice(body).ok()?;
+            if dto.protocol != ProtocolType::Https
+                || wire::fingerprint(&dto.fingerprint).as_deref() != Some(proven)
+                || dto.port == 0
+                || proven == own
+            {
+                return None;
+            }
+            peer(
+                &dto.alias,
+                dto.device_model.as_deref(),
+                dto.device_type.as_ref(),
+                Some(dto.port),
+            )
+        }
+        PeerDto::RegisterResponse => {
+            let r: RegisterResponseDtoV2 = serde_json::from_slice(body).ok()?;
+            peer(
+                &r.alias,
+                r.device_model.as_deref(),
+                r.device_type.as_ref(),
+                None,
+            )
+        }
+        PeerDto::InfoResponse => {
+            let r: InfoResponseDtoV2 = serde_json::from_slice(body).ok()?;
+            peer(
+                &r.alias,
+                r.device_model.as_deref(),
+                r.device_type.as_ref(),
+                None,
+            )
+        }
+        PeerDto::PrepareUploadResponse => {
+            // `send::send`'s handling of a 200 answer.
+            let answer: PrepareUploadResponseDtoV2 = serde_json::from_slice(body).ok()?;
+            let session = wire::token(&answer.session_id)?;
+            let mut paths = Vec::new();
+            for id in offered {
+                let Some(token) = answer.files.get(*id) else {
+                    continue;
+                };
+                let token = wire::token(token)?;
+                paths.push(wire::path_with_query(
+                    &format!("{}/upload", wire::API_V2),
+                    &[("sessionId", session), ("fileId", id), ("token", token)],
+                ));
+            }
+            Some(FromPeer::Uploads(paths))
+        }
+    }
 }
 
 /// An IPv4-mapped IPv6 address as the IPv4 address it is.

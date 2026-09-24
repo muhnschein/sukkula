@@ -99,6 +99,8 @@
 //! verifier duplicate, a baked-in root store.
 
 mod code;
+#[doc(hidden)]
+pub mod fuzzing;
 mod mailbox;
 mod receive;
 mod send;

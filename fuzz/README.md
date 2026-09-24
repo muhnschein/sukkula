@@ -29,6 +29,15 @@ or the root `Cargo.lock`. Being outside it, `cargo test --workspace` does not
 compile it, so CI must build it on every push (below): otherwise a changed
 signature in `sukkula-core` rots a target silently.
 
+It builds the engine with the three network protocols (`localsend`,
+`quickshare`, `wormhole`; not `bluetooth`, whose D-Bus replies have sweeps
+of their own), so building needs `libdbus-1-dev` and `pkg-config` like the
+workspace does. `fuzz/Cargo.lock` was made from the root `Cargo.lock`, so
+every protocol library is fuzzed at the version the phone runs; after a
+dependency bump, `cp Cargo.lock fuzz/Cargo.lock` and `cargo metadata
+--manifest-path fuzz/Cargo.toml` bring it back in line (cargo drops what the
+fuzz crate does not use and adds only `libfuzzer-sys` and `arbitrary`).
+
 ## Targets
 
 Each target asserts the rule, not only survival. A sanitiser that returns a
@@ -45,9 +54,40 @@ bidi override has not crashed, and is still the bug.
 | `command_json` | the FFI command channel, `sukkula_engine::api::parse_command` | > 64 KiB refused before parsing; a parsed command has the current version and survives its own serialiser; a recovered id was really in the input; `set_settings` payloads validate clean |
 | `start_config` | `sukkula_start`'s JSON, `sukkula_engine::api::parse_start_config` | > 64 KiB refused; version checked; only known keys accepted; round trip exact |
 
-The protocol parsers (LocalSend DTOs, Quick Share frames, wormhole offers)
-belong to the adapter owners and get targets of their own there; every one
-of them ends in `Offer::validate`, which `offer_validate` covers.
+### The protocol parsers
+
+Every byte a peer, a mailbox server or the LAN sends is parsed by one of
+these first (spec §7: "LocalSend DTOs, Quick Share frames, wormhole
+offers"). Each goes through the adapter's real code -- upstream's DTOs,
+rqs_lib's state machine, the wormhole guards -- via thin `#[doc(hidden)]`
+entry points (`sukkula_engine::localsend::{offer_from_prepare_upload,
+from_peer}`, `sukkula_engine::wormhole::fuzzing`,
+`sukkula_engine::quickshare::fuzzing`), and every offer that comes out
+validated is held to the same S-rules as `offer_validate`'s
+(`sukkula_fuzz::assert_offer`), every listed peer to S2
+(`sukkula_fuzz::assert_peer`). Beyond the S-rules, each target restates what
+the input said -- through `serde_json::Value`, a decoder of its own, or the
+library's own types -- and asserts the adapter kept it.
+
+| Target | Surface | Properties asserted |
+| --- | --- | --- |
+| `localsend_prepare_upload` | `POST /prepare-upload`, the offer, from anyone on the LAN | the S-rules; ≤ 64 KiB parsed; HTTPS only (F-LS2); a lone `text/plain` file with a preview is the message and nothing else (F-C4); otherwise every file, in id order, with its declared size exact and its declared digest |
+| `localsend_discovery` | the multicast announcement, `POST /register`, the `register` and `info` answers, the `prepare-upload` answer | an announcement is answered only if HTTPS, a port, and a well-formed fingerprint that is not ours, pinned to exactly that fingerprint (F-LS2, F-LS3); a peer is listed only on the fingerprint its certificate proved, never one it claimed, and S2-clean; an upload path has exactly the session, file and token parameters, short and plain, with the receiver's values: nothing smuggled into the request |
+| `wormhole_wire` | the v1 peer messages: offers, transit hints, answers, the transit ack | an offer is exactly one text or one file with the declared name and signed size, re-encodes to itself, and validates S-clean; hints bounded (16 direct, 2 relays × 3), deduplicated, well-formed hosts, no port 0; the connection plan is ≤ 4 targets, ours first, and never loopback, unspecified, multicast or broadcast, v4-mapped included; the ack matches only its digest |
+| `wormhole_code` | the code the user types (F-MW2), through the library's parser and entropy check | an accepted code is the input trimmed and lowercased, ≤ 128 bytes, in the strict grammar restated here; acceptance is idempotent and case-blind; every refusal is `BadCode` |
+| `wormhole_mailbox` | the mailbox guard's filter on everything the server sends, one connection per input | each message let through is re-read with magic-wormhole 0.8.1's own server-message types: hashcash ≤ 20 bits (W1), phases the library cannot `todo!()` on (W2), bodies it cannot `split_at` past (W3), PAKE bodies ≤ 512 bytes; ≤ 128 messages and 4 MiB per connection, nothing read after a refusal (W5) |
+| `quickshare_handshake` | the plaintext handshake from the first byte: frame reader, connection request and endpoint info, UKEY2 client init and finish, the peer's P-256 key; then the channel it keys | no event of any kind before the key exchange; an honest connection request's name read exactly and shown S2-clean; a finished exchange gives a four-digit PIN; then everything `quickshare_frame` asserts, under the derived keys |
+| `quickshare_frame` | everything inside the encrypted channel: offline frames, byte payloads and their reassembly, sharing frames, the introduction, file chunks, texts, spoiled seals | no file byte or text before the user accepts (S5); ≤ 1000 files, no negative size, no repeated payload id, text ≤ 64 KiB; chunks in order, never past the declared size, ending exactly there; ≤ 2 byte payloads buffered; ≤ 16 KiB of reply per frame; the raw offer is the introduction as sent and validates S-clean; a received text is S2-clean |
+| `quickshare_mdns` | an mDNS service's instance name and `n` record, from anyone on the link | a listed peer's id is `qs:` and the endpoint id (letters and digits, or hex), its name exactly S2 of what the record carries, decoded here independently |
+
+The two Quick Share targets play the sender (`src/quickshare.rs`): rqs_lib's
+`InboundRequest` reads real frames from a socket that never waits, and the
+harness seals what the input asks for under keys it shares with the
+receiver -- a fuzzer cannot forge the channel's HMAC, and without this
+nothing past the handshake would be reached. `quickshare_handshake` goes
+further: it commits to the client finish it will really send, so the
+commitment check passes and the key derivation runs on the input's key. The
+receiver side does with each event what `quickshare/receive.rs` does.
 
 ## Running
 
@@ -71,49 +111,38 @@ reachable; every other target uses 4096.
 
 ## CI: the 60-second smoke per target
 
-Two jobs. The first runs on every push on the pinned toolchain and keeps the
-targets compiling:
+The `fuzz-smoke` job of `.github/workflows/ci.yml` (and `make fuzz-smoke`,
+which runs the same) does two things on every pull request. First it lints
+the crate on the pinned toolchain, which also keeps every target compiling:
 
 ```sh
-cargo check --manifest-path fuzz/Cargo.toml --locked
+cargo clippy --manifest-path fuzz/Cargo.toml --all-targets --locked -- -D warnings
 ```
 
-The second is the fuzz smoke (spec §7). Exact commands, for a GitHub Actions
-`ubuntu-latest` runner with `dtolnay/rust-toolchain@nightly` and cargo-fuzz
-from `taiki-e/install-action`:
+Then `scripts/fuzz-smoke.sh 60` runs the smoke (spec §7): it asks `cargo
+fuzz list` for the targets -- so a target added to `Cargo.toml` is fuzzed
+from the pull request that adds it, and zero targets is a failure -- builds
+them all once, and runs each for 60 s from `fuzz/corpus/<t>` and
+`fuzz/seeds/<t>` with `fuzz/dicts/<t>.dict`, a 10 s per-input timeout and a
+2 GiB RSS cap. It sets `RUSTUP_TOOLCHAIN` and `--target` itself, for the
+pitfalls below.
 
-```sh
-set -eu
-# rust-toolchain.toml pins 1.97.1, and a toolchain file beats the default
-# toolchain the nightly action installs; cargo-fuzz's -Zsanitizer then
-# reaches a stable rustc and fails. RUSTUP_TOOLCHAIN beats the file.
-export RUSTUP_TOOLCHAIN=nightly
-# cargo-fuzz defaults --target to the triple it was built for, and the
-# prebuilt binary is musl-static: ASan cannot link against a static libc
-# ("sanitizer is incompatible with statically linked libc", then "can't find
-# crate for `core`"). Pin the runner's own host triple.
-HOST=$(rustc -vV | sed -n 's/^host: //p')
-for t in name_sanitize text_display text_message offer_validate \
-         settings_json hex command_json start_config; do
-    maxlen=4096
-    [ "$t" = text_message ] && maxlen=70000
-    mkdir -p "fuzz/corpus/$t"
-    cargo fuzz run --target "$HOST" "$t" "fuzz/corpus/$t" "fuzz/seeds/$t" -- \
-        -max_total_time=60 -dict="fuzz/dicts/$t.dict" -timeout=10 \
-        -rss_limit_mb=4096 -max_len="$maxlen"
-done
-```
-
-Run from the repository root. Eight targets at 60 s each is eight minutes
-plus one ASan build of about a minute; a matrix over the targets runs them
-in parallel instead. On failure, upload `fuzz/artifacts/` as a job artifact:
-that directory holds the input that failed.
+Sixteen targets at 60 s each is sixteen minutes, plus one ASan build of the
+protocol libraries of about ten; a matrix over the targets would run them in
+parallel instead. On failure the job uploads `fuzz/artifacts/`: that
+directory holds the input that failed.
 
 Pitfalls, all met on vuo's `fuzz-smoke` job first:
 
-- **`RUSTUP_TOOLCHAIN=nightly`** is not optional (see above); `cargo +nightly`
-  works too, but not inside scripts that call plain `cargo`.
-- **`--target` the host triple**, never cargo-fuzz's own.
+- **`RUSTUP_TOOLCHAIN=nightly`** is not optional: rust-toolchain.toml pins
+  1.97.1, a toolchain file beats the default toolchain a job installs, and
+  cargo-fuzz's `-Zsanitizer` then reaches a stable rustc and fails.
+  `RUSTUP_TOOLCHAIN` beats the file; `cargo +nightly` works too, but not
+  inside scripts that call plain `cargo`.
+- **`--target` the host triple**, never cargo-fuzz's own: the prebuilt
+  cargo-fuzz is musl-static and defaults to its own triple, and ASan cannot
+  link against a static libc ("sanitizer is incompatible with statically
+  linked libc", then "can't find crate for `core`").
 - **Pass `fuzz/seeds/<t>`**. From an empty corpus, 60 seconds rarely reaches
   the assertions these targets exist for: `settings_json` has to invent
   `"localsend":{"pin":` before it tests a PIN at all.

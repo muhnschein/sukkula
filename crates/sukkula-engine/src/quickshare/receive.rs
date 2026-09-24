@@ -26,6 +26,7 @@ use sukkula_core::Protocol;
 use sukkula_core::consent::Refusal;
 use sukkula_core::offer::{RawFile, RawOffer};
 use sukkula_core::text;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::sync::CancellationToken;
 
@@ -208,7 +209,11 @@ async fn handshake(ir: &mut InboundRequest<TcpStream>) -> Option<Introduction> {
 
 /// The offer as the sender described it, for [`Ctx::offer`] to check.
 /// Sizes are widened, not converted, so a negative one reaches the check.
-fn raw_offer(ir: &InboundRequest<TcpStream>, introduction: &Introduction) -> RawOffer {
+/// Generic over the stream only so the fuzz target can drive it.
+pub(super) fn raw_offer<S: AsyncRead + AsyncWrite + Unpin>(
+    ir: &InboundRequest<S>,
+    introduction: &Introduction,
+) -> RawOffer {
     let sender = ir
         .remote_device_info()
         .map(|r| r.name.clone())

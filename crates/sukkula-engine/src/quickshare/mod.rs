@@ -48,6 +48,8 @@
 
 pub mod ble;
 mod discovery;
+#[doc(hidden)]
+pub mod fuzzing;
 mod receive;
 mod send;
 
