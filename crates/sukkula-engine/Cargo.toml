@@ -13,7 +13,20 @@ default = ["localsend", "quickshare", "wormhole", "bluetooth"]
 # One feature per protocol, so each can be built and tested alone (spec §3).
 localsend = ["dep:localsend"]
 quickshare = []
-wormhole = ["dep:magic-wormhole", "dep:qrcode"]
+wormhole = [
+    "dep:magic-wormhole",
+    "dep:qrcode",
+    "dep:async-tungstenite",
+    "dep:futures-core",
+    "dep:url",
+    "dep:sha2",
+    "dep:getrandom",
+    "dep:rustls",
+    "dep:tokio-rustls",
+    "dep:rustls-platform-verifier",
+    "dep:rustix",
+    "tokio-util/compat",
+]
 bluetooth = ["dep:dbus"]
 
 [dependencies]
@@ -30,12 +43,37 @@ localsend = { git = "https://github.com/localsend/localsend", rev = "e768240d1ad
 # Magic Wormhole, transfer protocol v1 only (spec §5).
 magic-wormhole = { version = "=0.8.1", default-features = false, features = ["transfer"], optional = true }
 qrcode = { version = "0.14", default-features = false, optional = true }
+# The wormhole guards (src/wormhole/mod.rs, "Why guards"): a loopback
+# WebSocket proxy that holds the mailbox server to the size, count and shape
+# limits magic-wormhole does not enforce. All four are already in the tree
+# through magic-wormhole or sukkula-core.
+async-tungstenite = { version = "0.34", default-features = false, features = ["handshake"], optional = true }
+futures-core = { version = "0.3", default-features = false, optional = true }
+url = { version = "2", optional = true }
+getrandom = { workspace = true, optional = true }
+# The transit ack's SHA-256, as the v1 protocol defines it.
+sha2 = { workspace = true, optional = true }
+# Opening a file to send read-only and O_NONBLOCK, so a FIFO swapped in
+# after the hub's check cannot hang the open. Already in the tree through
+# sukkula-core.
+rustix = { workspace = true, optional = true }
+# wss:// mailboxes (F-MW4) over the TLS stack LocalSend already brings --
+# rustls with ring, tokio-rustls and the platform verifier -- rather than
+# magic-wormhole's own TLS features (a second async TLS adapter and a baked-in
+# root store). No second TLS stack.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"], optional = true }
+rustls-platform-verifier = { version = "0.7", optional = true }
 # BlueZ obexd over the system libdbus-1.so.3 (Harbour-allowed). Never `vendored`.
 dbus = { version = "0.9", optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true
 proptest.workspace = true
+# The wormhole tests' raw transit peer seals records by hand, to send what
+# magic-wormhole's own API refuses to (empty and oversized records). Already
+# in the tree through magic-wormhole.
+crypto_secretbox = "0.1"
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros", "net", "io-util", "fs", "test-util"] }
 
 [lints]
