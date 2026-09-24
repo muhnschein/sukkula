@@ -146,6 +146,7 @@ impl Node {
         let ls = adapter_with(
             ctx.clone(),
             Options {
+                bind: Ipv4Addr::LOCALHOST,
                 port: cfg.port,
                 multicast_port: None,
                 idle_timeout: cfg.idle,

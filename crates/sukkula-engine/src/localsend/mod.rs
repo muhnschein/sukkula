@@ -46,7 +46,7 @@ mod tls;
 mod wire;
 
 use std::collections::HashMap;
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -71,12 +71,16 @@ use crate::ctx::Ctx;
 /// LocalSend's port, for HTTPS and for multicast.
 pub const DEFAULT_PORT: u16 = 53317;
 
-/// How the adapter is set up. The engine uses [`Options::default`]; tests
-/// use ephemeral ports and short timeouts. Not a user setting: nothing here
-/// can make the adapter less strict than the spec -- every timeout is capped
-/// at the spec's bound.
+/// How the adapter is set up. The engine uses [`Options::default`], or
+/// [`Options::hermetic`] for a context that answers loopback -- which only
+/// tests set up; the adapter's own tests pick their own. Not a user setting:
+/// nothing here can make the adapter less strict than the spec -- every
+/// timeout is capped at the spec's bound.
 #[derive(Clone, Debug)]
 pub struct Options {
+    /// The address the HTTPS server listens on: every IPv4 interface, or
+    /// only loopback.
+    pub bind: Ipv4Addr,
     /// The HTTPS port; 0 picks a free one.
     pub port: u16,
     /// The multicast port, or `None` for no multicast at all.
@@ -95,11 +99,28 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Options {
+            bind: Ipv4Addr::UNSPECIFIED,
             port: DEFAULT_PORT,
             multicast_port: Some(DEFAULT_PORT),
             idle_timeout: NETWORK_IDLE_TIMEOUT,
             handshake_timeout: HANDSHAKE_TIMEOUT,
             prepare_timeout: max_prepare_timeout(),
+        }
+    }
+}
+
+impl Options {
+    /// For an engine under test: listens on loopback only, on a free port,
+    /// with no multicast. An engine test that turns receiving on then never
+    /// touches the LAN, never announces itself on it, and never collides
+    /// with a real LocalSend on the machine or with another test.
+    #[must_use]
+    pub fn hermetic() -> Self {
+        Options {
+            bind: Ipv4Addr::LOCALHOST,
+            port: 0,
+            multicast_port: None,
+            ..Options::default()
         }
     }
 }
@@ -125,7 +146,18 @@ impl Options {
 /// The adapter, as the hub uses it.
 #[must_use]
 pub fn adapter(ctx: Arc<Ctx>) -> Arc<dyn Adapter> {
-    adapter_with(ctx, Options::default())
+    let opts = options_for(&ctx);
+    adapter_with(ctx, opts)
+}
+
+/// `allow_loopback` is set by tests only (`StartConfig` says so); the shell
+/// never sets it, so the phone always gets the defaults.
+fn options_for(ctx: &Ctx) -> Options {
+    if ctx.reach().allow_loopback {
+        Options::hermetic()
+    } else {
+        Options::default()
+    }
 }
 
 /// The adapter with other [`Options`], for tests.
@@ -608,6 +640,20 @@ pub(crate) mod tests {
         assert_eq!(o.idle_timeout(), NETWORK_IDLE_TIMEOUT);
         assert_eq!(o.handshake_timeout(), HANDSHAKE_TIMEOUT);
         assert_eq!(o.prepare_timeout(), max_prepare_timeout());
+    }
+
+    #[test]
+    fn only_a_test_context_gets_the_hermetic_options() {
+        let (_d1, test) = shared_for_tests(true);
+        let o = options_for(&test.ctx);
+        assert_eq!(o.bind, Ipv4Addr::LOCALHOST);
+        assert_eq!(o.port, 0);
+        assert_eq!(o.multicast_port, None);
+        let (_d2, phone) = shared_for_tests(false);
+        let o = options_for(&phone.ctx);
+        assert_eq!(o.bind, Ipv4Addr::UNSPECIFIED);
+        assert_eq!(o.port, DEFAULT_PORT);
+        assert_eq!(o.multicast_port, Some(DEFAULT_PORT));
     }
 
     #[test]

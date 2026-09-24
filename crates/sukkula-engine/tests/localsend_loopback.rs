@@ -360,7 +360,7 @@ async fn start_and_stop_are_idempotent_and_release_the_port() {
     b.ls.stop_receiving().await;
     assert_eq!(b.ls.port().await, None);
     // The listener is gone: the port can be bound again, and nothing answers.
-    let rebound = tokio::net::TcpListener::bind(("0.0.0.0", port)).await;
+    let rebound = tokio::net::TcpListener::bind(("127.0.0.1", port)).await;
     assert!(rebound.is_ok());
     drop(rebound);
     let again = b.receive().await;

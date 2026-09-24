@@ -28,7 +28,7 @@
 
 use std::collections::HashMap;
 use std::convert::Infallible;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -201,7 +201,7 @@ impl Server {
         let config = tls::server_config(&identity)?;
         // IPv4 only: LocalSend's baseline. Every IPv6 peer would also be one
         // more reach to reason about (S7), for no peer that lacks IPv4.
-        let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, shared.opts.port))
+        let listener = TcpListener::bind((shared.opts.bind, shared.opts.port))
             .await
             .map_err(|_| {
                 ErrorInfo::new(ErrorCode::Network, "the LocalSend port is not available")
@@ -1135,6 +1135,7 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::Ipv4Addr;
 
     #[test]
     fn pin_guessing_is_locked_out_per_address_and_in_all() {
