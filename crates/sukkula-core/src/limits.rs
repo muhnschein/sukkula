@@ -74,6 +74,14 @@ pub const OFFER_BURST: u32 = 3;
 /// The window [`OFFER_BURST`] refills over.
 pub const OFFER_WINDOW: Duration = Duration::from_secs(60);
 
+/// Incoming offers accepted for the consent queue per minute from all peers
+/// together. The per-IP limit alone is no limit against a peer that rotates
+/// its source address, which on IPv6 costs it nothing.
+pub const GLOBAL_OFFER_BURST: u32 = 10;
+
+/// The window [`GLOBAL_OFFER_BURST`] refills over.
+pub const GLOBAL_OFFER_WINDOW: Duration = Duration::from_secs(60);
+
 /// Distinct peer IPs a rate limiter remembers. Beyond this the stalest
 /// entry is forgotten, so a spoofed-source flood costs bounded memory.
 pub const RATE_LIMIT_ENTRIES: usize = 256;

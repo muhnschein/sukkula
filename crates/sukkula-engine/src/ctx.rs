@@ -27,8 +27,8 @@ use sukkula_core::config::Settings;
 use sukkula_core::consent::{ConsentBroker, OfferId, Refusal};
 use sukkula_core::inbox::{Inbox, InboxError, Incoming, Saved};
 use sukkula_core::limits::{
-    DISCOVERY_BURST, DISCOVERY_WINDOW, MAX_ACTIVE_TRANSFERS, NETWORK_IDLE_TIMEOUT, OFFER_BURST,
-    OFFER_WINDOW,
+    DISCOVERY_BURST, DISCOVERY_WINDOW, GLOBAL_OFFER_BURST, GLOBAL_OFFER_WINDOW,
+    MAX_ACTIVE_TRANSFERS, NETWORK_IDLE_TIMEOUT, OFFER_BURST, OFFER_WINDOW,
 };
 use sukkula_core::offer::{Offer, OfferError, OfferFile, RawOffer};
 use sukkula_core::reach::{RateLimiter, ReachPolicy};
@@ -56,6 +56,7 @@ pub struct Ctx {
     reach: ReachPolicy,
     transfers: Transfers,
     offer_limiter: Mutex<RateLimiter>,
+    global_offer_limiter: Mutex<RateLimiter>,
     discovery_limiter: Mutex<RateLimiter>,
     events: EventSink,
     shutdown: CancellationToken,
@@ -82,6 +83,10 @@ impl Ctx {
             reach,
             transfers: Transfers::default(),
             offer_limiter: Mutex::new(RateLimiter::new(OFFER_BURST, OFFER_WINDOW)),
+            global_offer_limiter: Mutex::new(RateLimiter::new(
+                GLOBAL_OFFER_BURST,
+                GLOBAL_OFFER_WINDOW,
+            )),
             discovery_limiter: Mutex::new(RateLimiter::new(DISCOVERY_BURST, DISCOVERY_WINDOW)),
             events,
             shutdown: CancellationToken::new(),
@@ -152,10 +157,17 @@ impl Ctx {
         self.reach.permits(ip)
     }
 
-    /// Whether `ip` may put another offer in the consent queue now.
+    /// Whether `ip` may put another offer in the consent queue now: within
+    /// its own allowance, and within everyone's together. The per-IP bucket
+    /// is asked first, so a peer that has spent its own allowance cannot
+    /// also drain the shared one.
     #[must_use]
     pub fn allow_offer(&self, ip: IpAddr) -> bool {
-        self.permits(ip) && lock(&self.offer_limiter).allow(ip, Instant::now())
+        let now = Instant::now();
+        self.permits(ip)
+            && lock(&self.offer_limiter).allow(ip, now)
+            && lock(&self.global_offer_limiter)
+                .allow(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), now)
     }
 
     /// Whether `ip` may get another discovery reply now (S7).
@@ -625,5 +637,22 @@ mod tests {
             t.finish(Outcome::Cancelled, Vec::new());
         }
         assert_eq!(ctx.transfers().active(), 0);
+    }
+
+    #[test]
+    fn offers_are_limited_per_peer_and_in_total() {
+        let dir = tempfile::tempdir().unwrap();
+        let (ctx, _) = ctx(dir.path());
+        let peer = |i: u16| IpAddr::V6(std::net::Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, i));
+        // One peer gets its own allowance and no more.
+        let one = peer(1);
+        let own = (0..20).filter(|_| ctx.allow_offer(one)).count();
+        assert_eq!(own, usize::try_from(OFFER_BURST).unwrap());
+        // A peer rotating its address gets the rest of the shared allowance
+        // and then nothing, however many addresses it has.
+        let rotated = (2..1000).filter(|i| ctx.allow_offer(peer(*i))).count();
+        assert_eq!(own + rotated, usize::try_from(GLOBAL_OFFER_BURST).unwrap());
+        // Not permitted at all: a public address.
+        assert!(!ctx.allow_offer("8.8.8.8".parse().unwrap()));
     }
 }

@@ -552,6 +552,12 @@ pub fn parse_command(json: &str) -> Result<CommandEnvelope, (Option<RequestId>, 
     if json.len() > MAX_MESSAGE_BYTES {
         return Err((None, ParseError::TooLarge));
     }
+    if !is_json_object(json) {
+        return Err((
+            None,
+            ParseError::Malformed("a command is a JSON object".to_owned()),
+        ));
+    }
     match serde_json::from_str::<CommandEnvelope>(json) {
         Ok(env) if env.v != API_VERSION => Err((Some(env.id), ParseError::Version(env.v))),
         Ok(env) => Ok(env),
@@ -575,12 +581,25 @@ pub fn parse_start_config(json: &str) -> Result<StartConfig, ParseError> {
     if json.len() > MAX_MESSAGE_BYTES {
         return Err(ParseError::TooLarge);
     }
+    if !is_json_object(json) {
+        return Err(ParseError::Malformed(
+            "the start configuration is a JSON object".to_owned(),
+        ));
+    }
     let cfg: StartConfig =
         serde_json::from_str(json).map_err(|e| ParseError::Malformed(short(&e)))?;
     if cfg.v != API_VERSION {
         return Err(ParseError::Version(cfg.v));
     }
     Ok(cfg)
+}
+
+/// Whether `json` is an object at the top level. serde's derived structs
+/// also accept the positional form `[1, 7, {...}]`, where
+/// `deny_unknown_fields` means nothing; the envelope is only ever an object.
+fn is_json_object(json: &str) -> bool {
+    json.trim_start_matches([' ', '\t', '\n', '\r'])
+        .starts_with('{')
 }
 
 /// A serde error as a log line: S2, and capped. serde quotes unknown
@@ -663,6 +682,16 @@ mod tests {
             serde_json::to_string(&e).unwrap(),
             r#"{"type":"transfer_finished","transfer":3,"outcome":{"result":"failed","error":{"code":"network","message":"timeout"}}}"#
         );
+    }
+
+    #[test]
+    fn the_positional_form_is_refused() {
+        assert!(matches!(
+            parse_command(r#"[1, 5, {"type":"get_settings"}]"#),
+            Err((None, ParseError::Malformed(_)))
+        ));
+        assert!(parse_command(" \n{\"v\":1,\"id\":1,\"cmd\":{\"type\":\"get_settings\"}}").is_ok());
+        assert!(parse_start_config(r#"[1, "/d", "/dl"]"#).is_err());
     }
 
     #[test]
