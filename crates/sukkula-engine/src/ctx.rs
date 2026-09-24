@@ -157,17 +157,12 @@ impl Ctx {
         self.reach.permits(ip)
     }
 
-    /// Whether `ip` may put another offer in the consent queue now: within
-    /// its own allowance, and within everyone's together. The per-IP bucket
-    /// is asked first, so a peer that has spent its own allowance cannot
-    /// also drain the shared one.
+    /// Whether `ip` may put another offer in the consent queue now. Asked
+    /// before anything the peer sent is parsed; [`Ctx::offer`] adds a limit
+    /// on all peers together once an offer has proved well-formed.
     #[must_use]
     pub fn allow_offer(&self, ip: IpAddr) -> bool {
-        let now = Instant::now();
-        self.permits(ip)
-            && lock(&self.offer_limiter).allow(ip, now)
-            && lock(&self.global_offer_limiter)
-                .allow(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), now)
+        self.permits(ip) && lock(&self.offer_limiter).allow(ip, Instant::now())
     }
 
     /// Whether `ip` may get another discovery reply now (S7).
@@ -206,6 +201,16 @@ impl Ctx {
         // bisection without the user ever seeing an offer.
         // CONTRACT: same signature; Busy can now come before consent.
         if self.transfers.active() >= MAX_ACTIVE_TRANSFERS {
+            return Err(Declined::Busy);
+        }
+        // The per-IP limit is no limit against a peer that rotates its
+        // source address, which on IPv6 costs nothing: at most
+        // GLOBAL_OFFER_BURST well-formed offers a minute reach the user from
+        // everyone together. Malformed ones never get this far, so they
+        // cannot use up the shared allowance.
+        if !lock(&self.global_offer_limiter)
+            .allow(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), Instant::now())
+        {
             return Err(Declined::Busy);
         }
         let id = self.consent.ask(&offer).await.map_err(Declined::Refused)?;
@@ -639,20 +644,44 @@ mod tests {
         assert_eq!(ctx.transfers().active(), 0);
     }
 
-    #[test]
-    fn offers_are_limited_per_peer_and_in_total() {
+    #[tokio::test(start_paused = true)]
+    async fn offers_are_limited_per_peer_and_in_total() {
         let dir = tempfile::tempdir().unwrap();
-        let (ctx, _) = ctx(dir.path());
+        let (ctx, seen) = ctx(dir.path());
         let peer = |i: u16| IpAddr::V6(std::net::Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, i));
         // One peer gets its own allowance and no more.
-        let one = peer(1);
-        let own = (0..20).filter(|_| ctx.allow_offer(one)).count();
+        let own = (0..20).filter(|_| ctx.allow_offer(peer(1))).count();
         assert_eq!(own, usize::try_from(OFFER_BURST).unwrap());
-        // A peer rotating its address gets the rest of the shared allowance
-        // and then nothing, however many addresses it has.
-        let rotated = (2..1000).filter(|i| ctx.allow_offer(peer(*i))).count();
-        assert_eq!(own + rotated, usize::try_from(GLOBAL_OFFER_BURST).unwrap());
-        // Not permitted at all: a public address.
-        assert!(!ctx.allow_offer("8.8.8.8".parse().unwrap()));
+        assert!(
+            !ctx.allow_offer("8.8.8.8".parse().unwrap()),
+            "a public address"
+        );
+        // Malformed offers do not touch the shared allowance...
+        for _ in 0..50 {
+            let raw = RawOffer::new(Protocol::LocalSend, "Eve");
+            assert!(matches!(ctx.offer(raw).await, Err(Declined::Invalid(_))));
+        }
+        // ...well-formed ones do, whichever address they came from.
+        let mut asked = 0;
+        for _ in 0..(GLOBAL_OFFER_BURST + 5) {
+            let mut raw = RawOffer::new(Protocol::LocalSend, "Eve");
+            raw.files.push(RawFile {
+                name: "a".into(),
+                size: 1,
+                ..RawFile::default()
+            });
+            // Nobody answers: each times out, freeing its consent slot.
+            if !matches!(ctx.offer(raw).await, Err(Declined::Busy)) {
+                asked += 1;
+            }
+        }
+        assert_eq!(asked, GLOBAL_OFFER_BURST);
+        let pending = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|e| matches!(e, ConsentEvent::Pending { .. }))
+            .count();
+        assert_eq!(pending, usize::try_from(GLOBAL_OFFER_BURST).unwrap());
     }
 }
