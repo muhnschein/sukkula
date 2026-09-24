@@ -1236,3 +1236,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
         f(&mut self.state);
     }
 }
+
+#[cfg(test)]
+#[path = "inbound_tests.rs"]
+mod tests;

@@ -233,7 +233,7 @@ fn raw_offer(ir: &InboundRequest<TcpStream>, introduction: &Introduction) -> Raw
 }
 
 enum Consent {
-    Accepted(Accepted),
+    Accepted(Box<Accepted>),
     Declined(Status),
     /// The sender went away, cancelled, or broke the protocol.
     Gone,
@@ -257,7 +257,7 @@ async fn consent(
             () = receiving.cancelled() => return Consent::Declined(Status::Reject),
             r = &mut offer => {
                 return match r {
-                    Ok(a) => Consent::Accepted(a),
+                    Ok(a) => Consent::Accepted(Box::new(a)),
                     Err(d) => Consent::Declined(status_for(&d)),
                 };
             }

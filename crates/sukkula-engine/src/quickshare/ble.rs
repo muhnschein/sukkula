@@ -167,13 +167,13 @@ pub fn advertise(address: &str, token: &CancellationToken) -> Result<(), NudgeEr
 
     let result = nudge.serve_until(token);
 
-    if !nudge.released && nudge.channel.is_connected() {
-        if let Ok(unregister) =
+    if !nudge.released
+        && nudge.channel.is_connected()
+        && let Ok(unregister) =
             method_call(BLUEZ_NAME, ADAPTER_PATH, MANAGER_IFACE, "UnregisterAdvertisement")
-        {
-            let unregister = unregister.append1(object_path()?);
-            let _ = nudge.call(unregister, UNREGISTER_WAIT, None);
-        }
+    {
+        let unregister = unregister.append1(object_path()?);
+        let _ = nudge.call(unregister, UNREGISTER_WAIT, None);
     }
     // Dropping the connection also makes BlueZ drop the advertisement.
     result

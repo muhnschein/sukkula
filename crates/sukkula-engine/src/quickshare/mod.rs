@@ -351,8 +351,9 @@ fn new_endpoint_id() -> [u8; 4] {
     let raw = rqs_lib::utils::gen_random(4);
     let mut id = [b'A'; 4];
     for (slot, b) in id.iter_mut().zip(raw) {
-        *slot = ALPHABET
-            .get(usize::from(b) % ALPHABET.len())
+        *slot = usize::from(b)
+            .checked_rem(ALPHABET.len())
+            .and_then(|i| ALPHABET.get(i))
             .copied()
             .unwrap_or(b'A');
     }

@@ -281,9 +281,18 @@ async fn send_file(
     file: &OutgoingFile,
 ) -> Result<(), ErrorInfo> {
     let unreadable = || ErrorInfo::new(ErrorCode::BadFile, "a file could not be read");
+    // Opened once, and what was opened is checked, not the path again: a
+    // regular file of the size the hub checked and the peer was promised.
     let mut source = tokio::fs::File::open(&file.path)
         .await
         .map_err(|_| unreadable())?;
+    let meta = source.metadata().await.map_err(|_| unreadable())?;
+    if !meta.is_file() || meta.len() != file.size {
+        return Err(ErrorInfo::new(
+            ErrorCode::BadFile,
+            "a file changed after it was chosen",
+        ));
+    }
     let mut buf = vec![0u8; IO_CHUNK_BYTES];
     let mut remaining = file.size;
     while remaining > 0 {
