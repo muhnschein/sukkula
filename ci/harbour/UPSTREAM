@@ -1,0 +1,16 @@
+The .conf files in this directory, waivers.conf excepted, are copied
+verbatim from
+
+    https://github.com/sailfishos/sdk-harbour-rpmvalidator.git
+
+at commit 7dd7dd5d62aa3e814c92ade089fdca4c3872b8ac (2026-09-10), by scripts/update-harbour-rules.sh.
+ci/harbour-validate-rpm.sh runs the validator from that same commit, and
+refuses the two files it fetches but does not vendor unless they hash to:
+
+    sha256 91d0c833e760c1e8e629f8be8895a24b6b2bd8371c4cc75d0024cf97e63a0040  rpmvalidation.sh
+    sha256 d8d79474eea267ad1857e0cbf7e1d45b05cf89ab0cf1efaf35cc3ac4c8b5612a  rpmvalidation.conf
+
+They carry that project's licence, GPL-2.0-or-later, which Sukkula's own
+GPL-3.0-or-later terms accept. rpmvalidation.sh itself is not vendored:
+ci/harbour-check.sh reimplements the checks that a source tree can answer,
+and .github/workflows/rpm.yml runs the real script against a built RPM.

@@ -40,13 +40,25 @@ pub struct Settings {
 }
 
 /// LocalSend settings.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct LocalSendSettings {
     /// Receive over LocalSend (F-C1).
     pub enabled: bool,
     /// A PIN senders must supply (F-LS4). Off by default.
     pub pin: Option<String>,
+}
+
+impl std::fmt::Debug for LocalSendSettings {
+    /// S9: the PIN is a shared secret, so a `{:?}` of the settings -- in a
+    /// log line, a panic message -- says whether there is one, not what it
+    /// is.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LocalSendSettings")
+            .field("enabled", &self.enabled)
+            .field("pin", &self.pin.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 /// Quick Share visibility (F-QS4). Contacts-only needs Google account keys.
@@ -240,5 +252,100 @@ mod tests {
         assert_eq!(s.effective_device_name("\u{202E}"), "Sailfish");
         s.device_name = "Pekka\u{200B}".into();
         assert_eq!(s.effective_device_name("Jolla Phone"), "Pekka");
+    }
+
+    #[test]
+    fn validation_is_idempotent_and_capped() {
+        let mut s = Settings {
+            device_name: format!("  \u{202E}{}\u{2066} ", "x".repeat(500)),
+            ..Settings::default()
+        };
+        s.localsend.pin = Some("\tABC123 ".into());
+        s.wormhole.mailbox_url = Some(" WSS://relay.example/v1 ".into());
+        let once = s.validate().unwrap();
+        assert_eq!(once.device_name.chars().count(), MAX_ALIAS_CHARS);
+        assert!(!once.device_name.contains('\u{202E}'));
+        assert_eq!(once.localsend.pin.as_deref(), Some("ABC123"));
+        assert_eq!(
+            once.wormhole.mailbox_url.as_deref(),
+            Some("WSS://relay.example/v1")
+        );
+        assert_eq!(once.clone().validate().unwrap(), once);
+        // What is saved reads back as what was validated.
+        let json = serde_json::to_string(&once).unwrap();
+        let back: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.validate().unwrap(), once);
+    }
+
+    #[test]
+    fn pin_and_url_edges() {
+        let mut s = Settings::default();
+        s.localsend.pin = Some("1".repeat(MAX_PIN_CHARS));
+        assert!(s.clone().validate().is_ok());
+        s.localsend.pin = Some("1".repeat(MAX_PIN_CHARS + 1));
+        assert_eq!(s.clone().validate(), Err(ConfigError::BadPin));
+        s.localsend.pin = Some("١٢٣٤".into()); // Arabic-Indic digits
+        assert_eq!(s.clone().validate(), Err(ConfigError::BadPin));
+        s.localsend.pin = None;
+        for bad in [
+            "ws://",
+            "wss://",
+            "ws:/x",
+            "file:///etc/passwd",
+            "ws://a\u{0}b",
+            "ws://ä",
+        ] {
+            s.wormhole.mailbox_url = Some(bad.into());
+            assert_eq!(
+                s.clone().validate(),
+                Err(ConfigError::BadUrl("mailbox")),
+                "{bad}"
+            );
+        }
+        s.wormhole.mailbox_url = Some(format!("ws://{}", "a".repeat(MAX_URL_BYTES)));
+        assert_eq!(s.clone().validate(), Err(ConfigError::BadUrl("mailbox")));
+        s.wormhole.mailbox_url = Some("   ".into());
+        assert_eq!(s.clone().validate().unwrap().wormhole.mailbox_url, None);
+        s.wormhole.relay_url = Some("ws://relay.example:4001".into());
+        assert_eq!(s.clone().validate(), Err(ConfigError::BadUrl("relay")));
+        assert!(!ConfigError::BadPin.to_string().is_empty());
+        assert!(ConfigError::BadUrl("relay").to_string().contains("relay"));
+    }
+
+    #[test]
+    fn the_pin_never_shows_in_debug_output() {
+        let mut s = Settings::default();
+        s.localsend.pin = Some("48151623".into());
+        let shown = format!("{s:?}");
+        assert!(!shown.contains("48151623"), "{shown}");
+        assert!(shown.contains("<redacted>"));
+        s.localsend.pin = None;
+        assert!(format!("{s:?}").contains("pin: None"));
+    }
+
+    #[test]
+    fn the_file_format_is_strict() {
+        assert!(
+            serde_json::from_str::<Settings>(r#"{"quickshare":{"visibility":"contacts"}}"#)
+                .is_err()
+        );
+        let s: Settings =
+            serde_json::from_str(r#"{"quickshare":{"visibility":"hidden"},"bluetooth":{}}"#)
+                .unwrap();
+        assert_eq!(s.quickshare.visibility, Visibility::Hidden);
+        assert!(s.bluetooth.enabled);
+        assert!(serde_json::from_str::<Settings>(r#"{"wormhole":{"relay":"x"}}"#).is_err());
+        assert!(serde_json::from_str::<Settings>(r#"{"bluetooth":{"enabled":1}}"#).is_err());
+        assert!(serde_json::from_str::<Settings>("7").is_err());
+        // serde's derive also takes a struct as a positional array. That is
+        // the same fields through the same `validate`, not a way around it;
+        // one element too many is still refused.
+        let positional: Settings = serde_json::from_str("[]").unwrap();
+        assert_eq!(positional, Settings::default());
+        assert!(serde_json::from_str::<Settings>(r#"["", {}, {}, {}, {}, false, 1]"#).is_err());
+        assert_eq!(
+            serde_json::to_string(&Visibility::Everyone).unwrap(),
+            r#""everyone""#
+        );
     }
 }
