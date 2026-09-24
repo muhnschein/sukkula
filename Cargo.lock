@@ -2879,18 +2879,26 @@ dependencies = [
 name = "sukkula-engine"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "dbus",
+ "form_urlencoded",
+ "getrandom 0.3.4",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "localsend",
  "magic-wormhole",
  "proptest",
  "qrcode",
  "rustix",
+ "rustls",
  "serde",
  "serde_json",
  "sukkula-core",
  "tempfile",
  "thiserror",
  "tokio",
+ "tokio-rustls",
  "tokio-util",
  "tracing",
 ]
