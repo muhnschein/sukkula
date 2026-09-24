@@ -40,8 +40,13 @@ const OBJECT_MANAGER_IFACE: &str = "org.freedesktop.DBus.ObjectManager";
 pub(super) const MAX_DEVICES: usize = 64;
 
 /// Most objects in the reply looked at. A phone has one adapter and a few
-/// dozen paired devices; the rest would be scan results.
-pub(super) const MAX_OBJECTS: usize = 4096;
+/// dozen paired devices; the rest would be scan results, which an attacker
+/// can multiply to push the paired devices past this cap (the reply's order
+/// is BlueZ's hash order). The cap is high because it costs nothing: the
+/// walk is linear in the reply's size, which dbus-daemon caps at 32 MiB,
+/// and a 24 MB reply of 60 000 devices walks in about 0.2 s (x86 host,
+/// release build).
+pub(super) const MAX_OBJECTS: usize = 65_536;
 
 /// Most interfaces looked at per object (BlueZ uses at most a handful).
 const MAX_INTERFACES: usize = 32;
@@ -589,6 +594,50 @@ mod tests {
         let mut sorted = devices.clone();
         sorted.sort_by(|a, b| a.name.cmp(&b.name));
         assert_eq!(devices, sorted);
+    }
+
+    /// `filler` empty objects, then one eligible device, in that order.
+    fn padded(filler: usize) -> Message {
+        use dbus::arg::IterAppend;
+        use dbus::strings::Signature;
+        let mut m = Message::new_signal("/", "org.example.Test", "Reply").unwrap();
+        let mut ifaces = HashMap::new();
+        ifaces.insert(
+            DEVICE_IFACE.to_owned(),
+            device("11:22:33:44:55:66", "Last", true, &[OPP_UUID]),
+        );
+        let empty: HashMap<String, PropMap> = HashMap::new();
+        IterAppend::new(&mut m).append_dict(
+            &Signature::new("o").unwrap(),
+            &Signature::new("a{sa{sv}}").unwrap(),
+            |dict| {
+                for i in 0..filler {
+                    dict.append_dict_entry(|e| {
+                        e.append(Path::new(format!("/f/{i}")).unwrap());
+                        e.append(&empty);
+                    });
+                }
+                dict.append_dict_entry(|e| {
+                    e.append(Path::new("/org/bluez/hci0/dev_last").unwrap());
+                    e.append(&ifaces);
+                });
+            },
+        );
+        m
+    }
+
+    #[test]
+    fn the_object_cap_holds() {
+        assert_eq!(
+            parse_managed_objects(&padded(MAX_OBJECTS - 1))
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            parse_managed_objects(&padded(MAX_OBJECTS)).unwrap().len(),
+            0
+        );
     }
 
     /// Deterministic mutation sweep: a realistic reply, marshalled, with
