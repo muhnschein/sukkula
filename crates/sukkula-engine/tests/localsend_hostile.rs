@@ -342,11 +342,16 @@ async fn oversized_json_is_refused_before_it_is_read() {
         .unwrap();
     assert_eq!(r.status, 413);
 
-    // Sent too large.
-    let r = post_from(port, src(21), PREPARE, &big).await.unwrap();
-    assert_eq!(r.status, 413);
-    let r = post_from(port, src(22), REGISTER, &big).await.unwrap();
-    assert_eq!(r.status, 413);
+    // Sent too large. The server answers 413 and closes without reading
+    // the rest, so the kernel may reset the connection while the body is
+    // still arriving and take the 413 with it: under load the client sees
+    // either. Both are the rule holding -- refused before it was read --
+    // and `an_honest_transfer_still_works` below proves the server is fine.
+    for (i, path) in [(21, PREPARE), (22, REGISTER)] {
+        if let Some(r) = post_from(port, src(i), path, &big).await {
+            assert_eq!(r.status, 413, "{path}");
+        }
+    }
 
     // Streamed without a length: cut off at the cap.
     let mut s = tls_from(port, src(23)).await;

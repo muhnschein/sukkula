@@ -5,9 +5,9 @@
 //! directly, with the `dbus` crate over the system `libdbus-1.so.3`:
 //!
 //! - **BlueZ** (`org.bluez`, system bus) says which devices are paired and
-//!   accept Object Push ([`bluez`]). Only those can be sent to, and the
+//!   accept Object Push (`bluez`). Only those can be sent to, and the
 //!   list is read again for every send.
-//! - **obexd** (`org.bluez.obex`, session bus) does the push ([`obex`]).
+//! - **obexd** (`org.bluez.obex`, session bus) does the push (`obex`).
 //!
 //! **F-BT2.** Only one OBEX agent can be registered with obexd, and the
 //! Sailfish system UI holds it to receive files. This adapter never

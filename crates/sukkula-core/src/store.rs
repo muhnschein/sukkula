@@ -6,7 +6,7 @@
 //! group- or world-readable, or not owned by us, is refused rather than
 //! used: something other than this code wrote it.
 //!
-//! Every operation opens the directory by descriptor ([`crate::dirfd`]) and
+//! Every operation opens the directory by descriptor (the private `dirfd` module) and
 //! works relative to it, and every read checks the file it actually opened,
 //! not the name it asked for.
 

@@ -33,7 +33,7 @@
 //! - every transit connection goes through a loopback TCP guard
 //!   (`transit.rs`) that caps record lengths, and the library is told
 //!   relay-only, so it neither listens nor asks STUN;
-//! - every library future runs inside [`session::CatchUnwind`] and a
+//! - every library future runs inside `session::CatchUnwind` and a
 //!   timeout, so a panic that is still reachable fails the transfer rather
 //!   than the task.
 //!
@@ -44,7 +44,7 @@
 //! | W1 | `util::hashcash` | mints hashcash of any `bits` in a loop that never yields | mailbox server, anyone on the `ws://` path | guard refuses `bits` > 20 |
 //! | W2 | `Wormhole::receive` | `todo!()` on a non-numeric phase | server, peer | guard drops such phases |
 //! | W3 | `key::decrypt_data` | `split_at(24)` on a shorter body | server, peer | guard drops short bodies |
-//! | W4 | `WsConnection::receive_message` | `expect` when the stream ends | server closing | contained ([`session::CatchUnwind`]) |
+//! | W4 | `WsConnection::receive_message` | `expect` when the stream ends | server closing | contained (`session::CatchUnwind`) |
 //! | W5 | rendezvous | 64 MiB messages, unbounded queue and phase set | server | guard: 1 MiB, 128 messages, 4 MiB |
 //! | W6 | `read_transit_message` | `Vec::with_capacity(len)` from the unauthenticated length prefix (up to 4 GiB) | peer, relay, path | transit guard caps records |
 //! | W7 | `v1::receive_records` | `remaining_size -= len` underflows on a long last record | peer | not used; ours checks first |

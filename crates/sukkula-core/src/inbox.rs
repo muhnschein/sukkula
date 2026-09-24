@@ -11,7 +11,7 @@
 //! descriptor into a file opened `O_CREAT|O_EXCL|O_NOFOLLOW`.
 //!
 //! Both directories are held open by descriptor from [`Inbox::begin`] to the
-//! end of the file ([`crate::dirfd`]), and every operation is relative to
+//! end of the file (the private `dirfd` module), and every operation is relative to
 //! them, so swapping `.partial` or the target for a symlink mid-transfer
 //! redirects nothing. After a link, the new entry is checked to be the very
 //! inode that was written; anything else is removed again.
