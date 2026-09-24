@@ -367,6 +367,27 @@ impl Shared {
     }
 }
 
+/// The receive path's parsing, from a `prepare-upload` body to the offer
+/// the user would be shown -- the same steps the server takes, for a fuzz
+/// target (spec §7 "Parsers"). Bodies over 64 KiB are refused as the server
+/// refuses them, unread.
+#[doc(hidden)]
+#[must_use]
+pub fn offer_from_prepare_upload(body: &[u8]) -> Option<sukkula_core::offer::Offer> {
+    if body.len() > sukkula_core::limits::MAX_MESSAGE_BYTES {
+        return None;
+    }
+    let dto: localsend::http::dto_v2::PrepareUploadRequestDtoV2 =
+        serde_json::from_slice(body).ok()?;
+    if dto.info.protocol != ProtocolType::Https || dto.files.is_empty() {
+        return None;
+    }
+    let (raw, ids) = server::raw_offer(&dto);
+    let offer = sukkula_core::offer::Offer::validate(raw).ok()?;
+    // Every file keeps its id; a lone text keeps none.
+    (offer.files.len() == ids.len()).then_some(offer)
+}
+
 /// An IPv4-mapped IPv6 address as the IPv4 address it is.
 fn canonical(ip: IpAddr) -> IpAddr {
     match ip {
@@ -654,6 +675,29 @@ pub(crate) mod tests {
         assert_eq!(o.bind, Ipv4Addr::UNSPECIFIED);
         assert_eq!(o.port, DEFAULT_PORT);
         assert_eq!(o.multicast_port, Some(DEFAULT_PORT));
+    }
+
+    #[test]
+    fn the_fuzz_entry_point_follows_the_server() {
+        let body = |protocol: &str, files: &str| {
+            // A right-to-left override in the alias, as a peer would send it.
+            let alias = "A\u{202E}";
+            format!(
+                r#"{{"info":{{"alias":"{alias}","version":"2.2","fingerprint":"x","port":1,"protocol":"{protocol}"}},"files":{files}}}"#
+            )
+        };
+        let one = r#"{"a":{"id":"a","fileName":"../../x","size":1,"fileType":"t/x"}}"#;
+        let offer = offer_from_prepare_upload(body("https", one).as_bytes()).unwrap();
+        assert_eq!(offer.sender, "A");
+        assert_eq!(offer.files[0].name.as_str(), "x");
+        assert!(offer_from_prepare_upload(body("http", one).as_bytes()).is_none());
+        assert!(offer_from_prepare_upload(body("https", "{}").as_bytes()).is_none());
+        let text = r#"{"t":{"id":"t","fileName":"m.txt","size":2,"fileType":"text/plain","preview":"hi"}}"#;
+        let offer = offer_from_prepare_upload(body("https", text).as_bytes()).unwrap();
+        assert_eq!(offer.text.as_deref(), Some("hi"));
+        assert!(offer_from_prepare_upload(b"{").is_none());
+        let big = vec![b' '; sukkula_core::limits::MAX_MESSAGE_BYTES + 1];
+        assert!(offer_from_prepare_upload(&big).is_none());
     }
 
     #[test]

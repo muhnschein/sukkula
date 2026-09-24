@@ -600,7 +600,7 @@ async fn prepare_upload(inner: &Arc<Inner>, caller: &Caller, req: Request<Incomi
 }
 
 /// The offer as the peer described it, and the file ids in the same order.
-fn raw_offer(dto: &PrepareUploadRequestDtoV2) -> (RawOffer, Vec<String>) {
+pub(super) fn raw_offer(dto: &PrepareUploadRequestDtoV2) -> (RawOffer, Vec<String>) {
     let mut raw = RawOffer::new(Protocol::LocalSend, dto.info.alias.clone());
     raw.model = dto.info.device_model.clone();
     // LocalSend sends a message as one text file whose `preview` is the
