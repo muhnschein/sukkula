@@ -41,9 +41,9 @@ installs it on the first cargo call in the tree. Pinned rather than
 validates the RPM, not the compiler that made it, so the engine is
 compiled by the pinned toolchain, driving the SDK's own aarch64 GCC against
 the SDK's target sysroot -- the two parts that have to match the phone
-(vuo's route; its sdk-build notes have the history). There is no MSRV job and no
-lockfile-format constraint for the SDK's cargo, because nothing here is
-built by it.
+(vuo's route; its sdk-build notes have the history). There is no MSRV job
+and no lockfile-format constraint for the SDK's cargo, because nothing
+here is built by it.
 
 **A pinned nightly, `nightly-2026-09-15`**, for the fuzzers only
 (`SUKKULA_NIGHTLY` in `ci.yml` and the Makefile, `FUZZ_TOOLCHAIN` for

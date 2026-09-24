@@ -95,8 +95,10 @@ lift() {
     docker rm "$c" >/dev/null
 
     # The libraries the cross compiler's programs load, as the image's own
-    # ldd lists them, dereferenced. glibc itself is skipped: the host's i386
-    # libc serves, and a foreign one would break every 32-bit program.
+    # ldd lists them, dereferenced -- those under /usr/lib only, as vuo's
+    # rpm.yml takes them. /lib is the SDK's glibc and its siblings: the
+    # host's i386 libc serves, and a foreign one on LD_LIBRARY_PATH would
+    # break every 32-bit program the compiler starts.
     docker run --rm --user root -v "$dir/usr/lib:/out" "$image" sh -c '
         set -e
         libexec=/opt/cross/libexec/gcc/aarch64-meego-linux-gnu
@@ -106,8 +108,7 @@ lift() {
             ldd "$b" 2>/dev/null | awk "/=> \\//{print \$3}"
         done | sort -u | while read -r lib; do
             case "$lib" in
-                /lib/libc.so*|/lib/ld-linux*|/lib/libm.so*|/lib/libdl.so*|/lib/libpthread.so*) ;;
-                /usr/lib/*|/lib/*) cp -L "$lib" /out/ ;;
+                /usr/lib/*) cp -L "$lib" /out/ ;;
             esac
         done
         ls /out/libmpc.so* /out/libmpfr.so* /out/libgmp.so* >/dev/null'

@@ -14,7 +14,9 @@ set -eu
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 
 qmllint=""
-for candidate in qmllint qmllint-qt5 /usr/lib/qt5/bin/qmllint /usr/lib/x86_64-linux-gnu/qt5/bin/qmllint; do
+# The Qt 5 binary itself before the qtchooser wrapper, which fails when no
+# default Qt is configured.
+for candidate in /usr/lib/qt5/bin/qmllint /usr/lib/x86_64-linux-gnu/qt5/bin/qmllint qmllint-qt5 qmllint; do
     if command -v "$candidate" >/dev/null 2>&1; then
         qmllint=$candidate
         break

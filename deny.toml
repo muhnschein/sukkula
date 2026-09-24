@@ -82,28 +82,22 @@ exceptions = [
     # §6). Upstream licenses the repository under the GPLv3 text without an
     # "or later" notice, so it is read as GPL-3.0-only -- which our
     # GPL-3.0-or-later code may be combined with, the whole being conveyed
-    # under GPL-3.0. Both spellings are granted so that the vendored
-    # manifest may carry either the clarification below or its own
-    # `license` field.
+    # under GPL-3.0. Upstream's core_lib/Cargo.toml has no `license` field,
+    # so the vendored copy carries either one (added by a patch) or
+    # upstream's LICENSE file, which cargo-deny identifies by its text; both
+    # spellings are granted, and with neither the crate is unlicensed and
+    # fails here. Deliberately no [[licenses.clarify]]: a clarification
+    # would override the manifest, and wave through a licence change there.
     { crate = "rqs_lib", allow = ["GPL-3.0-only", "GPL-3.0-or-later"] },
 ]
 
 # The LocalSend core lives in a subdirectory of the LocalSend repository,
 # and neither its Cargo.toml nor its directory carries a licence: the
-# repository's top-level LICENSE, Apache-2.0, is what covers it. Pinned to
+# repository's top-level LICENSE, Apache-2.0, is what covers it -- read at
 # the commit Cargo.toml pins, e768240 (spec §6).
 [[licenses.clarify]]
 crate = "localsend"
 expression = "Apache-2.0"
-license-files = []
-
-# open-quickshare's rqs_lib: the upstream core_lib/Cargo.toml has no
-# `license` field, and the repository's LICENSE is the GPLv3 text (spec §6).
-# If the vendored copy's manifest gains a `license` field, that is used
-# instead and this is inert; either way the exception above bounds it.
-[[licenses.clarify]]
-crate = "rqs_lib"
-expression = "GPL-3.0-only"
 license-files = []
 
 [licenses.private]

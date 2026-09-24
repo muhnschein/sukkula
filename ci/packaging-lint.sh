@@ -133,7 +133,7 @@ if [ -f "$pro" ]; then
         [ -f "$root/$c" ] || fail "$c is named in harbour-sukkula.pro but missing"
     done
     lrelease=""
-    for candidate in lrelease lrelease-qt5 /usr/lib/qt5/bin/lrelease; do
+    for candidate in /usr/lib/qt5/bin/lrelease lrelease-qt5 lrelease; do
         if command -v "$candidate" >/dev/null 2>&1; then lrelease=$candidate; break; fi
     done
     if [ -n "$catalogs" ] && [ -n "$lrelease" ]; then
@@ -175,6 +175,18 @@ if [ -z "$missing" ]; then
 else
     echo "$missing" >&2
     fail "these documents are referenced but do not exist; write, repoint or drop them"
+fi
+
+# Every script the workflows and the Makefile run is run as ./path, so it
+# has to be executable: a mode lost in a commit fails CI with "Permission
+# denied" on a line that looks fine.
+ran=$((ran + 1))
+not_exec=$(cd "$root" && find ci scripts tests -name '*.sh' -type f ! -perm -u+x -print 2>/dev/null | sort)
+if [ -z "$not_exec" ]; then
+    echo "packaging-lint: every script is executable"
+else
+    echo "$not_exec" >&2
+    fail "these scripts are not executable (chmod +x, and commit the mode)"
 fi
 
 # Every shell script in the tree, through shellcheck: ours, the UI's QML test

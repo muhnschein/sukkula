@@ -193,7 +193,7 @@ jobs:
 
       - name: Show what was built
         run: |
-          for f in RPMS/*.rpm; do
+          find RPMS -name '*.rpm' | sort | while read -r f; do
             echo "== $f"
             rpm -qip "$f"
             echo "-- files"; rpm -qlp "$f"
