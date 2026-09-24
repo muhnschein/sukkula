@@ -24,7 +24,20 @@ localsend = [
     "dep:rustix",
 ]
 quickshare = []
-wormhole = ["dep:magic-wormhole", "dep:qrcode"]
+wormhole = [
+    "dep:magic-wormhole",
+    "dep:qrcode",
+    "dep:async-tungstenite",
+    "dep:futures-core",
+    "dep:url",
+    "dep:sha2",
+    "dep:getrandom",
+    "dep:rustls",
+    "dep:tokio-rustls",
+    "dep:rustls-platform-verifier",
+    "dep:rustix",
+    "tokio-util/compat",
+]
 bluetooth = ["dep:dbus"]
 
 [dependencies]
@@ -59,12 +72,34 @@ rustix = { workspace = true, optional = true }
 # Magic Wormhole, transfer protocol v1 only (spec §5).
 magic-wormhole = { version = "=0.8.1", default-features = false, features = ["transfer"], optional = true }
 qrcode = { version = "0.14", default-features = false, optional = true }
+# The wormhole guards (src/wormhole/mod.rs, "Why guards"): a loopback
+# WebSocket proxy that holds the mailbox server to the size, count and shape
+# limits magic-wormhole does not enforce. All four are already in the tree
+# through magic-wormhole or sukkula-core.
+async-tungstenite = { version = "0.34", default-features = false, features = ["handshake"], optional = true }
+futures-core = { version = "0.3", default-features = false, optional = true }
+url = { version = "2", optional = true }
+# The transit ack's SHA-256, as the v1 protocol defines it.
+sha2 = { workspace = true, optional = true }
+# wss:// mailboxes (F-MW4) over the TLS stack LocalSend already brings --
+# rustls with ring, tokio-rustls (declared above) and the platform verifier
+# -- rather than magic-wormhole's own TLS features (a second async TLS
+# adapter and a baked-in root store). No second TLS stack. getrandom and
+# rustix (above) serve the wormhole guards' token and the O_NONBLOCK open.
+rustls-platform-verifier = { version = "0.7", optional = true }
 # BlueZ obexd over the system libdbus-1.so.3 (Harbour-allowed). Never `vendored`.
 dbus = { version = "0.9", optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true
 proptest.workspace = true
+# The wormhole tests' raw transit peer seals records by hand, to send what
+# magic-wormhole's own API refuses to (empty and oversized records). Already
+# in the tree through magic-wormhole.
+crypto_secretbox = "0.1"
+# A self-signed certificate for the wormhole tests' fake wss:// mailbox,
+# which must be refused. Already in the tree through LocalSend, with ring.
+rcgen = "0.14"
 # The hub's tests make a FIFO to prove /etc/hw-release is never opened
 # when it is one. Already in the tree through sukkula-core.
 rustix.workspace = true
