@@ -98,11 +98,22 @@ async fn run(
             .verdict()
             .unwrap_or_else(|| super::session::wormhole_error(&e))
     })?;
+    // The nameplate half of the code is the mailbox server's choice, and
+    // the server is not trusted: the code goes to the screen only if it
+    // passes the same check a code typed by the user does (digits, a hyphen,
+    // short lowercase words), so a server cannot put control or bidi
+    // characters, or a kilobyte of text, in front of the user.
+    let shown = code::parse(&mailbox.code().to_string()).map_err(|_| {
+        ErrorInfo::new(
+            ErrorCode::Network,
+            "the mailbox server allocated a malformed code",
+        )
+    })?;
     let custom = servers.custom_mailbox.then_some(&servers.mailbox);
-    let qr = code::qr(mailbox.code(), custom)?;
+    let qr = code::qr(&shown, custom)?;
     inner.ctx.emit(Event::WormholeCode {
         transfer: handle.id(),
-        code: mailbox.code().to_string(),
+        code: shown.to_string(),
         qr,
     });
     // The receiver has to read the code off this screen and type it in.

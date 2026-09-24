@@ -76,6 +76,8 @@ pub struct Behaviour {
     pub after_open: Vec<String>,
     /// Nameplates that exist from the start, claimed by nobody.
     pub nameplates: Vec<String>,
+    /// What `allocate` hands out instead of the next free number.
+    pub allocate_as: Option<String>,
 }
 
 /// A running fake mailbox.
@@ -202,11 +204,15 @@ async fn serve_mailbox(
                     replies.push(json!({"type": "nameplates", "nameplates": list}));
                 }
                 "allocate" => {
-                    let n = loop {
-                        let candidate = st.next_nameplate.to_string();
-                        st.next_nameplate += 1;
-                        if !st.nameplates.contains_key(&candidate) {
-                            break candidate;
+                    let n = if let Some(forced) = behaviour.allocate_as.clone() {
+                        forced
+                    } else {
+                        loop {
+                            let candidate = st.next_nameplate.to_string();
+                            st.next_nameplate += 1;
+                            if !st.nameplates.contains_key(&candidate) {
+                                break candidate;
+                            }
                         }
                     };
                     st.mailbox_for(&n);

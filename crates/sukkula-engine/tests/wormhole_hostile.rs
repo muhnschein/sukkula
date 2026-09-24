@@ -32,7 +32,7 @@ use magic_wormhole::transit::Abilities;
 use serde_json::{Value, json};
 use sukkula_core::limits::{MAX_FILE_BYTES, MAX_MESSAGE_BYTES};
 use sukkula_engine::adapter::Outgoing;
-use sukkula_engine::api::{ErrorCode, ErrorInfo, Outcome, SendTarget};
+use sukkula_engine::api::{ErrorCode, ErrorInfo, Event, Outcome, SendTarget};
 use tokio_util::compat::TokioAsyncReadCompatExt;
 use wormhole_support::*;
 
@@ -822,4 +822,35 @@ async fn a_lying_record_length_is_refused_before_anything_is_allocated() {
     }
     assert_eq!(w.rl.paired.load(Ordering::SeqCst), 1);
     assert!(w.side.received().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_malformed_code_from_the_mailbox_never_reaches_the_screen() {
+    // The nameplate is the server's choice. A code the user could not have
+    // typed -- a bidi override, or a kilobyte of digits -- is not shown.
+    for forced in ["7\u{202E}1", &"9".repeat(1000), "x"] {
+        let mb = mailbox(Behaviour {
+            allocate_as: Some(forced.to_owned()),
+            ..Behaviour::default()
+        })
+        .await;
+        let a = Side::new(&mb.url, "tcp://127.0.0.1:9", CONSENT);
+        let sent = a
+            .adapter
+            .send(SendTarget::Wormhole, vec![Outgoing::Text("x".into())])
+            .await
+            .unwrap();
+        match a.finished(sent).await.0 {
+            Outcome::Failed { .. } => {}
+            other => panic!("{forced:?}: {other:?}"),
+        }
+        let shown = a
+            .log
+            .lock()
+            .unwrap()
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::WormholeCode { .. }));
+        assert!(!shown, "{forced:?}: a malformed code was shown");
+    }
 }

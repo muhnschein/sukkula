@@ -194,7 +194,18 @@ fn check_url(
         .iter()
         .any(|s| url.len() > s.len() && url.to_ascii_lowercase().starts_with(s));
     let printable = url.bytes().all(|b| b.is_ascii_graphic());
-    if url.len() > MAX_URL_BYTES || !has_scheme || !printable {
+    // A server is a host and a port, and for a mailbox a path: never
+    // credentials (`user:pass@`), which would sit in the settings file and
+    // go to whoever the host resolves to, and never a query or fragment,
+    // which the protocols have no use for and only hide what the URL is.
+    let authority = schemes
+        .iter()
+        .find(|s| url.to_ascii_lowercase().starts_with(*s))
+        .and_then(|s| url.get(s.len()..))
+        .map(|rest| rest.split('/').next().unwrap_or(""))
+        .unwrap_or("");
+    let plain = !authority.is_empty() && !authority.contains('@') && !url.contains(['?', '#']);
+    if url.len() > MAX_URL_BYTES || !has_scheme || !printable || !plain {
         return Err(ConfigError::BadUrl(what));
     }
     Ok(Some(url))
@@ -241,6 +252,22 @@ mod tests {
         s.wormhole.mailbox_url = Some("wss://relay.example/v1".into());
         s.wormhole.relay_url = Some("tcp://relay.example:4001".into());
         assert!(s.clone().validate().is_ok());
+        for bad in [
+            "wss://user:pass@relay.example/v1",
+            "wss://relay.example/v1?token=x",
+            "wss://relay.example/v1#frag",
+            "wss:///v1",
+        ] {
+            s.wormhole.mailbox_url = Some(bad.into());
+            assert_eq!(
+                s.clone().validate(),
+                Err(ConfigError::BadUrl("mailbox")),
+                "{bad}"
+            );
+        }
+        s.wormhole.mailbox_url = None;
+        s.wormhole.relay_url = Some("tcp://user@relay.example:4001".into());
+        assert_eq!(s.clone().validate(), Err(ConfigError::BadUrl("relay")));
         s.wormhole.relay_url = Some("tcp://a b".into());
         assert_eq!(s.validate(), Err(ConfigError::BadUrl("relay")));
     }
