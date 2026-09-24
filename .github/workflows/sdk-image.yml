@@ -1,0 +1,63 @@
+# Publishes the Sailfish SDK image rpm.yml builds with.
+#
+# Upstream's platform SDK carries three architectures' target rootfs and
+# leaves the spec's BuildRequires to be installed into the target on every
+# build: about 5 GB to pull and a zypper run, every time.
+# ci/build-sdk-image.sh derives an image with the one architecture Sukkula
+# builds and those packages already in place -- about 2 GB, and nothing to
+# install -- and this publishes it to the repository's registry, under the
+# tag scripts/build-rpm.sh names for the current tree.
+#
+# Run it when the SDK version, ci/build-sdk-image.sh or the spec's
+# BuildRequires change -- or never: rpm.yml derives and publishes the image
+# itself when it finds none. This exists so that cost can be paid
+# deliberately rather than by whoever builds the next package.
+name: sdk-image
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # What this workflow is for.
+  packages: write
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      # The Jolla Phone 2026's baseline, and the only version with a pinned
+      # upstream digest in ci/build-sdk-image.sh.
+      SFOS: "5.2.0.15"
+      ARCH: aarch64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The upstream image unpacks to about 20 GB of layers, and the
+      # flattened one is written beside it. A fresh runner has around 25 GB
+      # free, most of it language toolchains nothing here compiles with.
+      - name: Make room for two SDK images
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+                      /usr/local/share/boost "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}"
+          df -h / | tail -1
+
+      - name: Sign in to the registry
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: echo "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+
+      - name: Derive the image
+        run: |
+          image=$(./scripts/build-rpm.sh image)
+          ./ci/build-sdk-image.sh "$SFOS" "$ARCH" "$image"
+          echo "IMAGE=$image" >> "$GITHUB_ENV"
+
+      - name: Publish it
+        run: |
+          docker push "$IMAGE"
+          echo "### \`$IMAGE\`" >> "$GITHUB_STEP_SUMMARY"
+          docker image inspect --format '- unpacked: {{.Size}} bytes' "$IMAGE" >> "$GITHUB_STEP_SUMMARY"
