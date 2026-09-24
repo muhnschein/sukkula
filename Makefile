@@ -26,6 +26,8 @@ CARGO ?= cargo
 # The nightly the fuzzers use; ci.yml pins the same.
 SUKKULA_NIGHTLY ?= nightly-2026-09-15
 FUZZ_SECONDS ?= 60
+# The toolchain fuzz-smoke fuzzes with; the pinned nightly unless set.
+FUZZ_TOOLCHAIN ?= $(SUKKULA_NIGHTLY)
 FEATURES := localsend quickshare wormhole bluetooth none
 export SUKKULA_NIGHTLY
 
@@ -97,14 +99,16 @@ lockfile:
 	./ci/check-lockfile.sh
 
 ## fuzz-lint: clippy over the fuzz crate (its own workspace), on the pinned
-## toolchain, so a target that stopped compiling fails before any fuzzing
+## toolchain, so a target that stopped compiling fails before any fuzzing;
+## then the harness's tests (the generated seeds still decode and reach)
 fuzz-lint:
 	@echo "== clippy, fuzz/ =="
 	$(CARGO) clippy --manifest-path fuzz/Cargo.toml --all-targets --locked -- -D warnings
+	$(CARGO) test --manifest-path fuzz/Cargo.toml --lib --locked
 
 ## fuzz-smoke: every cargo-fuzz target for FUZZ_SECONDS, from its seeds
 fuzz-smoke: fuzz-lint
-	FUZZ_TOOLCHAIN=$(SUKKULA_NIGHTLY) ./scripts/fuzz-smoke.sh $(FUZZ_SECONDS)
+	FUZZ_TOOLCHAIN=$(FUZZ_TOOLCHAIN) ./scripts/fuzz-smoke.sh $(FUZZ_SECONDS)
 
 ## ffi-asan: the C harness over the C ABI, under AddressSanitizer
 ffi-asan:

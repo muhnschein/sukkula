@@ -50,7 +50,8 @@ fuzz_target!(|data: &[u8]| {
             );
             assert!(code.len() <= CODE_BYTES, "{} bytes", code.len());
             assert!(grammatical(&code), "{code:?} accepted");
-            assert_eq!(fuzzing::code(&code).ok().as_deref(), Some(code.as_str()));
+            // One more parse, not two: the library's entropy estimate
+            // (zxcvbn) is most of this target's time.
             assert_eq!(
                 fuzzing::code(&format!(" {}\n", code.to_ascii_uppercase()))
                     .ok()

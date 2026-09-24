@@ -171,6 +171,33 @@ finds a bug once, a unit test keeps it dead. Worthwhile corpus growth can be
 folded into `fuzz/seeds/<target>/` after `cargo fuzz cmin`, keeping the
 committed seed small and reviewable.
 
+## Seeds
+
+The JSON, code and mDNS targets' seeds are what a real peer sends plus the
+hostile variants each target exists for, written out as they are. The two
+Quick Share targets decode their input with `arbitrary`, so their seeds are
+generated from readable scripts in `src/seeds.rs` -- a sender taken to a
+received file, to a text, through the whole handshake with a real key, to
+a refusal, a spoiled seal -- encoded into exactly the bytes `arbitrary`
+decodes back into each script. Two tests hold them to that, on the pinned
+toolchain: each seed decodes to its script, and each reaches the state it
+is for (the harness records milestones as it goes). After changing a
+seed or an input type, from `fuzz/`:
+
+```sh
+SUKKULA_FUZZ_WRITE_SEEDS=seeds cargo test --lib seeds::write   # rewrite them
+cargo test --lib                                              # and check them
+```
+
+To see what a corpus reaches, run a Quick Share target once over it with
+the trace on and count the milestones:
+
+```sh
+SUKKULA_FUZZ_TRACE=1 fuzz/target/x86_64-unknown-linux-gnu/release/quickshare_frame \
+    -runs=0 fuzz/corpus/quickshare_frame fuzz/seeds/quickshare_frame 2>&1 |
+    grep '^MILESTONE' | sort | uniq -c
+```
+
 ## First runs (2026-09-24)
 
 Each target 60 s from the committed seeds with its dictionary, one core,
@@ -198,3 +225,44 @@ The property tests found, before any fuzzing, that `sanitize(".\u{301}")`
 returned `"\u{301}"` -- a name that is nothing but a combining mark, and
 that sanitised to `received-file` the second time. That and the other
 findings are in the core's commit history and fixed at the source.
+
+## The protocol targets' first runs (2026-09-24)
+
+Each 60 s with its dictionary, one core, ASan, on the development
+container, after shorter runs had grown a corpus (the Quick Share targets:
+from their generated seeds alone). Coverage is libFuzzer's, at the start of
+the run and at its end.
+
+| Target | Executions (per second) | Coverage, start -> end | Findings |
+| --- | ---: | ---: | --- |
+| `localsend_prepare_upload` | 1,596,243 (26,167) | 3493 -> 3573 | none |
+| `localsend_discovery` | 3,396,058 (55,673) | 3624 -> 3711 | none |
+| `wormhole_wire` | 552,242 (9,053) | 3200 -> 3282 | none |
+| `wormhole_code` | 2,133 (34) | 9398 -> 9416 | none; see below |
+| `wormhole_mailbox` | 874,294 (14,332) | 2437 -> 2496 | none |
+| `quickshare_handshake` | 51,290 (840) | 3317 -> 4736 | none |
+| `quickshare_frame` | 128,962 (2,114) | 2734 -> 3704 | none |
+| `quickshare_mdns` | 3,452,832 (56,603) | 794 -> 800 | none |
+
+Before that, every target ran 10 s, 60 s, and the two Quick Share targets
+180 s more, without a finding in engine or library code. Over those runs the
+Quick Share corpora reached every milestone the harness records: an
+introduction accepted and refused, files and texts received to the end, and
+the whole handshake with a real key exchange to a received file.
+
+What the runs changed was the harness. Protobuf enum fields were first
+fuzzed as plain `i32`s, so a text's kind or a frame's type took a defined
+value about once in a billion inputs, and three minutes never produced a
+received text; they are now mostly small numbers (`quickshare::Enum`), and
+the seeds are generated so that every state is reached from the first
+second. One seed's expectation was wrong in an instructive way: rqs_lib
+takes an introduction of up to 1000 files, and `Offer::validate` refuses it
+past 500 (S6), so the 996-file seed ends refused -- the adapter's cap, not
+the library's, is the one that holds.
+
+`wormhole_code` is slow on purpose: every code that passes the adapter's
+grammar goes to the library's entropy estimate (zxcvbn), which under ASan
+and coverage instrumentation takes tens of milliseconds. The code is typed
+by the user, never sent by a peer, so this is a cost of fuzzing, not an
+exposure; the deterministic sweep in `wormhole/sweep.rs` covers the grammar
+at full speed on every `cargo test`.

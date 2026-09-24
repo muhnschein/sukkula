@@ -167,6 +167,10 @@ jobs:
       # clippy never sees: linted here on the pinned toolchain, before any
       # fuzzing, so a target that stopped compiling is reported as that.
       - run: cargo clippy --manifest-path fuzz/Cargo.toml --all-targets --locked -- -D warnings
+      # The harness's own tests: the Quick Share sender follows the
+      # protocol, and each generated seed decodes to its script and still
+      # reaches the state it is for (fuzz/README.md, "Seeds").
+      - run: cargo test --manifest-path fuzz/Cargo.toml --lib --locked
       - run: ./scripts/fuzz-smoke.sh 60
         env:
           FUZZ_TOOLCHAIN: ${{ env.SUKKULA_NIGHTLY }}
