@@ -156,6 +156,7 @@ async fn a_folder_from_python_arrives_as_one_unopened_zip() {
     let b = Side::new(&mb.url, &rl.url, CONSENT);
     let src = tempfile::tempdir().unwrap();
     let folder = src.path().join("album");
+    #[allow(clippy::disallowed_methods)] // The scene: a folder to send.
     std::fs::create_dir(&folder).unwrap();
     write_file(&folder, "one.txt", b"one");
     write_file(&folder, "two.txt", b"two");

@@ -303,6 +303,7 @@ impl Rig {
 
     fn file(&self, name: &str, content: &[u8]) -> OutgoingFile {
         let dir = self.dir.path().join("data").join("out");
+        #[allow(clippy::disallowed_methods)] // The scene: where files to send live.
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(name);
         write_file(&path, content);
@@ -604,7 +605,9 @@ async fn a_file_swapped_after_the_check_is_refused() {
 
     for swap in ["fifo", "grown"] {
         let file = sender.file(&format!("{swap}.bin"), b"abc");
+        #[allow(clippy::disallowed_methods)] // The scene: the file is swapped.
         std::fs::remove_file(&file.path).unwrap();
+        #[allow(clippy::disallowed_methods)] // The scene: for a FIFO.
         match swap {
             "fifo" => rustix::fs::mknodat(
                 rustix::fs::CWD,
@@ -1068,6 +1071,7 @@ async fn still_serves(receiver: &Rig, to: SocketAddr) {
     assert_eq!(outcome, Outcome::Done);
     assert_eq!(saved, ["ok.txt"]);
     assert!(receiver.received().contains("ok.txt"));
+    #[allow(clippy::disallowed_methods)] // Clearing the scene for the next probe.
     std::fs::remove_file(receiver.download_dir().join("ok.txt")).unwrap();
 }
 

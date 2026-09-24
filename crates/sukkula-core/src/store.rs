@@ -110,6 +110,8 @@ impl Store {
     /// # Errors
     ///
     /// An I/O error; the old contents are intact.
+    // S3: the store's writer; removes its own temporary file on failure.
+    #[allow(clippy::disallowed_methods)]
     pub fn write(&self, name: &str, bytes: &[u8]) -> Result<(), StoreError> {
         check_name(name)?;
         let dir = self.open_dir()?;
@@ -154,6 +156,8 @@ impl Store {
         self.write(name, &bytes)
     }
 
+    // S3: an O_RDONLY|O_NOFOLLOW open relative to the checked directory.
+    #[allow(clippy::disallowed_methods)]
     fn read_checked(
         &self,
         name: &str,
@@ -215,6 +219,8 @@ impl Store {
 
 /// Writes `bytes` to the new file `tmp` in `dir`, makes it durable, and
 /// renames it over `name`.
+// S3: the store's one write: O_CREAT|O_EXCL 0600, then renameat.
+#[allow(clippy::disallowed_methods)]
 fn replace(dir: &OwnedFd, tmp: &str, name: &str, bytes: &[u8]) -> io::Result<()> {
     let fd = rustix::fs::openat(
         dir,

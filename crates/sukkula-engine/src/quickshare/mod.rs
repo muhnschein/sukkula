@@ -6,7 +6,7 @@
 //! global state, spawns no task and writes no file. This adapter owns every
 //! socket, task and timer and drives each connection one frame at a time:
 //!
-//! - **Receiving** (F-QS1, F-QS4) — [`receive`]. A TCP listener on a random
+//! - **Receiving** (F-QS1, F-QS4) — `receive.rs`. A TCP listener on a random
 //!   port, announced over mDNS while visibility is Everyone; with Hidden
 //!   there is neither listener nor announcement. A connection from an
 //!   address [`Ctx::permits`] refuses, or over the per-IP rate
@@ -22,9 +22,9 @@
 //!   [`Ctx::begin_file`] (S1, S3), every call bounded by
 //!   [`crate::ctx::idle_timeout`]; a text is shown with
 //!   `Event::TextReceived` once accepted (F-C4).
-//! - **Sending** (F-QS1) — [`send`]: files, or one text, to a peer found by
+//! - **Sending** (F-QS1) — `send.rs`: files, or one text, to a peer found by
 //!   discovery.
-//! - **Discovery** — [`discovery`]: mDNS browsing, peers reported as
+//! - **Discovery** — `discovery.rs`: mDNS browsing, peers reported as
 //!   `qs:<endpoint id>` with sanitised names, at most [`MAX_PEERS`], each
 //!   source rate-limited ([`Ctx::allow_discovery`]).
 //! - **The BLE nudge** (F-QS2) — [`ble`]: while discovery runs and

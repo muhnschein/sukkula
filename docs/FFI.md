@@ -24,8 +24,9 @@ kind after the language: `json command`, `json event` or `json config`.
 7. [Events](#events)
 8. [Error codes](#error-codes)
 9. [Values](#values)
-10. [Linking](#linking)
-11. [Testing](#testing)
+10. [Logging](#logging)
+11. [Linking](#linking)
+12. [Testing](#testing)
 
 ## Functions
 
@@ -507,6 +508,31 @@ Every `error` is an object with a `code` for the UI to translate and a
 | Outcome | `transfer_finished` | `done`, `cancelled`, `failed` (see `error`) |
 | Device type | `peer_found` | `phone`, `tablet`, `computer`, `unknown` |
 | Quick Share visibility | settings | `hidden`, `everyone` (F-QS4) |
+
+## Logging
+
+The engine writes its log to standard error, one line per event, which on
+Sailfish reaches the journal (`journalctl --user`); it never writes a log
+file. The lines start with `sukkula:` and the level:
+
+```text
+sukkula: WARN sukkula_engine::hub: settings unreadable; using defaults why="malformed"
+```
+
+With `logging` off, the default, only warnings and errors of the engine's
+own crates appear. With `logging` on, the engine's debug lines appear too,
+with the protocol libraries' lines at the levels
+`crates/sukkula-engine/src/logging.rs` lists. The switch takes effect with
+the `set_settings` that changes it. Neither ever logs a file name, a text,
+an alias, a PIN, a wormhole code, a path in the download directory, a
+peer's address or the TLS key at info level or above (S9), and the
+engine's own lines never do at any level. Behind a `SUKKULA_ERR_PANIC`
+or an `internal` error there is usually a panic, which Rust's own panic
+message reports on standard error too, with where it happened.
+
+The shell needs to do nothing: the log belongs to the engine, which sets
+no process-wide logging state but one: the bridge from Rust's `log` crate,
+installed once by the first engine.
 
 ## Linking
 

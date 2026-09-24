@@ -340,6 +340,7 @@ async fn a_file_that_changed_or_became_a_fifo_is_not_sent() {
     }
     // A FIFO swapped in after the check: refused, not waited on.
     let fifo = a.dir.path().join("f.bin");
+    #[allow(clippy::disallowed_methods)] // The scene: a FIFO where a file was.
     rustix::fs::mknodat(
         rustix::fs::CWD,
         &fifo,
@@ -605,6 +606,7 @@ async fn a_folder_from_the_library_arrives_as_one_unopened_tar() {
     let b = Side::new(&mb.url, &rl.url, CONSENT);
     let src = tempfile::tempdir().unwrap();
     let folder = src.path().join("holiday");
+    #[allow(clippy::disallowed_methods)] // The scene: a folder to send.
     std::fs::create_dir(&folder).unwrap();
     write_file(&folder, "a.jpg", &content(1000));
     write_file(&folder, "b.jpg", &content(2000));

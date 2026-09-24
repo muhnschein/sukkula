@@ -13,6 +13,9 @@
 //! out a raw callback. Every command is answered by exactly one
 //! [`api::Event::Reply`], and at most [`api::MAX_IN_FLIGHT_COMMANDS`] are
 //! held at once. `hub.rs` has the details.
+//!
+//! Each engine has a log of its own, to standard error, off by default and
+//! switched by `Settings::logging` ([`logging`], S9).
 
 #![forbid(unsafe_code)]
 
@@ -20,6 +23,7 @@ pub mod adapter;
 pub mod api;
 pub mod ctx;
 mod hub;
+pub mod logging;
 mod slots;
 
 #[cfg(feature = "bluetooth")]

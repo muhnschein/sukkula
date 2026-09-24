@@ -65,6 +65,9 @@ const DIR_FLAGS: OFlags = OFlags::RDONLY
 
 /// Opens `path` as a private directory, creating it (and any missing parents)
 /// `0700` first if it does not exist.
+// S3: this is where the inbox and the store get their directories; the
+// open is O_RDONLY|O_DIRECTORY|O_NOFOLLOW and the mkdir is 0700.
+#[allow(clippy::disallowed_methods)]
 pub(crate) fn open(path: &Path, share: Share) -> Result<OwnedFd, DirError> {
     let fd = match rustix::fs::openat(CWD, path, DIR_FLAGS, Mode::empty()) {
         Ok(fd) => fd,
@@ -84,6 +87,8 @@ pub(crate) fn open(path: &Path, share: Share) -> Result<OwnedFd, DirError> {
 
 /// Opens `name` inside the directory `parent` as a private directory,
 /// creating it `0700` first if it does not exist. `name` is one component.
+// S3: the staging directory, relative to the checked target directory.
+#[allow(clippy::disallowed_methods)]
 pub(crate) fn open_at(parent: &OwnedFd, name: &str, share: Share) -> Result<OwnedFd, DirError> {
     let fd = match rustix::fs::openat(parent, name, DIR_FLAGS, Mode::empty()) {
         Ok(fd) => fd,
@@ -100,6 +105,8 @@ pub(crate) fn open_at(parent: &OwnedFd, name: &str, share: Share) -> Result<Owne
 }
 
 /// Checks an open directory: ours, and not writable by anyone else.
+// S3/S9: tightening a directory of ours, through its descriptor.
+#[allow(clippy::disallowed_methods)]
 fn check(fd: OwnedFd, share: Share) -> Result<OwnedFd, DirError> {
     let st = rustix::fs::fstat(&fd)?;
     if !is_dir(&st) || st.st_uid != rustix::process::geteuid().as_raw() {
