@@ -4,7 +4,9 @@
 # Renders icons/harbour-sukkula.svg to the four sizes Harbour requires
 # (1.5), at icons/<size>/harbour-sukkula.png, which harbour-sukkula.pro
 # installs under /usr/share/icons/hicolor/<size>/apps. The PNGs are
-# committed; run this after changing the SVG. Needs rsvg-convert
+# committed; run scripts/render-icons.sh after changing the SVG. It lives
+# here rather than in icons/ because nothing under icons/ may be executable
+# (Harbour 1.2.9: qmake's install keeps modes). Needs rsvg-convert
 # (librsvg2-bin).
 set -eu
 

@@ -20,7 +20,7 @@ isEmpty(SUKKULA_ENGINE): SUKKULA_ENGINE = stub
 equals(SUKKULA_ENGINE, rust) {
     isEmpty(SUKKULA_RUST_LIB): SUKKULA_RUST_LIB = $$SUKKULA_ROOT/target/debug/libsukkula_ffi.a
     PRE_TARGETDEPS += $$SUKKULA_RUST_LIB
-    LIBS += $$SUKKULA_RUST_LIB -ldbus-1 -lpthread -ldl -lm -lrt
+    LIBS += $$SUKKULA_RUST_LIB -ldbus-1 -lpthread -ldl -lm
     DEFINES += SUKKULA_RUST_ENGINE
 } else {
     INCLUDEPATH += $$PWD/stub

@@ -164,10 +164,6 @@
         <translation>Eine Einstellung ist nicht verwendbar.</translation>
     </message>
     <message>
-        <source>A file could not be read.</source>
-        <translation>Eine Datei konnte nicht gelesen werden.</translation>
-    </message>
-    <message>
         <source>Too large, or too many files.</source>
         <translation>Zu groß oder zu viele Dateien.</translation>
     </message>
@@ -194,6 +190,10 @@
     <message>
         <source>Something went wrong.</source>
         <translation>Etwas ist schiefgelaufen.</translation>
+    </message>
+    <message>
+        <source>A file could not be read. Sukkula can read files in Downloads only.</source>
+        <translation>Eine Datei konnte nicht gelesen werden. Sukkula kann nur Dateien in Downloads lesen.</translation>
     </message>
 </context>
 <context>
@@ -362,6 +362,11 @@ Opens the file picker.</extracomment>
         <source>Add a file or type a text first.</source>
         <extracomment>Send page with nothing chosen yet.</extracomment>
         <translation>Füge zuerst eine Datei hinzu oder tippe einen Text.</translation>
+    </message>
+    <message>
+        <source>Outside Downloads: Sukkula may not be allowed to read it.</source>
+        <extracomment>Send page: a file outside ~/Downloads, which the sandbox may not let Sukkula read.</extracomment>
+        <translation>Außerhalb von Downloads: Sukkula darf sie womöglich nicht lesen.</translation>
     </message>
 </context>
 <context>

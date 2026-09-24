@@ -329,7 +329,9 @@ QtObject {
         case "bad_settings":
             return qsTr("A setting could not be used.")
         case "bad_file":
-            return qsTr("A file could not be read.")
+            // Mostly Sailjail: only Downloads is granted (spec §2), and a
+            // file shared from elsewhere may be out of reach.
+            return qsTr("A file could not be read. Sukkula can read files in Downloads only.")
         case "too_large":
             return qsTr("Too large, or too many files.")
         case "refused":

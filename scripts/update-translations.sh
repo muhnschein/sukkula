@@ -2,9 +2,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Refreshes the catalogues from the QML sources, keeping every existing
-# translation: run after adding, changing or removing a qsTr() string, then
-# translate what lupdate marks unfinished. tests/qml/static_checks.py fails
-# while any catalogue is out of step with the sources.
+# translation. Run scripts/update-translations.sh after adding, changing
+# or removing a qsTr() string, then translate what lupdate marks unfinished;
+# tests/qml/static_checks.py fails while any catalogue is out of step with
+# the sources. It lives here rather than in translations/ because nothing
+# there may be executable (Harbour 1.2.9: qmake's install keeps modes).
 #
 # harbour-sukkula.ts is the English source catalogue: only its plural forms
 # need filling in (its .qm is the fallback that carries them); singulars
