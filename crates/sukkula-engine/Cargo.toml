@@ -12,7 +12,7 @@ publish.workspace = true
 default = ["localsend", "quickshare", "wormhole", "bluetooth"]
 # One feature per protocol, so each can be built and tested alone (spec §3).
 localsend = ["dep:localsend"]
-quickshare = []
+quickshare = ["dep:rqs_lib", "dep:dbus"]
 wormhole = ["dep:magic-wormhole", "dep:qrcode"]
 bluetooth = ["dep:dbus"]
 
@@ -27,6 +27,11 @@ tokio-util = { workspace = true, features = ["rt"] }
 
 # LocalSend v2: the protocol authors' own core, pinned (spec §6).
 localsend = { git = "https://github.com/localsend/localsend", rev = "e768240d1ad95f0f162b852b5ff37bec71cde1ef", features = ["discovery"], optional = true }
+# Quick Share: open-quickshare's rqs_lib, vendored with Sukkula's patches
+# (third_party/rqs_lib.patches, docs/UPSTREAM-QUICKSHARE.md). The BLE nudge
+# (F-QS2) uses the `dbus` dependency below, the same system libdbus-1 stack
+# as Bluetooth.
+rqs_lib = { path = "../../third_party/rqs_lib", optional = true }
 # Magic Wormhole, transfer protocol v1 only (spec §5).
 magic-wormhole = { version = "=0.8.1", default-features = false, features = ["transfer"], optional = true }
 qrcode = { version = "0.14", default-features = false, optional = true }
