@@ -183,6 +183,18 @@ private slots:
         bridge.stop();
     }
 
+    void aBusyEngineIsReportedAsSuch()
+    {
+#ifdef SUKKULA_STUB_ENGINE
+        Bridge bridge;
+        QVERIFY(bridge.start());
+        QCOMPARE(bridge.command(QStringLiteral("{\"v\":1,\"id\":3,\"stub\":\"busy\"}")), int(SUKKULA_ERR_BUSY));
+        bridge.stop();
+#else
+        QSKIP("needs the stub engine");
+#endif
+    }
+
     void nothingIsDeliveredAfterStop()
     {
         Bridge bridge;

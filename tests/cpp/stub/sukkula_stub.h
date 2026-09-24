@@ -24,6 +24,7 @@ void sukkula_stub_fail_next_start(int fail);
  *   "stub":"burst"     -- 5000 events as fast as the thread can go
  *   "stub":"oversize"  -- one event of 2 MiB
  *   "stub":"slow"      -- the reply after 200 ms
+ *   "stub":"busy"      -- refused with SUKKULA_ERR_BUSY, no reply
  * Every other command is answered with {"type":"reply","id":N,"ok":true}.
  */
 

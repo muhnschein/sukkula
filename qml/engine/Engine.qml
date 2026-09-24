@@ -749,6 +749,10 @@ QtObject {
         if (rc === -3) {
             return { code: "too_large", message: "command over 64 KiB" }
         }
+        if (rc === -5) {
+            // SUKKULA_ERR_BUSY: 64 commands await their replies.
+            return { code: "too_large", message: "too many commands waiting" }
+        }
         if (rc === -1) {
             return { code: "unavailable", message: "the engine is not running" }
         }

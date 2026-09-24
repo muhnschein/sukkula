@@ -60,8 +60,11 @@ TRANSLATIONS += \
     translations/harbour-sukkula-fi.ts \
     translations/harbour-sukkula-sv.ts
 
+# lrelease from qt5-qttools-linguist (a BuildRequires); LRELEASE=...
+# on the qmake line overrides.
 isEmpty(LRELEASE) {
     LRELEASE = $$[QT_INSTALL_BINS]/lrelease
+    !exists($$LRELEASE): LRELEASE = $$[QT_HOST_BINS]/lrelease
     !exists($$LRELEASE): LRELEASE = lrelease
 }
 sukkula_qm.input = TRANSLATIONS

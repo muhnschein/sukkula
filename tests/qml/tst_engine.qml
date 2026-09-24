@@ -71,11 +71,20 @@ Script {
                                  function (ok, error) { r = error.code })
             test.compare(id, 0, "not taken")
             test.compare(r, "too_large", "callback told at once")
+            // -5 is SUKKULA_ERR_BUSY: 64 commands in flight.
+            bridge.commandResult = -5
+            engine.getSettings()
+            // -1: the engine is gone.
+            bridge.commandResult = -1
+            engine.cancel(1, function (ok, error) { r = error.code })
+            test.compare(r, "unavailable")
             bridge.commandResult = 0
             bridge.autoReply = true
         },
         function () {
-            test.compare(test.failedMessages, [engine.errorText({ code: "storage" })])
+            test.compare(test.failedMessages, [engine.errorText({ code: "too_large" }),
+                                               engine.errorText({ code: "storage" })],
+                         "a refused command without a callback is announced, then the reply")
             engine.failed.disconnect(test.noteFailure)
             test.verify(engine.errorText({ code: "no_such_code" }) === engine.errorText({ code: "internal" }),
                         "unknown codes read as internal")

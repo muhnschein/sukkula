@@ -294,6 +294,9 @@ int32_t sukkula_command(SukkulaEngine *engine, const char *command_json)
     if (!valid_utf8((const unsigned char *)command_json, n)) {
         return SUKKULA_ERR_UTF8;
     }
+    if (strstr(command_json, "\"stub\":\"busy\"")) {
+        return SUKKULA_ERR_BUSY;
+    }
     struct job job = { JOB_EMIT, 0, NULL };
     if (strstr(command_json, "\"stub\":\"burst\"")) {
         job.kind = JOB_BURST;
@@ -312,7 +315,7 @@ int32_t sukkula_command(SukkulaEngine *engine, const char *command_json)
     if (engine->count == MAX_QUEUE) {
         pthread_mutex_unlock(&engine->lock);
         free(job.text);
-        return SUKKULA_ERR_PANIC;
+        return SUKKULA_ERR_BUSY;
     }
     engine->queue[(engine->head + engine->count) % MAX_QUEUE] = job;
     engine->count++;
