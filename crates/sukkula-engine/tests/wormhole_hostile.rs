@@ -22,6 +22,7 @@
 
 mod wormhole_support;
 
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -719,6 +720,83 @@ async fn an_unreachable_mailbox_fails_fast() {
         .await
         .unwrap_err();
     assert_eq!(e.code, ErrorCode::Network);
+}
+
+/// A `wss://` server on loopback with a certificate for "localhost" that
+/// nobody vouches for: someone in the middle. Counts the TLS handshakes it
+/// completes.
+async fn untrusted_tls_mailbox() -> (
+    String,
+    Arc<std::sync::atomic::AtomicUsize>,
+    Arc<std::sync::Mutex<Vec<String>>>,
+) {
+    let ck = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).unwrap();
+    let cert = ck.cert.der().clone();
+    let key = rustls::pki_types::PrivateKeyDer::Pkcs8(rustls::pki_types::PrivatePkcs8KeyDer::from(
+        ck.signing_key.serialize_der(),
+    ));
+    let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(vec![cert], key)
+    .unwrap();
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let completed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let failures = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (c, f) = (completed.clone(), failures.clone());
+    tokio::spawn(async move {
+        while let Ok((s, _)) = listener.accept().await {
+            match acceptor.accept(s).await {
+                Ok(_) => {
+                    c.fetch_add(1, Ordering::SeqCst);
+                }
+                Err(e) => f.lock().unwrap().push(format!("{e:?}")),
+            }
+        }
+    });
+    (format!("wss://localhost:{port}/v1"), completed, failures)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_wss_mailbox_nobody_vouches_for_is_refused() {
+    // F-MW4: wss:// goes through the guard's rustls and the platform
+    // verifier, which refuses a certificate no system root signed.
+    let (url, completed, failures) = untrusted_tls_mailbox().await;
+    let b = Side::new(&url, "tcp://127.0.0.1:9", CONSENT);
+    let e = b
+        .adapter
+        .receive_code("7-guitarist-revenge".into())
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, ErrorCode::Network);
+    assert_eq!(e.message, "the mailbox server's TLS handshake failed");
+    assert_eq!(completed.load(Ordering::SeqCst), 0);
+    // The client got as far as the certificate, and turned it down.
+    let start = tokio::time::Instant::now();
+    while failures.lock().unwrap().is_empty() && start.elapsed() < Duration::from_secs(5) {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let seen = failures.lock().unwrap().clone();
+    assert!(
+        seen.iter()
+            .any(|f| f.contains("UnknownCA") || f.contains("BadCertificate")),
+        "{seen:?}"
+    );
+    // A plain server where TLS was asked for fails the same way.
+    let plain = mailbox(Behaviour::default()).await;
+    let url = plain.url.replace("ws://127.0.0.1", "wss://localhost");
+    let b = Side::new(&url, "tcp://127.0.0.1:9", CONSENT);
+    let e = b
+        .adapter
+        .receive_code("7-guitarist-revenge".into())
+        .await
+        .unwrap_err();
+    assert_eq!(e.message, "the mailbox server's TLS handshake failed");
 }
 
 // --------------------------------------------------------- hostile relay

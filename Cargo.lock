@@ -2888,6 +2888,7 @@ dependencies = [
  "magic-wormhole",
  "proptest",
  "qrcode",
+ "rcgen",
  "rustix",
  "rustls",
  "rustls-platform-verifier",
