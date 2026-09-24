@@ -1,0 +1,17 @@
+# The start configuration: every field of api::StartConfig.
+# Generated spelling: non-ASCII and controls as \xHH of their UTF-8.
+"{"
+"}"
+":"
+","
+"\""
+"true"
+"false"
+"null"
+"\"v\""
+"\"data_dir\""
+"\"download_dir\""
+"\"device_model\""
+"\"allow_loopback\""
+"4294967295"
+"-1"

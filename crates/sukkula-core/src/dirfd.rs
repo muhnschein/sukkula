@@ -214,7 +214,10 @@ mod tests {
         let theirs = dir.path().join("theirs");
         std::fs::create_dir(&theirs).unwrap();
         rustix::fs::chown(&theirs, Some(rustix::fs::Uid::from_raw(4242)), None).unwrap();
-        assert!(matches!(open(&theirs, Share::Nothing), Err(DirError::NotPlain)));
+        assert!(matches!(
+            open(&theirs, Share::Nothing),
+            Err(DirError::NotPlain)
+        ));
         let root = open(dir.path(), Share::ReadOnly).unwrap();
         assert!(matches!(
             open_at(&root, "theirs", Share::Nothing),
