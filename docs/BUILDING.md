@@ -84,10 +84,12 @@ nothing.
 | `features` | `features` | each protocol feature alone, and none, clippy and tests (spec §3) |
 | `deny` | `deny` | licences, advisories, duplicate versions, banned crates and features, sources (`deny.toml`) |
 | `deps lockfile` | `deps` | the dependency budget (`ci/check-deps.sh`, with its selftest) and the lockfile rules (`ci/check-lockfile.sh`) |
-| `fuzz-smoke` | `fuzz-smoke` | every cargo-fuzz target, 60 s each, from its committed seeds |
+| `rqs-lib-tests` | `test` | the vendored Quick Share library's own tests, run from a temporary copy so `third_party/` stays byte-identical to upstream plus patches (`ci/rqs-lib-tests.sh`) |
+| `fuzz-lint fuzz-smoke` | `fuzz-smoke` | clippy and the harness tests of the fuzz crate, then every cargo-fuzz target, 60 s each, from its committed seeds |
 | `ffi-asan` | `ffi-asan` | the C harness over the C ABI under AddressSanitizer (`ci/ffi-harness/run.sh`) |
 | `cross` | `cross` | the aarch64 engine, with a probe linked against it (below) |
 | `qml` | `qml` | qmllint over `qml/` and `qml-stubs/`; the UI's QML tests, offscreen |
+| `cpp` | `cpp` | the Qt bridge's tests under ASan and UBSan, the shell booted offscreen, and the ELF and install-layout checks of `harbour-sukkula.pro`, against the stub engine and then the real one (`tests/run-cpp-tests.sh`) |
 | `packaging` | `packaging` | spec parses and builds out of tree, desktop entry, catalogs, shellcheck on every script, actionlint on every workflow |
 | `vendor` | `vendor` | `third_party/rqs_lib` is upstream plus its patches (with the checker's selftest) |
 | `harbour` | `harbour` | the source-level Harbour gate, then its selftest (`docs/HARBOUR.md`) |
