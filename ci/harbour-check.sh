@@ -583,31 +583,41 @@ if [[ -n "$expanded" ]]; then
     done
     note "[1.8.5] no RPM scriptlets or triggers"
 
-    # 1.8.8: the engine links the system libdbus-1.so.3, whose whole API is
-    # versioned LIBDBUS_1_3, so rpm derives
-    # libdbus-1.so.3(LIBDBUS_1_3)(64bit) -- which allowed_requires.conf does
-    # not carry and the validator rejects. The spec has to filter exactly
-    # that string, and keep the unversioned libdbus-1.so.3()(64bit), which
-    # is allowed and is the real dependency.
-    if grep -q '^name = "libdbus-sys"$' "$root/Cargo.lock" 2>/dev/null; then
-        exclude=$(sed -n 's/^%global[[:space:]]\{1,\}__requires_exclude[[:space:]]\{1,\}//p' "$spec" | head -1)
-        exclude=${exclude//\\\\/\\}
-        versioned='libdbus-1.so.3(LIBDBUS_1_3)(64bit)'
-        if [[ -z "$exclude" ]]; then
-            fail 1.8.8 "$versioned" \
-                "the engine links libdbus-1 and rpm will require '$versioned', which Harbour rejects; filter it with __requires_exclude"
-        elif ! grep -qE -- "$exclude" <<< "$versioned"; then
-            fail 1.8.8 "$versioned" "__requires_exclude ('$exclude') does not filter it"
-        else
-            for keep in 'libdbus-1.so.3()(64bit)' 'libc.so.6(GLIBC_2.34)(64bit)' \
-                        'libQt5Core.so.5(Qt_5)(64bit)' 'libsailfishapp.so.1()(64bit)'; do
-                if grep -qE -- "$exclude" <<< "$keep"; then
-                    fail 1.8.8 "$keep" \
-                        "__requires_exclude ('$exclude') also drops this real dependency; filter only '$versioned'"
-                fi
-            done
-            note "[1.8.8] the spec filters libdbus-1's versioned Requires and nothing else"
-        fi
+    # 1.8.8: rpm derives two Requires the validator rejects, and the spec
+    # has to filter exactly those. The engine links the system
+    # libdbus-1.so.3, whose whole API is versioned LIBDBUS_1_3, so rpm
+    # derives libdbus-1.so.3(LIBDBUS_1_3)(64bit), which
+    # allowed_requires.conf does not carry; and the binary needs the
+    # engine's own library, libsukkula_ffi.so()(64bit), which only this
+    # package ships. The unversioned libdbus-1.so.3()(64bit) and the rest
+    # are allowed, and are real dependencies: they stay.
+    exclude=$(sed -n 's/^%global[[:space:]]\{1,\}__requires_exclude[[:space:]]\{1,\}//p' "$spec" | head -1)
+    exclude=${exclude//\\\\/\\}
+    drop=('libsukkula_ffi.so()(64bit)')
+    grep -q '^name = "libdbus-sys"$' "$root/Cargo.lock" 2>/dev/null &&
+        drop+=('libdbus-1.so.3(LIBDBUS_1_3)(64bit)')
+    if [[ -z "$exclude" ]]; then
+        fail 1.8.8 "__requires_exclude" \
+            "rpm will require ${drop[*]}, which Harbour rejects; filter them with __requires_exclude"
+    else
+        ok_888=1
+        for versioned in "${drop[@]}"; do
+            if ! grep -qE -- "$exclude" <<< "$versioned"; then
+                fail 1.8.8 "$versioned" "__requires_exclude ('$exclude') does not filter it"
+                ok_888=0
+            fi
+        done
+        for keep in 'libdbus-1.so.3()(64bit)' 'libc.so.6(GLIBC_2.34)(64bit)' \
+                    'libQt5Core.so.5(Qt_5)(64bit)' 'libsailfishapp.so.1()(64bit)' \
+                    'libgcc_s.so.1()(64bit)' 'libsukkula_ffi.so.1()(64bit)'; do
+            if grep -qE -- "$exclude" <<< "$keep"; then
+                fail 1.8.8 "$keep" \
+                    "__requires_exclude ('$exclude') also drops this; filter only ${drop[*]}"
+                ok_888=0
+            fi
+        done
+        [[ "$ok_888" = 1 ]] &&
+            note "[1.8.8] the spec filters ${drop[*]} from the Requires, and nothing else"
     fi
 fi
 

@@ -5,8 +5,10 @@
 # The engine is not built here. The SDK ships Rust 1.75 and the engine
 # needs 1.97.1, so it is cross-compiled beforehand with the pinned
 # toolchain, the SDK's own aarch64 GCC and this target's sysroot, and this
-# spec only links the static library it leaves behind. docs/BUILDING.md
-# has the whole route; .github/workflows/rpm.yml runs it.
+# spec links the shell against the private shared library it leaves
+# behind, libsukkula_ffi.so, and installs that in
+# /usr/share/harbour-sukkula/lib. docs/BUILDING.md has the whole route;
+# .github/workflows/rpm.yml runs it.
 #
 # Harbour's listing rules apply to everything below -- the name, the
 # installed paths, every Requires, no scriptlets -- and ci/harbour-check.sh
@@ -22,7 +24,7 @@ Version:    0.1.0
 # Stamped per build by rpm.yml (digits and periods only, as Harbour
 # requires); a release builds the 1 written here.
 Release:    1
-# Sukkula's own code is GPL-3.0-or-later, and the engine statically links
+# Sukkula's own code is GPL-3.0-or-later, and the engine library statically links
 # the LocalSend core (Apache-2.0), open-quickshare's rqs_lib (GPL-3.0),
 # magic-wormhole (EUPL-1.2, conveyed under the GPL by its compatibility
 # appendix) and permissively licensed crates; the tag describes what the
@@ -63,19 +65,24 @@ BuildRequires:  desktop-file-utils
 BuildRequires:  qt5-qttools-linguist
 
 # Harbour allows no Provides beyond the package's own, and rpm derives one
-# from any shared library it finds. Nothing under the data directory is
-# one; this keeps it that way if one ever appears there.
+# from any shared library it finds -- here the engine's, under the data
+# directory, which nothing outside the package may depend on.
 %global __provides_exclude_from ^%{_datadir}/%{name}/.*$
 
-# rpm derives a Requires from every symbol version the binary references.
-# libdbus-1 versions its whole API as LIBDBUS_1_3, so the engine's link
-# produces libdbus-1.so.3(LIBDBUS_1_3)(64bit) beside the plain
-# libdbus-1.so.3()(64bit). The plain one is on Harbour's allow-list and is
-# kept -- it is the real dependency on the system libdbus-1.so.3 -- but the
-# versioned form is not, and the validator rejects it as "Cannot require
-# shared library". Only that one string is dropped; the Harbour FAQ names
-# __requires_exclude for exactly this.
-%global __requires_exclude ^libdbus-1\\.so\\.3\\(LIBDBUS_1_3\\)\\(64bit\\)$
+# rpm derives a Requires from every library the package's ELF files need,
+# and from every symbol version they reference. Two are dropped, and
+# nothing else; the Harbour FAQ names __requires_exclude for exactly this:
+#
+# - libdbus-1 versions its whole API as LIBDBUS_1_3, so the engine's link
+#   produces libdbus-1.so.3(LIBDBUS_1_3)(64bit) beside the plain
+#   libdbus-1.so.3()(64bit). The plain one is on Harbour's allow-list and
+#   is kept -- it is the real dependency on the system libdbus-1.so.3 --
+#   but the versioned form is not, and the validator rejects it as "Cannot
+#   require shared library".
+# - libsukkula_ffi.so()(64bit), which the binary needs and the package
+#   itself ships: no other package could provide it, and the validator
+#   rejects that one too.
+%global __requires_exclude ^(libdbus-1\\.so\\.3\\(LIBDBUS_1_3\\)\\(64bit\\)|libsukkula_ffi\\.so\\(\\)\\(64bit\\))$
 
 # A -debuginfo package is nothing Harbour takes, and the binary is
 # stripped in the install section below, which leaves find-debuginfo
@@ -84,8 +91,8 @@ BuildRequires:  qt5-qttools-linguist
 
 # Where scripts/cross-build-rust.sh leaves the engine, relative to the
 # source tree mb2 builds in. Overridable with
-# --define "sukkula_rust_lib /path/to/libsukkula_ffi.a".
-%{!?sukkula_rust_lib: %global sukkula_rust_lib target/aarch64-unknown-linux-gnu/release/libsukkula_ffi.a}
+# --define "sukkula_rust_lib /path/to/libsukkula_ffi.so".
+%{!?sukkula_rust_lib: %global sukkula_rust_lib target/aarch64-unknown-linux-gnu/release/libsukkula_ffi.so}
 
 %description
 Sukkula sends and receives files and text over LocalSend, Quick Share,
@@ -128,6 +135,9 @@ cd build-sfos
 # Q_DECL_EXPORT and sailfishapp's -rdynamic have put it there -- and where
 # the booster looks for it (docs/HARBOUR.md).
 %{__strip} --strip-all %{buildroot}%{_bindir}/%{name}
+# The engine's library is linked stripped already; this keeps it so if that
+# link ever changes. Its exports are in .dynsym, which this keeps too.
+%{__strip} --strip-all %{buildroot}%{_datadir}/%{name}/lib/libsukkula_ffi.so
 
 # The Sailfish template's own step: it validates the entry as it installs
 # it, so a malformed one fails the build rather than the launcher.

@@ -27,6 +27,7 @@ Every ID names the requirement it covers.
 | M-7 | F-C7 | Rename the device in Settings. | LocalSend and Quick Share peers show the new name; empty falls back to the model name. |
 | M-8 | §2 sandbox | Share a photo from Gallery (it lives in `~/Pictures`), and pick a file in `~/Documents` with the file picker. | Record whether each can be sent. With only `Downloads` granted, Sukkula shows "Sukkula can read files in Downloads only" instead of failing silently; if the Share-menu photo is unreadable, raise it with the owner (it needs `UserDirs`, a spec change). |
 | M-9 | S9 | Run `journalctl --user -f \| grep 'sukkula:'` over SSH. Receive a file over each protocol with debug logging off; turn it on in Settings and receive again, a text too; turn it off. | Off: no line at all unless something failed. On: `DEBUG` lines such as `offer accepted` and `transfer finished`, with counts and sizes only: no file name, text, device name, PIN, code or address in any line. Off again: `debug logging off`, then silence. Nothing of Sukkula's under `$HOME` looks like a log file. |
+| M-62 | §3 engine | Start the app from the app grid (the booster `dlopen()`s it), close it from the cover, and start it again with `sailjail /usr/bin/harbour-sukkula` over SSH. Close it, and share a photo from Gallery, so the Share menu starts it (`ExecDBus`). | Each time the main page lists the protocols, never "the engine failed internally", and the console shows no `panicked` line (`docs/FFI.md`, Linking). |
 
 ## Consent and display
 

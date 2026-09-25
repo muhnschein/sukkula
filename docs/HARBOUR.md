@@ -124,7 +124,7 @@ policy, stricter than Harbour.
 
 ## What only the built package shows
 
-`rpm.yml` runs two things on every RPM, and fails the job on either:
+`rpm.yml` runs these on every RPM, and fails the job on any of them:
 
 - **`ci/check-elf.sh`** on `/usr/bin/harbour-sukkula` out of the package:
   stripped; `main()` a defined dynamic symbol, and nothing else of ours
@@ -133,13 +133,23 @@ policy, stricter than Harbour.
   Bridge method, a `sukkula_*` entry point or a Rust symbol);
   `__libc_start_main@GLIBC_2.34` linked; no glibc symbol version newer than
   the target sysroot's own; every `NEEDED` library on the allowed list;
-  RELRO, BIND_NOW, PIE, no text relocations, a non-executable stack, no
-  RPATH -- stricter than Harbour, which accepts the
-  `/usr/share/harbour-sukkula/lib` the SDK's `sailfishapp` feature adds
-  for bundled libraries; Sukkula bundles none, and `src/hardening.pri`
-  keeps it out of the link. The same script judges the probe `scripts/cross-build-rust.sh`
-  links against the engine on every pull request, with the shell's export
-  flags, so a Rust symbol reaching `.dynsym` fails there first.
+  RELRO, BIND_NOW, PIE, no text relocations, a non-executable stack; the
+  one RPATH `/usr/share/harbour-sukkula/lib` that the SDK's `sailfishapp`
+  feature sets, as DT_RPATH -- the validator reads only that, and fails a
+  package that ships a library without it -- and no RUNPATH; and the
+  reserve for bionic's TLS slots first in its TLS image
+  (`src/tls_reserve.c`).
+- **`ci/check-elf.sh --library`** on the engine's
+  `/usr/share/harbour-sukkula/lib/libsukkula_ffi.so`: stripped; exactly the
+  four `sukkula_*` functions exported (`crates/sukkula-ffi/exports.map`),
+  and no Rust symbol; `SONAME` its file name; the same glibc ceiling,
+  allowed-library rule and hardening; and thread-locals reached through TLS
+  descriptors, never the static models, so they still work when the
+  booster `dlopen()`s the binary (`docs/FFI.md`, Linking).
+
+  The same two checks run on every pull request against what
+  `scripts/cross-build-rust.sh` builds: the library, and a probe linked
+  against it with the shell's flags.
 - **`ci/harbour-validate-rpm.sh`**: Jolla's validator itself.
 
 ## Sailjail permissions, and why each
@@ -190,9 +200,11 @@ The `silica-qt5` booster in mapplauncherd `dlopen()`s the binary and looks
 does not export it. The C++ entry point is `Q_DECL_EXPORT int main(...)`,
 and `CONFIG += sailfishapp` links with `-rdynamic` under
 `-fvisibility=hidden`, which puts `main` -- and only the exported symbols --
-into `.dynsym`. `-rdynamic` alone would also export every global symbol of
-the Rust static library, so `src/hardening.pri` links with
-`--dynamic-list=src/dynamic.list` (main alone) and `--exclude-libs,ALL`.
+into `.dynsym`. The engine is a library of its own (`docs/FFI.md`,
+Linking), whose exports its link restricts to the C ABI. The binary is
+linked with `--dynamic-list=src/dynamic.list` (main alone) and
+`--exclude-libs,ALL` all the same (`src/hardening.pri`): `-rdynamic` alone
+would export every global symbol of anything static linked into it.
 `ci/check-elf.sh --only-main` holds the packaged binary to that: before
 it, only a host test (`tests/run-cpp-tests.sh`), linked with a stand-in of
 the SDK's `sailfishapp.prf`, checked that nothing else was exported (finding

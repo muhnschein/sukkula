@@ -572,12 +572,27 @@ installed once by the first engine.
 
 ## Linking
 
-`sukkula-ffi` is a `staticlib` (`libsukkula_ffi.a`, for the shell) and an
-`rlib` (for tests). The four functions above are the only symbols it
-exports for C.
+`sukkula-ffi` is a `staticlib` (`libsukkula_ffi.a`) and an `rlib` (for
+tests). The package does not link the archive into the binary. Instead,
+`scripts/cross-build-rust.sh` links it into a private shared library,
+`libsukkula_ffi.so`, installed in `/usr/share/harbour-sukkula/lib`, where
+Harbour lets an app keep its own libraries. The four functions above are
+its only exports (`crates/sukkula-ffi/exports.map`). The binary finds the
+library through the RPATH that the SDK's `sailfishapp` feature sets.
+`src/hardening.pri` writes that RPATH as DT_RPATH, the only form Jolla's
+validator reads.
 
-Link it with `-Wl,--as-needed`. rustc's own list of the system libraries a
-static library needs (`--print native-static-libs`) is
+Why a library: the engine's thread-locals. Launched from the app grid,
+the binary is not executed but `dlopen()`ed by the `silica-qt5` booster,
+and the linker resolves an executable's thread-locals to fixed offsets
+from the thread pointer. A `dlopen()`ed object gets none, so the engine's
+thread-locals, linked into the binary, would land on the booster's own. A
+shared library reaches its thread-locals through TLS descriptors, which
+find them wherever glibc allocates them. `ci/check-elf.sh --library` refuses
+a library that uses the static models instead.
+
+Link the library with `-Wl,--as-needed`. rustc's own list of the system
+libraries a static library needs (`--print native-static-libs`) is
 `-lgcc_s -lutil -lrt -lpthread -lm -ldl -lc`, plus `-ldbus-1` once the
 Bluetooth adapter uses D-Bus. Nothing in the library refers to `libutil`,
 and `libutil.so.1` is not on Harbour's list of allowed libraries: without
@@ -587,29 +602,34 @@ the package would fail validation. Everything else on the list is allowed.
 The release profile keeps `panic = "unwind"`: `catch_unwind` at the
 boundary depends on it.
 
-Link `src/tls_reserve.c` first. The engine's thread-locals end up in the
-executable's TLS segment, and glibc puts that block at the thread
-pointer plus 16. On the phone, those words also belong to Android: EGL
-and GL run under libhybris and write bionic's TLS slots, `tp+16` to
-`tp+63`, on the GUI thread. The first RPM put tokio's runtime context
-there, and the engine panicked entering its runtime ("RefCell already
-borrowed").
+Link `src/tls_reserve.c` first into the binary. On the phone, the words
+from `tp+16` to `tp+63` of the GUI thread also belong to Android: EGL and
+GL run under libhybris and write bionic's TLS slots there. glibc puts the
+first TLS block of the process at `tp+16`. That block is the executable's,
+if it has thread-locals, and otherwise the first library's. The first RPM
+put tokio's runtime context there, and the engine panicked entering its
+runtime ("RefCell already borrowed").
 
-The reserve is a 48-byte `.tdata` array that takes those words. The
-executable's TLS segment has to be aligned to at most 16 bytes, so the
-block starts at exactly `tp+16`. Aligning it to 64, as bionic's own
-executables do, would move the engine past the slots too, but glibc
-would then give the 48-byte gap to some library's thread-locals.
+The reserve is a 48-byte `.tdata` array, the executable's only
+thread-local, so the executable's block is exactly those words and every
+library's comes after it. The executable's TLS segment has to be aligned
+to at most 16 bytes, so the block starts at exactly `tp+16`. Aligning it to
+64, as bionic's own executables do, would leave a 48-byte gap, and glibc
+would give that gap to some library's thread-locals.
 
-The rule is checked in four places:
+The rules are checked in these places:
 
-- `ci/check-elf.sh` reads the array's marker back as the first bytes of the
-  packaged binary's TLS image;
-- `tests/run-cpp-tests.sh` does the same for the host builds of
-  `harbour-sukkula.pro`;
-- `main()` refuses to start if the array is not at `tp+16`;
-- `ci/tls-slots-test.sh` runs the engine under qemu-aarch64 after writing
-  the slots itself.
+- `ci/check-elf.sh`, on the packaged binary: the array's marker must be the
+  first bytes of its TLS image, and its RPATH must be exactly
+  `/usr/share/harbour-sukkula/lib`. On the packaged library: exactly the
+  four exports, and TLS descriptors only.
+- `tests/run-cpp-tests.sh`: the same order for the host builds of
+  `harbour-sukkula.pro`.
+- `main()` refuses to start if the array is not at `tp+16`.
+- `ci/tls-slots-test.sh` runs the aarch64 engine under qemu with the slots
+  written, once executed and once `dlopen()`ed by a stand-in booster.
+  Negative controls show both hazards are still real: without the
+  reserve, and with the archive linked into the binary.
 
 ## Testing
 
@@ -621,7 +641,7 @@ The rule is checked in four places:
 | Every example on this page | `crates/sukkula-engine/tests/hub_docs.rs` |
 | The hub: delivery, bounds, replies after panics, races, hostile commands | `crates/sukkula-engine/src/hub.rs`, `crates/sukkula-engine/tests/hub.rs` |
 | The same, from C, under AddressSanitizer, UBSan and LeakSanitizer | `ci/ffi-harness/run.sh` |
-| The aarch64 engine starts on a thread whose bionic TLS slots were written first, and leaves them alone; without `src/tls_reserve.c` it fails as the phone did | `ci/tls-slots-test.sh` |
+| The aarch64 engine, from its library, starts on a thread whose bionic TLS slots were written first and leaves them alone, both executed and `dlopen()`ed by a stand-in booster. Without `src/tls_reserve.c`, or with the archive linked into the binary, it fails. | `ci/tls-slots-test.sh` |
 
 The C harness runs from any directory with
 

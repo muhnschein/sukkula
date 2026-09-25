@@ -1,5 +1,6 @@
 #!/bin/bash
-# Check one aarch64 ELF executable against what the phone and Harbour need.
+# Check one aarch64 ELF file -- the executable, or with --library the
+# engine's shared library -- against what the phone and Harbour need.
 #
 #     ci/check-elf.sh [options] <elf>
 #
@@ -15,20 +16,31 @@
 #                         below) -- never a Bridge method, a sukkula_* entry
 #                         point or a Rust symbol (src/dynamic.list)
 #   --stripped            no .symtab: the package ships a stripped binary
+#   --rpath DIR           it must carry exactly this RPATH, as DT_RPATH (what
+#                         Jolla's validator reads) and no RUNPATH; without
+#                         this option, no RPATH or RUNPATH at all
+#   --library             a shared library, not an executable: a SONAME that
+#                         is its file name, no PT_INTERP, and thread-locals
+#                         reached through TLS descriptors or __tls_get_addr,
+#                         which work when it is dlopen()ed -- never the
+#                         static TLS models (STATIC_TLS, TPREL relocations)
+#   --exports-only "A B"  the symbols it exports are exactly these
 #   --readelf PATH        the readelf to use (default: readelf; GNU readelf
 #                         reads any architecture's ELF)
 #
 # Always checked: every NEEDED library is on Harbour's allowed list
-# (ci/harbour/allowed_libraries.conf), the link carries the hardening
-# an SDK build of C++ would -- RELRO, BIND_NOW, PIE, no text relocations,
-# a non-executable stack, no RPATH or RUNPATH -- and thread-locals of its
-# own, if it has any, start with the reserve for bionic's TLS slots.
+# (ci/harbour/allowed_libraries.conf) or, for the executable, is the
+# engine's own library; the link carries the hardening an SDK build of C++
+# would -- RELRO, BIND_NOW, PIE for an executable, no text relocations, a
+# non-executable stack, only the RPATH asked for -- and an executable's
+# thread-locals, if it has any, start with the reserve for bionic's TLS
+# slots.
 #
-# Run on two binaries: the probe scripts/cross-build-rust.sh links against
-# the engine (what the engine alone needs from the device), and the real
-# /usr/bin/harbour-sukkula out of the built RPM (rpm.yml). The linked-
-# library rule and the glibc versions are decided by the link, so no
-# source-level check can answer them.
+# Run on the engine's library and on the probe scripts/cross-build-rust.sh
+# links against it, and on both out of the built RPM (rpm.yml):
+# /usr/share/harbour-sukkula/lib/libsukkula_ffi.so and
+# /usr/bin/harbour-sukkula. The linked-library rule and the glibc versions
+# are decided by the link, so no source-level check can answer them.
 set -u
 shopt -s extglob
 
@@ -40,6 +52,10 @@ start_main=""
 main_export=0
 only_main=0
 stripped=0
+rpath=""
+library=0
+exports_only=""
+exports_only_set=0
 readelf=readelf
 elf=""
 while [[ $# -gt 0 ]]; do
@@ -49,6 +65,9 @@ while [[ $# -gt 0 ]]; do
         --main-export) main_export=1; shift ;;
         --only-main) only_main=1; shift ;;
         --stripped) stripped=1; shift ;;
+        --rpath) rpath=${2:?}; shift 2 ;;
+        --library) library=1; shift ;;
+        --exports-only) exports_only=${2:?}; exports_only_set=1; shift 2 ;;
         --readelf) readelf=${2:?}; shift 2 ;;
         -*) echo "check-elf: unknown option $1" >&2; exit 2 ;;
         *) elf=$1; shift ;;
@@ -92,6 +111,10 @@ while IFS= read -r lib; do
     [[ -n "$lib" ]] || continue
     if lib_allowed "$lib"; then
         ok "links $lib"
+    elif [[ "$lib" = libsukkula_ffi.so && -n "$rpath" && "$library" = 0 ]]; then
+        # The validator finds it in the package, under /usr/share/<NAME>/lib,
+        # and then wants the RPATH checked below.
+        ok "links $lib, the engine's own library, through the RPATH"
     else
         bad "links $lib, which is not on Harbour's allowed list (Cannot link to shared library)"
     fi
@@ -186,6 +209,25 @@ if [[ "$only_main" = 1 ]]; then
     fi
 fi
 
+if [[ "$exports_only_set" = 1 ]]; then
+    # Defined, bound GLOBAL, WEAK or UNIQUE, and visible, as above; and no
+    # version nodes (an unversioned library defines none).
+    exported=$("$readelf" -W --dyn-syms "$elf" 2>/dev/null |
+        awk '$1 ~ /^[0-9]+:$/ {
+                 line = $0; sub(/[[:space:]]+\([0-9]+\)[[:space:]]*$/, "", line)
+                 n = split(line, f, " ")
+                 if ((f[5] == "GLOBAL" || f[5] == "WEAK" || f[5] == "UNIQUE") &&
+                     f[6] != "HIDDEN" && f[6] != "INTERNAL" && f[n - 1] != "UND") print f[n]
+             }' |
+        sed 's/@.*//' | sort -u)
+    want=$(tr -s '[:space:]' '\n' <<< "$exports_only" | sed '/^$/d' | sort -u)
+    if [[ "$exported" = "$want" ]]; then
+        ok "exports exactly: $(tr '\n' ' ' <<< "$want")"
+    else
+        bad "exports $(tr '\n' ' ' <<< "$exported")-- not exactly $(tr '\n' ' ' <<< "$want")(crates/sukkula-ffi/exports.map)"
+    fi
+fi
+
 if [[ "$stripped" = 1 ]]; then
     if "$readelf" -SW "$elf" 2>/dev/null | grep -q ' \.symtab '; then
         bad "not stripped: .symtab is still there"
@@ -202,7 +244,16 @@ if grep -qE '\(FLAGS\).*BIND_NOW|\(FLAGS_1\).*NOW' <<< "$dynamic"; then
 else
     bad "lazy binding (-Wl,-z,now)"
 fi
-if grep -q 'Type:.*DYN' <<< "$header" && grep -q 'INTERP' <<< "$segments"; then
+if [[ "$library" = 1 ]]; then
+    soname=$(sed -n 's/.*(SONAME).*Library soname: \[\(.*\)\]/\1/p' <<< "$dynamic")
+    if ! grep -q 'Type:.*DYN' <<< "$header" || grep -q 'INTERP' <<< "$segments"; then
+        bad "not a shared library (ET_DYN without PT_INTERP)"
+    elif [[ "$soname" != "$(basename -- "$elf")" ]]; then
+        bad "its SONAME is '$soname', not its file name $(basename -- "$elf"): the executable would record a NEEDED the RPATH does not find"
+    else
+        ok "a shared library, SONAME $soname"
+    fi
+elif grep -q 'Type:.*DYN' <<< "$header" && grep -q 'INTERP' <<< "$segments"; then
     ok "PIE"
 else
     bad "not a position-independent executable (-pie)"
@@ -213,8 +264,17 @@ if grep -E 'GNU_STACK' <<< "$segments" | grep -q 'RWE'; then
 else
     ok "non-executable stack"
 fi
-if grep -qE '\((RPATH|RUNPATH)\)' <<< "$dynamic"; then
-    bad "carries an RPATH/RUNPATH: $(grep -E '\((RPATH|RUNPATH)\)' <<< "$dynamic")"
+# The one RPATH asked for, as DT_RPATH -- the validator reads "Library
+# rpath:" and nothing else, so a RUNPATH would fail it -- or none.
+got_rpath=$(sed -n 's/.*(RPATH).*Library rpath: \[\(.*\)\]/\1/p' <<< "$dynamic")
+if grep -q '(RUNPATH)' <<< "$dynamic"; then
+    bad "carries a RUNPATH, which Jolla's validator does not read: $(grep '(RUNPATH)' <<< "$dynamic") (-Wl,--disable-new-dtags)"
+elif [[ -n "$rpath" && "$got_rpath" = "$rpath" ]]; then
+    ok "RPATH $rpath, and nothing else"
+elif [[ -n "$rpath" ]]; then
+    bad "its RPATH is '${got_rpath}', not exactly $rpath"
+elif [[ -n "$got_rpath" ]]; then
+    bad "carries an RPATH: $got_rpath"
 else
     ok "no RPATH or RUNPATH"
 fi
@@ -229,7 +289,21 @@ fi
 # library's thread-locals instead.
 TLS_RESERVE_MARKER='sukkula: bionic TLS slots 2..7, tp+16 to tp+63.'
 tls=$(awk '$1 == "TLS" { print $2, $5, $NF }' <<< "$segments")
-if [[ -z "$tls" ]]; then
+if [[ "$library" = 1 ]]; then
+    # A library's thread-locals, when the executable that needs it is
+    # dlopen()ed by the booster: a TLS descriptor or __tls_get_addr finds
+    # them wherever glibc allocates them, but the static models (a TPREL
+    # relocation, which STATIC_TLS announces) need a fixed offset that a
+    # dlopen()ed library may not get.
+    if grep -qE '\(FLAGS\).*STATIC_TLS' <<< "$dynamic" ||
+        "$readelf" -rW "$elf" 2>/dev/null | grep -q 'TLS_TPREL'; then
+        bad "uses the static TLS model (STATIC_TLS, TPREL relocations): its thread-locals need a fixed offset a dlopen()ed library may not get"
+    elif [[ -z "$tls" ]]; then
+        ok "no thread-locals"
+    else
+        ok "thread-locals reached through TLS descriptors, wherever glibc puts them"
+    fi
+elif [[ -z "$tls" ]]; then
     ok "no thread-locals of its own (bionic's TLS slots stay clear)"
 else
     read -r tls_offset tls_filesz tls_align <<< "$tls"

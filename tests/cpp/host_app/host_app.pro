@@ -9,8 +9,8 @@ TARGET = harbour-sukkula-host
 QT = core gui qml quick
 include(../common.pri)
 include(../../../src/hardening.pri)
-# What the SDK's sailfishapp feature adds (sailfishapp.prf, for apps that
-# ship private libraries); hardening.pri has to keep it out of the binary.
+# What the SDK's sailfishapp feature adds (sailfishapp.prf), for the app's
+# own libraries; hardening.pri writes it as DT_RPATH.
 QMAKE_RPATHDIR += /usr/share/$$TARGET/lib
 
 # Our <sailfishapp.h>, ahead of anything else of that name.

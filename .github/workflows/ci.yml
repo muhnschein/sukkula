@@ -266,12 +266,14 @@ jobs:
             echo "::error::no interop test ran"; exit 1; }
 
   # The engine cross-compiled for aarch64 on every pull request: no x86-only
-  # code, no host-only C dependency, the four entry points exported, and a
-  # probe linked against it within Harbour's libraries and the glibc every
-  # accepted phone has. Ubuntu's cross GCC here; the package itself is
-  # built with the SDK's, in rpm.yml (docs/BUILDING.md says why both).
-  # Then that engine run under qemu-aarch64 on a thread whose bionic TLS
-  # slots the GL stack has written (src/tls_reserve.c).
+  # code, no host-only C dependency, linked into its library with the four
+  # entry points its only exports, and a probe linked against that, all
+  # within Harbour's libraries and the glibc every accepted phone has.
+  # Ubuntu's cross GCC here; the package itself is built with the SDK's, in
+  # rpm.yml (docs/BUILDING.md says why both). Then that engine run under
+  # qemu-aarch64 on a thread whose bionic TLS slots the GL stack has
+  # written, executed and dlopen()ed as the booster does (docs/FFI.md,
+  # Linking).
   cross:
     runs-on: ubuntu-latest
     timeout-minutes: 30

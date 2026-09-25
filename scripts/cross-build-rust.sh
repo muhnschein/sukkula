@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Cross-build the Rust engine for the phone: libsukkula_ffi.a, aarch64.
+# Cross-build the Rust engine for the phone: libsukkula_ffi.so, aarch64.
 #
 #     scripts/cross-build-rust.sh --sdk <target-sysroot>
 #     scripts/cross-build-rust.sh --host
@@ -29,12 +29,16 @@
 # links the probe against a stand-in with libdbus-1's soname and symbol
 # version, made here from the symbols the engine actually needs.
 #
-# Either way the output is where the qmake project and the spec expect it,
-# target/aarch64-unknown-linux-gnu/release/libsukkula_ffi.a, and it is then
-# proved: its four C entry points exported, every native library it needs
-# on Harbour's allowed list, and a probe executable linked against it the
-# way the shell links it -- whose glibc symbol versions, NEEDED libraries
-# and hardening ci/check-elf.sh reads back.
+# Either way cargo builds the static archive,
+# target/aarch64-unknown-linux-gnu/release/libsukkula_ffi.a, and this links
+# it into the private shared library the package ships, libsukkula_ffi.so
+# beside it, which is where the qmake project and the spec expect it
+# (docs/FFI.md, Linking, says why a library and not the archive in the
+# binary). Both are then proved: the archive's four C entry points there
+# and every native library it needs on Harbour's allowed list; the
+# library's exports, NEEDED libraries, glibc symbol versions, hardening
+# and TLS model, and a probe executable linked against it the way the
+# shell links it, read back by ci/check-elf.sh.
 #
 #   SUKKULA_GLIBC_CEILING  the newest glibc a symbol may need. Default: the
 #                    target sysroot's own glibc with --sdk; with --host,
@@ -47,6 +51,10 @@ cd "$ROOT"
 
 TRIPLE=aarch64-unknown-linux-gnu
 LIB="target/$TRIPLE/release/libsukkula_ffi.a"
+SO="target/$TRIPLE/release/libsukkula_ffi.so"
+# Where the package installs the library, and so the one RPATH the shell
+# carries (sailfishapp.prf sets it; Harbour allows exactly this).
+LIBDIR=/usr/share/harbour-sukkula/lib
 HEADER="crates/sukkula-ffi/include/sukkula.h"
 
 usage() {
@@ -242,20 +250,19 @@ for sym in sukkula_start sukkula_command sukkula_stop sukkula_version; do
 done
 [[ "$status" -eq 0 ]] || fail "the archive does not satisfy the shell's link; see above"
 
-# -- the probe ----------------------------------------------------------------
+# -- the library --------------------------------------------------------------
 #
-# Linked the way harbour-sukkula.pro links the shell: PIE, RELRO, BIND_NOW,
-# as-needed, the archive and the libraries rustc named, and the export
-# flags -- the -rdynamic the SDK's sailfishapp feature adds, and
-# src/hardening.pri's dynamic list and --exclude-libs,ALL that hold the
-# exports to main() anyway. A symbol the device glibc lacks fails here, or
-# shows up as a version above the ceiling; a symbol of the engine's that
-# reaches .dynsym fails --only-main, on every pull request, against the
-# real archive rather than a stand-in.
+# The archive linked into libsukkula_ffi.so, which the package installs in
+# $LIBDIR. The executable is dlopen()ed by the silica-qt5 booster, and an
+# executable's thread-locals are resolved to fixed offsets from the thread
+# pointer, which a dlopen()ed one does not get: linked into it, the
+# engine's would land on the booster's own. A shared library's are reached
+# through TLS descriptors, wherever glibc puts them.
+
 if [[ "$mode" = host && "$stub_dbus" = 1 ]]; then
     # The stand-in: every dbus_* symbol the archive needs, under libdbus-1's
-    # soname and its LIBDBUS_1_3 version node, so the probe's version needs
-    # read as the real link's would.
+    # soname and its LIBDBUS_1_3 version node, so the library's version
+    # needs read as the real link's would.
     syms=$("$NM" -u "$LIB" 2>/dev/null | awk '{print $NF}' | grep '^dbus_' | sort -u || true)
     {
         for s in $syms; do echo "void $s(void) {}"; done
@@ -265,12 +272,40 @@ if [[ "$mode" = host && "$stub_dbus" = 1 ]]; then
     "$CC" -shared -fPIC -Wl,-soname,libdbus-1.so.3 -Wl,--version-script="$BINDIR/dbus-stub.map" \
         -o "$BINDIR/lib/libdbus-1.so.3" "$BINDIR/dbus-stub.c"
     ln -sf libdbus-1.so.3 "$BINDIR/lib/libdbus-1.so"
-    LINKDIRS="-L$BINDIR/lib"
+    LINKDIRS="-L$BINDIR/lib -Wl,-rpath-link,$BINDIR/lib"
     echo "-- libdbus-1: a stand-in with $(wc -w <<< "$syms") symbol(s); Ubuntu has no arm64 libdbus-1 here"
 fi
 
+# The four entry points are pulled out of the archive with -u and are the
+# only exports (crates/sukkula-ffi/exports.map). The link is RELRO,
+# BIND_NOW, as-needed, with a non-executable stack, every symbol resolved
+# (-z defs), and stripped.
+# shellcheck disable=SC2086 # word lists on purpose
+"$CC" $SYSFLAGS $HARDEN -shared -o "$SO" -Wl,-soname,libsukkula_ffi.so \
+    -Wl,-u,sukkula_start -Wl,-u,sukkula_command -Wl,-u,sukkula_stop -Wl,-u,sukkula_version \
+    -Wl,--version-script="$ROOT/crates/sukkula-ffi/exports.map" \
+    $LINKDIRS -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack -Wl,-z,defs -Wl,--as-needed -s \
+    "$LIB" $native || fail "the engine does not link into $SO"
+
+echo
+echo "== $SO ($(du -h "$SO" | cut -f1)), as the package ships it =="
+"$ROOT/ci/check-elf.sh" --readelf "$READELF" --glibc-ceiling "$CEILING" --library --stripped \
+    --exports-only "sukkula_start sukkula_command sukkula_stop sukkula_version" "$SO" ||
+    fail "the library needs more than the phone provides, or exports more than the C ABI; see above"
+
+# -- the probe ----------------------------------------------------------------
+#
+# An executable linked the way harbour-sukkula.pro links the shell: PIE,
+# RELRO, BIND_NOW, as-needed, against the library with the RPATH
+# sailfishapp.prf sets (as DT_RPATH, which Jolla's validator reads:
+# src/hardening.pri), and the export flags -- the -rdynamic the SDK's
+# sailfishapp feature adds, and src/hardening.pri's dynamic list and
+# --exclude-libs,ALL, which hold the exports to main() anyway. And with
+# src/tls_reserve.c first, as the shell has it: its thread-local is the
+# only one in the executable and takes bionic's TLS slots, which
+# check-elf.sh reads back.
 cat > "$BINDIR/probe.c" <<'EOF'
-/* Every entry point of include/sukkula.h, so the whole engine is linked. */
+/* Every entry point of include/sukkula.h, so the whole engine is needed. */
 #include <stddef.h>
 #include "sukkula.h"
 static void on_event(const char *event_json, void *userdata) { (void)event_json; (void)userdata; }
@@ -282,21 +317,19 @@ int main(void) {
 }
 EOF
 probe="target/$TRIPLE/release/sukkula-link-probe"
-# src/tls_reserve.c first, as harbour-sukkula.pro links it: the engine's
-# thread-locals go in after the 48 bytes of bionic's TLS slots, which
-# check-elf.sh reads back.
 # shellcheck disable=SC2086 # word lists on purpose
 "$CC" $SYSFLAGS $HARDEN -fPIE -pie -I"$(dirname "$HEADER")" -I"$ROOT/src" -o "$probe" \
     "$ROOT/src/tls_reserve.c" "$BINDIR/probe.c" \
     $LINKDIRS -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack -Wl,--as-needed \
     -rdynamic -Wl,--dynamic-list="$ROOT/src/dynamic.list" -Wl,--exclude-libs,ALL \
-    "$LIB" $native || fail "the probe does not link against the engine"
+    -Wl,--disable-new-dtags -Wl,-rpath,"$LIBDIR" \
+    "$SO" || fail "the probe does not link against the engine"
 
 echo
 echo "== the probe, linked as the shell will be =="
 "$ROOT/ci/check-elf.sh" --readelf "$READELF" --glibc-ceiling "$CEILING" \
-    --libc-start-main 2.34 --main-export --only-main "$probe" ||
-    fail "the engine needs more than the phone provides, or leaks exports; see above"
+    --libc-start-main 2.34 --main-export --only-main --rpath "$LIBDIR" "$probe" ||
+    fail "the probe needs more than the phone provides, or leaks exports; see above"
 
 echo
-echo "cross-build-rust: ok -- $LIB"
+echo "cross-build-rust: ok -- $SO"

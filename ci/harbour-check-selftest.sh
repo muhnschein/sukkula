@@ -200,6 +200,8 @@ break_and_expect 1.8.8 "no filter for libdbus-1's versioned Requires" \
     'sed -i "/^%global __requires_exclude/d" $S'
 break_and_expect 1.8.8 "a filter that also drops the real libdbus-1 dependency" \
     'sed -i "s|^%global __requires_exclude.*|%global __requires_exclude ^libdbus-1.*\$|" $S'
+break_and_expect 1.8.8 "a filter that leaves the engine library's own Requires" \
+    'sed -i "s|^%global __requires_exclude.*|%global __requires_exclude ^libdbus-1[.]so[.]3[(]LIBDBUS_1_3[)].*\$|" $S'
 break_and_expect 2.7 "Nemo.Notifications imported without its package" \
     'sed -i "/^Requires:   nemo-qml-plugin-notifications-qt5\$/d" $S'
 break_and_expect 2.7 "Nemo.KeepAlive imported without its package" \
@@ -299,7 +301,7 @@ break_and_expect 1.7.3 "a missing src/main.cpp" \
 break_and_expect 1.7.3 "a project without CONFIG += sailfishapp" \
     'sed -i "s|^CONFIG += sailfishapp sailfishapp_i18n\$|CONFIG += c++17|" $P'
 break_and_expect 1.6.1 "a library Harbour does not allow" \
-    'sed -i "s|-ldbus-1 -lpthread|-ldbus-1 -lutil -lpthread|" $P'
+    'sed -i "s|-lpthread|-lutil -lpthread|" $P'
 break_and_expect 1.6.1 "QtWidgets" \
     'sed -i "s|^QT += dbus\$|QT += dbus widgets|" $P'
 break_and_expect 1.6.1 "a pkg-config library Harbour does not allow" \

@@ -27,8 +27,8 @@ QMAKE_LFLAGS += -Wl,--dynamic-list=$$PWD/dynamic.list -Wl,--exclude-libs,ALL
 # Strip at link time: the SDK's rpmbuild does not, and Harbour rejects an
 # unstripped binary. -s keeps .dynsym, so the booster still finds main().
 QMAKE_LFLAGS += -s
-# No RPATH (docs/HARBOUR.md). The SDK's sailfishapp feature adds
-# /usr/share/$$TARGET/lib to QMAKE_RPATHDIR, for apps that ship private
-# libraries; Sukkula ships none. With this empty qmake writes no -rpath at
-# all, whatever QMAKE_RPATHDIR holds (Qt's own java.prf does the same).
-QMAKE_LFLAGS_RPATH =
+# The RPATH the SDK's sailfishapp feature sets, /usr/share/$$TARGET/lib,
+# is where the engine's library is installed. Written as DT_RPATH, not
+# RUNPATH: Jolla's validator reads "Library rpath:" and nothing else, and
+# fails a package that ships a library without one (docs/HARBOUR.md).
+QMAKE_LFLAGS += -Wl,--disable-new-dtags

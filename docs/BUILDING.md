@@ -14,6 +14,8 @@ rust-toolchain.toml (1.97.1)          Sailfish SDK 5.2.0.15, aarch64
         |                                      |
   target/aarch64-unknown-linux-gnu/release/libsukkula_ffi.a
                                                |
+         SDK aarch64 GCC: -shared, the export map  -->  libsukkula_ffi.so
+                                               |
                          mb2: qmake harbour-sukkula.pro, make, strip
                                                |
                         RPMS/harbour-sukkula-<v>-<r>.aarch64.rpm
@@ -116,7 +118,11 @@ cargo test -p sukkula-engine --no-default-features --features wormhole
 
 `scripts/cross-build-rust.sh` has two routes, and both leave the library
 where the qmake project and the spec expect it,
-`target/aarch64-unknown-linux-gnu/release/libsukkula_ffi.a`.
+`target/aarch64-unknown-linux-gnu/release/libsukkula_ffi.so`. cargo builds
+the static archive beside it, and the script links that into the shared
+library with the same compiler, exporting the C ABI alone
+(`crates/sukkula-ffi/exports.map`; `docs/FFI.md`, Linking, says why a
+library).
 
 **`--sdk <target-sysroot>`, the release route.** Every package is built
 this way. The SDK's `aarch64-meego-linux-gnu-gcc` (GCC 10) compiles every
@@ -242,9 +248,11 @@ it: `%build` fails at once, with a pointer here, when the library is
 missing. It runs qmake **out of tree**, in `build-sfos/` -- qmake writes a
 `Makefile` where it runs, and the root one is the developer targets
 (`ci/packaging-lint.sh` checks). `SUKKULA_RUST_LIB` hands qmake the
-library's path; `--define "sukkula_rust_lib /elsewhere/libsukkula_ffi.a"`
-overrides it. `%install` runs qmake's install, then strips the binary
-(nothing else does; `docs/HARBOUR.md`).
+library's path; `--define "sukkula_rust_lib /elsewhere/libsukkula_ffi.so"`
+overrides it. qmake links the binary against it and installs it in
+`/usr/share/harbour-sukkula/lib`. `%install` runs qmake's install, then
+strips the binary and the library (nothing else does;
+`docs/HARBOUR.md`).
 
 Locally, with Docker and sudo:
 

@@ -2,15 +2,16 @@
 #
 # The Qt/QML shell of Sukkula, built by the Sailfish SDK (spec §3).
 #
-# Everything but the start-up shim and the bridge is the Rust static
-# library, cross-built beforehand and handed in as SUKKULA_RUST_LIB:
+# Everything but the start-up shim and the bridge is the Rust engine, a
+# private shared library cross-built beforehand (scripts/cross-build-rust.sh)
+# and handed in as SUKKULA_RUST_LIB:
 #
-#   %qmake5 SUKKULA_RUST_LIB=/path/to/libsukkula_ffi.a
+#   %qmake5 SUKKULA_RUST_LIB=/path/to/libsukkula_ffi.so
 #   make
 #   make install INSTALL_ROOT=%{buildroot}
 #
 # Installed layout (Harbour 1.2): /usr/bin/harbour-sukkula,
-# /usr/share/harbour-sukkula/{qml,translations}, the desktop file in
+# /usr/share/harbour-sukkula/{qml,translations,lib}, the desktop file in
 # /usr/share/applications and the four icon sizes under
 # /usr/share/icons/hicolor. Nothing else.
 #
@@ -35,21 +36,32 @@ SOURCES += src/tls_reserve.c src/main.cpp src/bridge.cpp
 INCLUDEPATH += $$PWD/crates/sukkula-ffi/include
 DEPENDPATH += $$PWD/crates/sukkula-ffi/include
 
-# The Rust engine: a static library cross-built for aarch64 before qmake
-# runs (the SDK's own Rust is too old, spec §3).
-isEmpty(SUKKULA_RUST_LIB): SUKKULA_RUST_LIB = $$PWD/target/aarch64-unknown-linux-gnu/release/libsukkula_ffi.a
+# The Rust engine: libsukkula_ffi.so, cross-built for aarch64 before qmake
+# runs (the SDK's own Rust is too old, spec §3), and installed where
+# Harbour lets an app keep its own libraries. The binary finds it through
+# the RPATH the SDK's sailfishapp feature sets, /usr/share/$$TARGET/lib,
+# which src/hardening.pri writes as DT_RPATH. A library and not a static
+# archive linked in here: the silica-qt5 booster dlopen()s this binary,
+# and the engine's thread-locals only work dlopen()ed from a library of
+# their own (docs/FFI.md, Linking). What the library needs from the system
+# -- libdbus-1, glibc -- it records itself.
+isEmpty(SUKKULA_RUST_LIB): SUKKULA_RUST_LIB = $$PWD/target/aarch64-unknown-linux-gnu/release/libsukkula_ffi.so
 !exists($$SUKKULA_RUST_LIB): warning("SUKKULA_RUST_LIB does not exist yet: $$SUKKULA_RUST_LIB")
 # A changed library relinks the binary; a missing one fails the build
 # with make's "No rule to make target", which names the path.
 PRE_TARGETDEPS += $$SUKKULA_RUST_LIB
-# What the static library needs from the system, all on Harbour's list:
-# the system libdbus-1 (BlueZ, never a vendored copy), and glibc. Never
-# -lutil, which rustc names and nothing uses (docs/FFI.md, Linking).
-LIBS += $$SUKKULA_RUST_LIB -ldbus-1 -lpthread -ldl -lm
+LIBS += $$SUKKULA_RUST_LIB
+engine.files = $$SUKKULA_RUST_LIB
+engine.path = /usr/share/$${TARGET}/lib
+# Installed even when qmake runs before the library exists: a package
+# without it fails the validator ("Cannot link to shared library") rather
+# than shipping a binary that cannot start.
+engine.CONFIG += no_check_exist
+INSTALLS += engine
 
 # Stack protector, fortify, PIE, full RELRO, --as-needed, main() as the
-# only export, and stripping at link: see src/hardening.pri, which the host
-# build in tests/cpp/host_app shares.
+# only export, the RPATH as DT_RPATH, and stripping at link: see
+# src/hardening.pri, which the host build in tests/cpp/host_app shares.
 include(src/hardening.pri)
 
 # Translations (spec M5): compiled from translations/*.ts by lrelease here

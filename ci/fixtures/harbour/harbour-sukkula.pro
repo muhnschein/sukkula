@@ -4,10 +4,10 @@ TARGET = harbour-sukkula
 CONFIG += sailfishapp sailfishapp_i18n
 QT += dbus
 
-isEmpty(SUKKULA_RUST_LIB): SUKKULA_RUST_LIB = $$PWD/target/aarch64-unknown-linux-gnu/release/libsukkula_ffi.a
+isEmpty(SUKKULA_RUST_LIB): SUKKULA_RUST_LIB = $$PWD/target/aarch64-unknown-linux-gnu/release/libsukkula_ffi.so
 INCLUDEPATH += $$PWD/crates/sukkula-ffi/include
 LIBS += $$SUKKULA_RUST_LIB \
-    -ldbus-1 -lpthread -ldl -lm
+    -lpthread
 
 SOURCES += src/main.cpp
 

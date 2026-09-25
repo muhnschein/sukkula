@@ -239,8 +239,10 @@ jobs:
 
       # The authority: Jolla's rpmvalidation.sh, the same script
       # `sfdk check -s harbour` runs, at the commit ci/harbour/UPSTREAM pins,
-      # plus the binary rules ci/check-elf.sh reads off the ELF (stripped,
-      # main() exported, glibc no newer than the target's, the hardening).
+      # plus the rules ci/check-elf.sh reads off the binary and the engine's
+      # library (stripped, main() exported, the C ABI alone exported, the
+      # RPATH, glibc no newer than the target's, the hardening, the TLS
+      # layout).
       # Any finding fails the job -- Sukkula waives nothing
       # (ci/harbour/waivers.conf), so a red step here is a package Harbour
       # would reject or query. After the upload, deliberately: a package

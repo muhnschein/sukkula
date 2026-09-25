@@ -77,6 +77,23 @@ cat > "$work/aligned-tls.c" <<'EOF'
 __thread long wide __attribute__((aligned(64))) = 1;
 long read_wide(void) { return wide; }
 EOF
+# The engine's library, in miniature: a thread-local, one exported entry
+# point and one that the export map keeps in; and a shell linked against
+# it the way harbour-sukkula.pro links the real one.
+cat > "$work/engine.c" <<'EOF'
+#include <unistd.h>
+static __thread long engine_state = 1;
+long sukkula_version(void) { return getpid() < 0 ? -1 : engine_state++; }
+long engine_internal(void) { return engine_state; }
+EOF
+printf '{\n    global: sukkula_version;\n    local: *;\n};\n' > "$work/engine.map"
+cat > "$work/uses-engine.c" <<'EOF'
+#include "tls_reserve.h"
+long sukkula_version(void);
+__attribute__((visibility("default"))) int main(void) {
+    return !sukkula_tls_reserved() || sukkula_version() != 1;
+}
+EOF
 
 status=0
 cases=0
@@ -90,6 +107,8 @@ build() {
         "$strip" --strip-all "$work/$name"
 }
 full="--main-export --only-main --stripped --libc-start-main 2.34 --glibc-ceiling 2.39"
+# The same for the engine's library (--library), set as $full for its cases.
+lib_full="--library --stripped --glibc-ceiling 2.39"
 # expect <pass|fail> <what> <binary> [extra check-elf options]
 expect() {
     local want=$1 what=$2 bin=$3 got
@@ -141,6 +160,31 @@ link tls-reserved "$work/tls_reserve.o" "$work/engine-tls.o"
 link tls-second "$work/engine-tls.o" "$work/tls_reserve.o"
 build tls-unreserved engine-tls-only.c "${good[@]}"
 link tls-aligned "$work/tls_reserve.o" "$work/engine-tls.o" "$work/aligned-tls.o"
+# lib <name> <soname> <flags...>: the engine's library, linked and stripped
+# as scripts/cross-build-rust.sh links it, but for the flags given.
+lib() {
+    local name=$1 soname=$2
+    shift 2
+    "$cc" -O2 -fPIC -shared -o "$work/$name" "$work/engine.c" -Wl,-soname,"$soname" \
+        -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack "$@" 2>/dev/null &&
+        "$strip" --strip-all "$work/$name"
+}
+mkdir -p "$work/lib"
+lib lib/libsukkula_ffi.so libsukkula_ffi.so -Wl,--version-script="$work/engine.map"
+lib lib-soname.so libsukkula_ffi.so -Wl,--version-script="$work/engine.map"
+lib lib-exports.so lib-exports.so
+lib lib-static-tls.so lib-static-tls.so -ftls-model=initial-exec -Wl,--version-script="$work/engine.map"
+lib lib-execstack.so lib-execstack.so -Wl,--version-script="$work/engine.map" -Wl,-z,execstack
+# The shell against it: the RPATH as DT_RPATH, as a RUNPATH, and missing.
+shell() {
+    local name=$1
+    shift
+    link "$name" "$work/tls_reserve.o" "$work/uses-engine.c" -I"$work" -L"$work/lib" -lsukkula_ffi "$@"
+}
+shell shell-rpath -Wl,--disable-new-dtags -Wl,-rpath,/usr/share/harbour-sukkula/lib
+shell shell-runpath -Wl,--enable-new-dtags -Wl,-rpath,/usr/share/harbour-sukkula/lib
+shell shell-two-rpaths -Wl,--disable-new-dtags -Wl,-rpath,/usr/share/harbour-sukkula/lib:/opt/lib
+shell shell-no-rpath
 
 expect pass "a binary built the way the package is" good
 expect fail "a binary that was not stripped" unstripped
@@ -160,6 +204,22 @@ expect pass "thread-locals behind the reserve for bionic's TLS slots" tls-reserv
 expect fail "thread-locals linked ahead of that reserve" tls-second
 expect fail "thread-locals and no reserve" tls-unreserved
 expect fail "a TLS segment aligned past tp+16" tls-aligned
+engine_rpath=(--rpath /usr/share/harbour-sukkula/lib)
+expect pass "the shell against the engine's library, RPATH as DT_RPATH" shell-rpath "${engine_rpath[@]}"
+expect fail "the same with a RUNPATH, which the validator does not read" shell-runpath "${engine_rpath[@]}"
+expect fail "an RPATH beyond the engine's directory" shell-two-rpaths "${engine_rpath[@]}"
+expect fail "the engine's library needed, and no RPATH to find it" shell-no-rpath "${engine_rpath[@]}"
+expect fail "the engine's library needed, and no RPATH asked for" shell-rpath
+exe_full=$full
+full=$lib_full
+only_abi=(--exports-only sukkula_version)
+expect pass "the engine's library, linked as the package's is" lib/libsukkula_ffi.so "${only_abi[@]}"
+expect fail "a library whose SONAME is not its file name" lib-soname.so "${only_abi[@]}"
+expect fail "a library exporting beyond its export map" lib-exports.so "${only_abi[@]}"
+expect fail "a library on the static TLS model" lib-static-tls.so "${only_abi[@]}"
+expect fail "a library with an executable stack" lib-execstack.so "${only_abi[@]}"
+expect fail "an executable checked as a library" good "${only_abi[@]}"
+full=$exe_full
 expect fail "a glibc newer than the ceiling" good --glibc-ceiling 2.17
 expect fail "the wrong __libc_start_main version" good --libc-start-main 2.17
 cases=$((cases + 1))

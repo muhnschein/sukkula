@@ -10,10 +10,12 @@
 #      offscreen on the real qml/ with qml-stubs/: no Qt warning, and the
 #      Finnish catalogue loads through main.cpp's own translator;
 #   3. that binary's ELF checks: main() is the only export, PIE, full
-#      RELRO, stripped, and only libraries on Harbour's list recorded;
+#      RELRO, stripped, the one RPATH as DT_RPATH, and only libraries on
+#      Harbour's list recorded;
 #   4. harbour-sukkula.pro itself, built with a stand-in of the SDK's
-#      sailfishapp feature and installed with INSTALL_ROOT, must install
-#      exactly the Harbour layout.
+#      sailfishapp feature against an engine library linked as
+#      scripts/cross-build-rust.sh links the phone's, and installed with
+#      INSTALL_ROOT, must install exactly the Harbour layout.
 #
 # Needs: qtbase5-dev, qtdeclarative5-dev, qml-module-qtquick2,
 # qttools5-dev-tools (lrelease), g++ with libasan/libubsan, make,
@@ -68,8 +70,9 @@ engines=stub
 [ "$engine" = rust ] && engines="stub rust"
 
 # What Harbour reads from a binary (1.6.1, 1.7): main() the only dynamic
-# export, PIE, full RELRO, stripped, and only allowed libraries recorded.
-elf_checks() { # binary label
+# export, PIE, full RELRO, stripped, and only allowed libraries recorded;
+# and the RPATH sailfishapp.prf sets, as DT_RPATH (src/hardening.pri).
+elf_checks() { # binary label rpath
     before=$status
     # The C runtime's and the linker's own symbols, which -rdynamic (the
     # SDK's sailfishapp feature passes it) exports from every binary, are
@@ -82,9 +85,11 @@ elf_checks() { # binary label
     readelf -d "$1" | grep -q 'BIND_NOW' || fail "$2: no BIND_NOW (-z now)"
     readelf -lW "$1" | grep -q 'GNU_RELRO' || fail "$2: no GNU_RELRO segment"
     readelf -hW "$1" | grep -q 'DYN' || fail "$2: not a position-independent executable"
-    if readelf -d "$1" | grep -qE '\((RPATH|RUNPATH)\)'; then
-        fail "$2: carries an RPATH/RUNPATH"
+    if readelf -d "$1" | grep -q '(RUNPATH)'; then
+        fail "$2: carries a RUNPATH, which Jolla's validator does not read (-Wl,--disable-new-dtags)"
     fi
+    got_rpath=$(readelf -d "$1" | sed -n 's/.*(RPATH).*\[\(.*\)\]/\1/p')
+    [ "$got_rpath" = "$3" ] || fail "$2: its RPATH is '$got_rpath', not $3"
     if readelf -SW "$1" | grep -q ' \.symtab '; then
         fail "$2: not stripped"
     fi
@@ -101,6 +106,8 @@ elf_checks() { # binary label
         case $lib in
             libQt5Core.so.5|libQt5Gui.so.5|libQt5Qml.so.5|libQt5Quick.so.5|libQt5DBus.so.5) ;;
             libsailfishapp.so.1|libmdeclarativecache5.so.0|libdbus-1.so.3|libz.so.1) ;;
+            # The engine's own library, found through the RPATH.
+            libsukkula_ffi.so) ;;
             libc.so.6|libm.so.6|libdl.so.2|libpthread.so.0|librt.so.1|libgcc_s.so.1|libstdc++.so.6) ;;
             # The dynamic loader, for __tls_get_addr (the Rust library's
             # thread-locals): ld-linux-aarch64.so.1 is on Harbour's list,
@@ -166,7 +173,7 @@ for e in $engines; do
 
 
     # 3. What Harbour reads from the binary.
-    elf_checks "$app" "host app, $e engine"
+    elf_checks "$app" "host app, $e engine" /usr/share/harbour-sukkula-host/lib
 done
 
 # 4. The project file's install layout. Built fresh each time: which
@@ -174,19 +181,34 @@ done
 dir=$build/pro
 rm -rf "$dir"
 mkdir -p "$dir"
-cc -c -O2 -std=c11 -D_POSIX_C_SOURCE=200809L -fPIC -I"$root/crates/sukkula-ffi/include" \
-    "$root/tests/cpp/stub/sukkula_stub.c" -o "$dir/sukkula_stub.o"
-ar rcs "$dir/libsukkula_stub.a" "$dir/sukkula_stub.o"
-# The real archive when there is one: thousands of Rust symbols that
-# -rdynamic must not export.
-pro_lib=$dir/libsukkula_stub.a
-[ "$engine" = rust ] && pro_lib=$rust_lib
+mkdir -p "$dir/engine"
+pro_lib=$dir/engine/libsukkula_ffi.so
+abi="sukkula_command sukkula_start sukkula_stop sukkula_version"
+if [ "$engine" = rust ]; then
+    # The real archive, linked into the library the way
+    # scripts/cross-build-rust.sh links the phone's: the four entry points
+    # pulled in, the export map, every symbol resolved.
+    cc -shared -o "$pro_lib" -Wl,-soname,libsukkula_ffi.so \
+        -Wl,-u,sukkula_start -Wl,-u,sukkula_command -Wl,-u,sukkula_stop -Wl,-u,sukkula_version \
+        -Wl,--version-script="$root/crates/sukkula-ffi/exports.map" \
+        -Wl,-z,relro -Wl,-z,now -Wl,-z,defs -Wl,--as-needed \
+        "$rust_lib" -ldbus-1 -lgcc_s -lutil -lrt -lpthread -lm -ldl -lc
+    got_abi=$(readelf --dyn-syms -W "$pro_lib" | awk '$5 == "GLOBAL" && $7 != "UND" { print $8 }' |
+        sed 's/@.*//' | sort -u | tr '\n' ' ')
+    [ "$got_abi" = "$abi " ] ||
+        fail "the engine's library exports '$got_abi', not the C ABI alone (crates/sukkula-ffi/exports.map)"
+else
+    cc -c -O2 -std=c11 -D_POSIX_C_SOURCE=200809L -fPIC -I"$root/crates/sukkula-ffi/include" \
+        "$root/tests/cpp/stub/sukkula_stub.c" -o "$dir/sukkula_stub.o"
+    cc -shared -o "$pro_lib" -Wl,-soname,libsukkula_ffi.so "$dir/sukkula_stub.o" -lpthread
+fi
 if (cd "$dir" && QMAKEFEATURES="$root/tests/cpp/sailfishapp/features" \
         "$qmake" "$root/harbour-sukkula.pro" SUKKULA_RUST_LIB="$pro_lib" >/dev/null \
         && make -s >/dev/null && rm -rf "$dir/root" && make -s install INSTALL_ROOT="$dir/root" >/dev/null); then
     got=$(cd "$dir/root" && find . -type f | sed 's|^\./|/|' | sort)
     want=$( (
         printf '%s\n' /usr/bin/harbour-sukkula /usr/share/applications/harbour-sukkula.desktop
+        printf '%s\n' /usr/share/harbour-sukkula/lib/libsukkula_ffi.so
         for size in 86x86 108x108 128x128 172x172; do
             printf '/usr/share/icons/hicolor/%s/apps/harbour-sukkula.png\n' "$size"
         done
@@ -207,7 +229,8 @@ if (cd "$dir" && QMAKEFEATURES="$root/tests/cpp/sailfishapp/features" \
         fail "group- or world-writable: $f"
     done
     # Linked as the SDK links it, -rdynamic included: still main() alone.
-    elf_checks "$dir/root/usr/bin/harbour-sukkula" "harbour-sukkula.pro build"
+    elf_checks "$dir/root/usr/bin/harbour-sukkula" "harbour-sukkula.pro build" \
+        /usr/share/harbour-sukkula/lib
 else
     fail "harbour-sukkula.pro did not build or install on the host"
 fi

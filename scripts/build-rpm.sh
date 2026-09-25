@@ -175,7 +175,7 @@ engine() {
 # for a version, finds no tags, and stops before writing the spec.
 package() {
     local image=$1 uid gid home builddir
-    [[ -f "target/aarch64-unknown-linux-gnu/release/libsukkula_ffi.a" ]] ||
+    [[ -f "target/aarch64-unknown-linux-gnu/release/libsukkula_ffi.so" ]] ||
         fail "no engine; run '$0 engine <dir>' first"
     uid=$(docker run --rm "$image" id -u)
     gid=$(docker run --rm "$image" id -g)
@@ -215,9 +215,15 @@ check() {
         ceiling="--glibc-ceiling $major.$minor"
     fi
     local status=0
+    # The binary, which finds the engine's library through its one RPATH,
+    # and the library, which exports the C ABI and nothing else.
     # shellcheck disable=SC2086 # $ceiling is one option and its value, or nothing
     "$ROOT/ci/check-elf.sh" --main-export --only-main --stripped --libc-start-main 2.34 $ceiling \
-        "$unpack/usr/bin/$NAME" || status=1
+        --rpath "/usr/share/$NAME/lib" "$unpack/usr/bin/$NAME" || status=1
+    # shellcheck disable=SC2086
+    "$ROOT/ci/check-elf.sh" --library --stripped $ceiling \
+        --exports-only "sukkula_start sukkula_command sukkula_stop sukkula_version" \
+        "$unpack/usr/share/$NAME/lib/libsukkula_ffi.so" || status=1
     rm -rf "$unpack"
     "$ROOT/ci/harbour-validate-rpm.sh" "$rpm" || status=1
     return "$status"
