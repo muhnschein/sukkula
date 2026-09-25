@@ -5,6 +5,8 @@
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -100,6 +102,114 @@ pub(crate) async fn lib_until<T>(
         Ok(Ok(v)) => Ok(v),
         Ok(Err(Panicked)) => Err(panicked()),
         Err(_) => Err(timed_out(what)),
+    }
+}
+
+// ------------------------------------------------- off the runtime
+
+/// Most library futures running on threads of their own at once, in the
+/// whole process. Each is a mailbox connection being set up; an engine has
+/// at most [`super::MAX_CONNECTING_RECEIVES`] receives and eight sends
+/// doing that, so this is only reached by threads a cancel left finishing
+/// a mint.
+pub(crate) const MAX_OFF_RUNTIME: usize = 16;
+
+/// Threads [`off_runtime`] has running now.
+static OFF_RUNTIME: AtomicUsize = AtomicUsize::new(0);
+
+/// Runs a library future on a thread of its own, waiting for it at most
+/// `limit`, and catching its panics.
+///
+/// For the library's `MailboxConnection::create` and `connect`: they mint
+/// whatever hashcash the server asks for (up to the guard's 20 bits) in a
+/// loop that never yields (W1). On an engine worker -- there are two -- a
+/// mint would stall every protocol and timer for its whole length, and no
+/// timeout or cancel could end the wait, since both need the future to be
+/// polled again. Here the caller waits on a channel instead: `limit`, a
+/// cancel (dropping this future) and the engine stopping all end the wait
+/// at once, and none of them waits for the thread, which the runtime does
+/// not know about. The thread is told to stop as the wait ends and does so
+/// at its next poll: after the mint, if one is running (the guard is gone
+/// by then, so the library fails at its next read or write). The mint is
+/// bounded by the guard's 20 bits.
+///
+/// The thread logs where its caller does (S9).
+pub(crate) async fn off_runtime<T: Send + 'static>(
+    limit: Duration,
+    what: &'static str,
+    fut: impl Future<Output = T> + Send + 'static,
+) -> Result<T, ErrorInfo> {
+    if !crate::slots::take(&OFF_RUNTIME, MAX_OFF_RUNTIME) {
+        return Err(ErrorInfo::new(
+            ErrorCode::TooLarge,
+            "too many wormhole connections are starting",
+        ));
+    }
+    let slot = OffRuntimeSlot;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let stop = CancellationToken::new();
+    let stopped = stop.clone();
+    let log = tracing::dispatcher::get_default(Clone::clone);
+    let spawned = std::thread::Builder::new()
+        .name("sukkula-mailbox".to_owned())
+        .spawn(move || {
+            let _slot = slot;
+            let _log = tracing::dispatcher::set_default(&log);
+            let ran = block_on(stopped.run_until_cancelled(CatchUnwind::new(fut)));
+            if let Some(result) = ran {
+                // Nobody waiting any more: the result is dropped here.
+                let _ = tx.send(result);
+            }
+        });
+    if spawned.is_err() {
+        return Err(ErrorInfo::new(
+            ErrorCode::Internal,
+            "no thread for the wormhole mailbox",
+        ));
+    }
+    // Whichever way this wait ends -- a result, `limit`, or this future
+    // being dropped by a cancel or the engine stopping -- the thread is
+    // told to stop.
+    let _stop = stop.drop_guard();
+    match tokio::time::timeout(limit, rx).await {
+        Ok(Ok(Ok(v))) => Ok(v),
+        Ok(Ok(Err(Panicked)) | Err(_)) => Err(panicked()),
+        Err(_) => Err(timed_out(what)),
+    }
+}
+
+/// An [`off_runtime`] slot, given back when the thread ends.
+struct OffRuntimeSlot;
+
+impl Drop for OffRuntimeSlot {
+    fn drop(&mut self) {
+        crate::slots::give_back(&OFF_RUNTIME);
+    }
+}
+
+/// Polls `fut` to completion on this thread, parking between polls. The
+/// library's I/O is async-io's, whose reactor thread wakes us; nothing
+/// here needs tokio.
+fn block_on<F: Future>(fut: F) -> F::Output {
+    struct Unpark(std::thread::Thread);
+    impl std::task::Wake for Unpark {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+    let waker = std::task::Waker::from(Arc::new(Unpark(std::thread::current())));
+    let mut cx = Context::from_waker(&waker);
+    let mut fut = std::pin::pin!(fut);
+    loop {
+        if let Poll::Ready(v) = fut.as_mut().poll(&mut cx) {
+            return v;
+        }
+        // A wake before this park makes it return at once; a spurious
+        // return only costs a poll.
+        std::thread::park();
     }
 }
 
@@ -379,6 +489,105 @@ mod tests {
         assert_eq!(r, Ok(7));
     }
 
+    /// Holds its thread without yielding, as the library's hashcash mint
+    /// does, until released or for three seconds.
+    async fn stuck(release: std::sync::mpsc::Receiver<()>) -> u8 {
+        let _ = release.recv_timeout(Duration::from_secs(3));
+        7
+    }
+
+    // One test, not several: the thread count is process-wide.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn a_future_that_never_yields_holds_up_neither_the_runtime_nor_its_caller() {
+        use std::sync::atomic::Ordering;
+        use std::time::Instant;
+
+        // The wait ends at its limit, with the thread still stuck, and the
+        // runtime's only worker is free all along.
+        let (release, rx) = std::sync::mpsc::channel();
+        let ticker = tokio::spawn(async {
+            let t = Instant::now();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            t.elapsed()
+        });
+        let started = Instant::now();
+        let r = off_runtime(Duration::from_millis(300), "the test", stuck(rx)).await;
+        assert_eq!(r, Err(timed_out("the test")));
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "held up by the future"
+        );
+        assert!(
+            ticker.await.unwrap() < Duration::from_millis(250),
+            "the worker was held"
+        );
+        drop(release);
+
+        // A cancel (the transfer's, or the engine stopping) ends it too.
+        let (release, rx) = std::sync::mpsc::channel();
+        let token = CancellationToken::new();
+        let cancel = token.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            cancel.cancel();
+        });
+        let started = Instant::now();
+        let r = cancellable(
+            &token,
+            off_runtime(Duration::from_secs(20), "the test", stuck(rx)),
+        )
+        .await;
+        assert_eq!(r, Err(cancelled()));
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "held up by the future"
+        );
+        drop(release);
+
+        // Results come back, panics are caught.
+        let r = off_runtime(Duration::from_secs(5), "the test", async { 9u8 }).await;
+        assert_eq!(r, Ok(9));
+        let r = off_runtime(Duration::from_secs(5), "the test", async {
+            let v: Vec<u8> = Vec::new();
+            #[allow(clippy::indexing_slicing)]
+            v[3]
+        })
+        .await;
+        assert_eq!(r, Err(panicked()));
+
+        // Threads are capped, and their slots come back as they end.
+        let settle = |n: usize| async move {
+            let start = Instant::now();
+            while OFF_RUNTIME.load(Ordering::SeqCst) != n {
+                assert!(
+                    start.elapsed() < Duration::from_secs(10),
+                    "never {n} threads"
+                );
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        };
+        settle(0).await;
+        let mut releases = Vec::new();
+        let mut waits = Vec::new();
+        for _ in 0..MAX_OFF_RUNTIME {
+            let (release, rx) = std::sync::mpsc::channel();
+            releases.push(release);
+            waits.push(tokio::spawn(off_runtime(
+                Duration::from_secs(20),
+                "the test",
+                stuck(rx),
+            )));
+        }
+        settle(MAX_OFF_RUNTIME).await;
+        let r = off_runtime(Duration::from_secs(5), "the test", async { 1u8 }).await;
+        assert_eq!(r.unwrap_err().code, ErrorCode::TooLarge);
+        drop(releases);
+        for w in waits {
+            assert_eq!(w.await.unwrap(), Ok(7));
+        }
+        settle(0).await;
+    }
+
     #[tokio::test]
     async fn a_panic_after_a_pending_poll_is_caught_too() {
         let r = CatchUnwind::new(async {
@@ -435,6 +644,7 @@ mod tests {
         let s = Servers::from_settings(&WormholeSettings {
             mailbox_url: Some("wss://m.example/v1".into()),
             relay_url: Some("tcp://r.example:9".into()),
+            enabled: true, // CONTRACT: Settings.wormhole.enabled (F-C1)
         })
         .unwrap();
         assert!(s.custom_mailbox);
@@ -443,6 +653,7 @@ mod tests {
             Servers::from_settings(&WormholeSettings {
                 mailbox_url: Some("wss://m.example/v1#x".into()),
                 relay_url: None,
+                enabled: true, // CONTRACT: Settings.wormhole.enabled (F-C1)
             })
             .unwrap_err()
             .code,

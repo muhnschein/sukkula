@@ -1,0 +1,79 @@
+From daaec39b2dc8a9ffeb2a9c9e6a26e14b9346e7ea Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 25 Sep 2026 09:28:01 +0000
+Subject: [PATCH 5/5] WIP: LocalSend rows of SECURITY.md and the L3 row for the
+ review fixes
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01ENZSCiAud5Vs29ugEacpyR
+---
+ crates/sukkula-engine/src/localsend/mod.rs    |  2 +-
+ crates/sukkula-engine/src/localsend/server.rs |  7 ++++---
+ docs/SECURITY.md                              | 13 +++++++++----
+ 3 files changed, 14 insertions(+), 8 deletions(-)
+
+diff --git a/crates/sukkula-engine/src/localsend/mod.rs b/crates/sukkula-engine/src/localsend/mod.rs
+index 28b161f..2b0bbb9 100644
+--- a/crates/sukkula-engine/src/localsend/mod.rs
++++ b/crates/sukkula-engine/src/localsend/mod.rs
+@@ -16,7 +16,7 @@
+ //! | --- | --- | --- | --- |
+ //! | L1 | `http::server` has no peer-address hook; `start_with_port` binds `0.0.0.0`/`[::]` and serves everyone | S7 cannot hold: any address is TLS-handshaked and parsed | `server` checks the address at accept, before the handshake |
+ //! | L2 | `CollectToJson` collects `register`, `prepare-upload` and `v3/nonce` bodies with no size limit (`internal::show` too) | Memory exhaustion from any peer, before consent, before any event | at most 64 KiB, idle timeout and deadline, then parse |
+-//! | L3 | No TLS handshake timeout, no connection limit; hyper-util's auto builder without a timer, so no header timeout | Slow-loris on handshake or head holds a task and a descriptor forever | handshake deadline, header timeout, 32 connections, 8 per address, connect rate per address |
++//! | L3 | No TLS handshake timeout, no connection limit; hyper-util's auto builder without a timer, so no header timeout | Slow-loris on handshake or head -- or a peer that stops reading its answers -- holds a task and a descriptor forever | handshake deadline, header timeout, write deadline, a lifetime for connections outside the session, a small send buffer, 32 connections, 8 per address, connect rate per address |
+ //! | L4 | `http::client` reads response bodies whole (`json()`, `text()` in `into_error`) | A hostile receiver -- or any announcer, see L5 -- makes us buffer without limit | responses capped at 64 KiB |
+ //! | L5 | `discovery` answers every announcement, from any address, unthrottled, over plain HTTP if announced | Plain-HTTP traffic (F-LS2), unbounded outgoing connections, S7 | `discovery::screen` first; answers pinned, 4 at a time |
+ //! | L6 | PIN lockout after 3 failures per address, never lifted; no global bound | A LAN attacker has as many addresses as it likes | per address and in all, lifted after 5 minutes |
+diff --git a/crates/sukkula-engine/src/localsend/server.rs b/crates/sukkula-engine/src/localsend/server.rs
+index e98744d..16230ca 100644
+--- a/crates/sukkula-engine/src/localsend/server.rs
++++ b/crates/sukkula-engine/src/localsend/server.rs
+@@ -14,9 +14,10 @@
+ //! 3. **HTTP/1.1 head**: at most [`MAX_BUF_BYTES`] and [`MAX_HEADERS`], read
+ //!    within the handshake timeout; an idle keep-alive connection ends on
+ //!    the same timer. A response that cannot be written for the idle
+-//!    timeout ends the connection ([`WriteDeadline`]), and a connection
+-//!    that carries no offer or session of its own ends after
+-//!    [`lifetime`], however busy it keeps.
++//!    timeout ends the connection ([`WriteDeadline`], behind a small
++//!    kernel send buffer, [`SEND_BUFFER_BYTES`]), and a connection that
++//!    carries no offer or session of its own ends after [`lifetime`],
++//!    however busy it keeps.
+ //! 4. **Routing**: the v2 endpoints only. Every other path is a 404 whose
+ //!    body is never read.
+ //! 5. **JSON bodies** (S4, S6): at most 64 KiB, with an idle timeout and an
+diff --git a/docs/SECURITY.md b/docs/SECURITY.md
+index 56140da..b3257f9 100644
+--- a/docs/SECURITY.md
++++ b/docs/SECURITY.md
+@@ -123,7 +123,12 @@ These are enforced in the code and checked in CI, not merely intended.
+ - **LocalSend is HTTPS-only and pinned.** No plain-HTTP listener exists.
+   Sends are pinned, during the handshake, to the fingerprint the peer
+   announced. Uploads are accepted only from the address and certificate
+-  that made the accepted offer, with the per-file token.
++  that made the accepted offer, with the per-file token. The register
++  fallback of discovery (F-LS1) never scans the subnet: it registers only
++  with LocalSend servers it already knows of -- peers found before, peers
++  that registered with us over HTTPS, announcements it could not answer
++  at once -- pinned to the certificate each was known by, to permitted
++  addresses, a few at a time and a few times each.
+ - **Wormhole transfer v2 is not compiled**, and the v1 path runs behind
+   guards that hold the mailbox, relay and peer to size, count and shape
+   limits the library does not enforce, with every library future inside
+@@ -170,9 +175,9 @@ code or test it names.
+ | S3: only the inbox writes; staged, capped, verified, never clobbering or following links | `clippy.toml` bans (std, tokio and rustix; lifted only in `sukkula_core::{inbox,store,dirfd}`, per function); `inbox.rs` and `store.rs` tests (symlinked targets and staging, EXDEV copy fallback on tmpfs, cancel mid-copy, spoiled writes); `properties.rs` `the_inbox_writes_what_was_declared_or_nothing`; every adapter's hostile suite asserts nothing outside the download directory and no partial file |
+ | S4/S6: sizes and counts range-checked before allocation | `offer.rs` tests; `properties.rs` `validate_never_passes_a_bad_offer`, `negative_or_oversized_anywhere_is_refused`; fuzz target `offer_validate`; `localsend_hostile::impossible_sizes_and_counts_never_reach_the_user`, `oversized_json_is_refused_before_it_is_read`; `wormhole_hostile::negative_and_oversized_offers_never_reach_the_user`, `a_lying_record_length_is_refused_before_anything_is_allocated` |
+ | S5: consent before any payload | `consent.rs` tests; `properties.rs` `consent_accounting_holds_under_any_schedule`; `localsend_hostile::uploads_without_consent_or_the_right_token_are_refused_unread`; `localsend_loopback::a_declined_offer_writes_nothing`; `wormhole::a_declined_offer_moves_no_data_and_leaves_no_file`; `ctx::tests::a_busy_engine_declines_without_asking` |
+-| Every read has a timeout; slow peers are cut off | `localsend_hostile::slow_handshakes_heads_and_bodies_are_cut_off`, `a_stalled_upload_times_out_and_is_cleaned_up`, `a_receiver_that_stops_reading_times_out`; `wormhole_hostile::a_slow_loris_record_times_out`, `a_sender_that_stalls_after_the_yes_times_out`; `bluetooth::a_stalled_transfer_times_out`, `bluez_that_never_answers_times_out` |
+-| S7: only private LAN peers, rate-limited | `reach.rs` tests; `properties.rs` `reach_agrees_with_the_ranges`, `the_limiter_is_bounded_and_exact_below_capacity`; `ctx::tests::offers_are_limited_per_peer_and_in_total`; `localsend_hostile::unpermitted_addresses_are_dropped_before_the_handshake`, `offers_are_rate_limited_per_address` |
+-| F-LS2/F-LS3: HTTPS only, pinned | `localsend_hostile::plain_http_and_certificateless_clients_get_nothing`, `registrations_must_prove_their_fingerprint`; `localsend_loopback::a_changed_certificate_is_refused_before_anything_is_sent` |
++| Every read has a timeout; slow peers are cut off | `localsend_hostile::slow_handshakes_heads_and_bodies_are_cut_off`, `a_stalled_upload_times_out_and_is_cleaned_up`, `a_receiver_that_stops_reading_times_out`, `a_sender_that_stops_reading_is_cut_off` (32 connections held by peers that stop reading, cut off by the write deadline), `a_connection_kept_busy_is_retired`; `localsend::server::tests::a_write_that_makes_no_progress_fails`; `wormhole_hostile::a_slow_loris_record_times_out`, `a_sender_that_stalls_after_the_yes_times_out`; `bluetooth::a_stalled_transfer_times_out`, `bluez_that_never_answers_times_out` |
++| S7: only private LAN peers, rate-limited | `reach.rs` tests; `properties.rs` `reach_agrees_with_the_ranges`, `the_limiter_is_bounded_and_exact_below_capacity`; `ctx::tests::offers_are_limited_per_peer_and_in_total`; `localsend_hostile::unpermitted_addresses_are_dropped_before_the_handshake`, `offers_are_rate_limited_per_address`, `one_address_cannot_fill_the_peer_list`; `localsend::discovery::tests::forged_announcements_cannot_hide_the_address_they_name`, `claims_naming_other_ports_cannot_use_up_localsends_own`, `a_forgery_answered_shows_the_device_it_named` (UDP announcements have a budget of their own and never spend the one TLS requests and Quick Share are held to); `localsend::peers::tests::one_address_cannot_fill_the_table`, `a_full_table_makes_room_from_the_address_holding_most`, `announced_leads_never_push_out_proven_ones` |
++| F-LS2/F-LS3: HTTPS only, pinned | `localsend_hostile::plain_http_and_certificateless_clients_get_nothing`, `registrations_must_prove_their_fingerprint`, `the_fallback_sends_nothing_to_another_certificate`; `localsend_loopback::a_changed_certificate_is_refused_before_anything_is_sent`, `discovery_registers_with_peers_it_knows_without_multicast` (the F-LS1 register fallback) |
+ | S8: no processes, no opening, no Wi-Fi changes | `clippy.toml` `disallowed-methods`/`disallowed-types`; `ci/check-deps.sh` (and its selftest) over `Cargo.lock` and the shipped aarch64 graph; `tests/qml/static_checks.py` (no `openUrlExternally`, no `linkActivated`); Quick Share patches in `third_party/rqs_lib.patches/` |
+ | S9: key `0600`, never logged | `store.rs` `exposed_secrets_are_refused`, symlink and owner refusal; redacted `Debug` for the PIN, the key, and an offer's text and PIN (`offer.rs` `debug_hides_the_message_and_the_pin`) |
+ | S9: logging off by default, to stderr only, nothing private at info or above | `logging.rs` tests (the level table off and on, a runtime switch per engine, escaping and the line cap, the `log` bridge); `hub.rs` `every_engine_thread_logs_to_the_engine_log_and_the_setting_switches_it`, `a_bad_settings_file_is_logged_by_kind_never_by_content`; `tests/s9_logs.rs`: LocalSend (wrong and right PIN, a declined offer, a file, a text), Quick Share (a file, a text, a declined offer) and wormhole (a text, a file, against a mailbox server that writes into the log) transfers with distinctive values, every event of every crate captured and judged by the engine's own table, off and on, and two engines' real log lines read back |
+-- 
+2.43.0
+

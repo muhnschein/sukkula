@@ -114,7 +114,8 @@ static string. Never free it.
 | --- | --- | --- |
 | A command, or the start configuration | 64 KiB of UTF-8, not counting the NUL | `SUKKULA_ERR_TOO_LONG`, or a `fatal` event; nothing is parsed |
 | Commands waiting for their reply | 64 | `SUKKULA_ERR_BUSY`; nothing is parsed |
-| One command's work | 60 s | Answered with `internal` |
+| One command's work | 60 s; `receive_wormhole` 150 s, since it waits for the user | Answered with `internal` |
+| `set_receiving` and `set_settings` waiting for the receive switch | 60 s; then they run to the end, each protocol bounded as below | Answered with `internal`; nothing was changed |
 | One protocol's start or stop | 15 s | That protocol reports `failed`; the others go on |
 | An event | 256 KiB of JSON | Never happens: events are bounded by construction. A `reply` or `transfer_finished` would be replaced by an `internal` failure, anything else dropped |
 | Events waiting for the callback | 1024 events or 4 MiB, replies not counted | The engine waits for the callback to catch up |
@@ -180,6 +181,12 @@ A command is an envelope with the version, an `id` of the shell's choosing
 Turns every enabled receiver on or off together (F-C1). Emits `receiving`
 with `starting` states, then `receiving` with the outcome, then the reply.
 
+It and `set_settings` hold the receive switch one at a time. Each waits at
+most 60 s for the ones before it, and past that is answered with
+`internal` having changed nothing. Once one has the switch it is not cut
+off: it runs to the end, bounded by the 15 s each protocol has to start or
+stop, and always ends with the final `receiving`.
+
 ```json command
 {"v":1,"id":1,"cmd":{"type":"set_receiving","on":true}}
 ```
@@ -190,8 +197,14 @@ Replaces the settings, validates them (`bad_settings` on a bad PIN or URL),
 saves them (`storage`), emits `settings`, and restarts running receivers
 with them. Fields left out take their defaults.
 
+Every protocol has `enabled`, on by default (F-C1). A protocol switched off
+is not started by `set_receiving` and not used by `start_discovery`, and
+its `send`, `receive_wormhole` or `list_bluetooth_devices` is
+`unavailable`. A settings file from before `wormhole.enabled` existed
+reads as on.
+
 ```json command
-{"v":1,"id":2,"cmd":{"type":"set_settings","settings":{"device_name":"Pekka's Jolla","localsend":{"enabled":true,"pin":"4711"},"quickshare":{"enabled":true,"visibility":"hidden","ble_nudge":false},"wormhole":{"mailbox_url":"wss://relay.example.org/v1","relay_url":"tcp://transit.example.org:4001"},"bluetooth":{"enabled":false},"logging":false}}}
+{"v":1,"id":2,"cmd":{"type":"set_settings","settings":{"device_name":"Pekka's Jolla","localsend":{"enabled":true,"pin":"4711"},"quickshare":{"enabled":true,"visibility":"hidden","ble_nudge":false},"wormhole":{"enabled":true,"mailbox_url":"wss://relay.example.org/v1","relay_url":"tcp://transit.example.org:4001"},"bluetooth":{"enabled":false},"logging":false}}}
 ```
 
 ```json command
@@ -258,6 +271,14 @@ as `wormhole_code` (F-MW1):
 
 Receives with a code the sender's screen shows (F-MW2). The offer then goes
 through consent like any other. `bad_code` for a malformed or wrong code.
+
+The reply comes once the user has answered the offer, with the `transfer`
+when it was accepted. So the command may take up to 150 s rather than 60:
+the mailbox and the key exchange (20 s each), the offer (30 s), the
+dialog's whole 60 s, and the goodbye. An offer nobody answers is declined
+by its own timeout (`refused`), not cut off by the command's. An offer the
+user asked for by typing its code does not count against the limit on
+offers from the LAN, so a LAN flood cannot make it `busy`.
 
 ```json command
 {"v":1,"id":12,"cmd":{"type":"receive_wormhole","code":"7-guitarist-revenge"}}
@@ -326,7 +347,22 @@ The settings and the name peers see, after start, `get_settings` and
 `set_settings`.
 
 ```json event
-{"type":"settings","settings":{"device_name":"","localsend":{"enabled":true,"pin":null},"quickshare":{"enabled":true,"visibility":"everyone","ble_nudge":true},"wormhole":{"mailbox_url":null,"relay_url":null},"bluetooth":{"enabled":true},"logging":false},"effective_device_name":"Jolla Phone"}
+{"type":"settings","settings":{"device_name":"","localsend":{"enabled":true,"pin":null},"quickshare":{"enabled":true,"visibility":"everyone","ble_nudge":true},"wormhole":{"enabled":true,"mailbox_url":null,"relay_url":null},"bluetooth":{"enabled":true},"logging":false},"effective_device_name":"Jolla Phone"}
+```
+
+`recovered` is there, `true`, when the saved settings file could not be
+used as it was: edited by hand, written by another version, or damaged.
+What could not be read is never replaced by the defaults, which are the
+most permissive settings there are. Each part that reads on its own is
+kept; a protocol's section that does not is switched off, with no PIN,
+`hidden`, no BLE nudge and the default servers; a field this version does
+not know switches every protocol off; a file that cannot be read one way
+only is all off. The file is left as it is, and `recovered` stays, until
+the next `set_settings`. Here the wormhole section held a mailbox URL
+this version refuses, and the PIN and `hidden` were kept:
+
+```json event
+{"type":"settings","settings":{"device_name":"Pekka","localsend":{"enabled":true,"pin":"4711"},"quickshare":{"enabled":true,"visibility":"hidden","ble_nudge":false},"wormhole":{"enabled":false,"mailbox_url":null,"relay_url":null},"bluetooth":{"enabled":true},"logging":false},"effective_device_name":"Pekka","recovered":true}
 ```
 
 ### receiving
@@ -516,7 +552,7 @@ Sailfish reaches the journal (`journalctl --user`); it never writes a log
 file. The lines start with `sukkula:` and the level:
 
 ```text
-sukkula: WARN sukkula_engine::hub: settings unreadable; using defaults why="malformed"
+sukkula: WARN sukkula_engine::hub: settings file not usable as saved; what could not be read is off parts=["wormhole"]
 ```
 
 With `logging` off, the default, only warnings and errors of the engine's
