@@ -1,0 +1,701 @@
+diff --git a/src/dns_cache.rs b/src/dns_cache.rs
+index 395ada0..36133cd 100644
+--- a/src/dns_cache.rs
++++ b/src/dns_cache.rs
+@@ -12,9 +12,34 @@ use crate::{
+ };
+ use std::{
+     collections::{HashMap, HashSet},
++    net::IpAddr,
+     ops::BitOr,
+ };
+ 
++// What the cache holds is bounded. mDNS is open to anyone on the link and a
++// response's records are the sender's to choose, so without these a
++// neighbour grows the cache, and the daemon's timers with it, for as long as
++// it keeps sending. With them, the records that one browsed type can reach --
++// its instances, their SRV, TXT and NSEC records, the addresses and NSEC
++// records of their hosts -- come to at most
++// 64 * (1 + 2 + 2 + 2 + 2 * (8 + 2)) = 1728, under the total.
++
++/// Most instances (PTR records) cached per browsed service type.
++pub(crate) const MAX_INSTANCES_PER_TYPE: usize = 64;
++
++/// Most instances of one service type cached from one source address. A new
++/// one from a source at this many replaces the source's own oldest.
++pub(crate) const MAX_INSTANCES_PER_SOURCE: usize = 4;
++
++/// Most SRV, TXT or NSEC records cached per name.
++const MAX_RECORDS_PER_NAME: usize = 2;
++
++/// Most address (A and AAAA) records cached per host name.
++const MAX_ADDRS_PER_HOST: usize = 8;
++
++/// Most records cached in all.
++pub(crate) const MAX_CACHED_RECORDS: usize = 2048;
++
+ /// Bitflags-style type for filtering by IP version.
+ #[derive(Clone, Copy)]
+ pub(crate) struct IpType(u8);
+@@ -48,6 +73,8 @@ pub(crate) struct IntfRemovalResult {
+ pub(crate) struct DnsRecordIntf {
+     pub(crate) record: DnsRecordBox,
+     pub(crate) src_intf: InterfaceId,
++    /// The source address of the packet that first brought the record.
++    pub(crate) src_addr: IpAddr,
+ }
+ 
+ /// A cache for all types of DNS records.
+@@ -113,6 +140,36 @@ impl DnsCache {
+         self.subtype.len()
+     }
+ 
++    /// Count all records in the cache.
++    pub(crate) fn total_records(&self) -> usize {
++        self.ptr_count()
++            + self.srv_count()
++            + self.txt_count()
++            + self.addr_count()
++            + self.nsec_count()
++    }
++
++    /// The instance names that PTR records point to.
++    pub(crate) fn instance_names(&self) -> HashSet<String> {
++        self.ptr
++            .values()
++            .flatten()
++            .filter_map(|r| r.record.any().downcast_ref::<DnsPointer>())
++            .map(|ptr| ptr.alias().to_string())
++            .collect()
++    }
++
++    /// The host names, in lowercase, of the SRV records of `instances`.
++    pub(crate) fn host_names(&self, instances: &HashSet<String>) -> HashSet<String> {
++        instances
++            .iter()
++            .filter_map(|instance| self.srv.get(instance))
++            .flatten()
++            .filter_map(|r| r.record.any().downcast_ref::<DnsSrv>())
++            .map(|srv| srv.host().to_lowercase())
++            .collect()
++    }
++
+     pub(crate) fn get_ptr(&self, ty_domain: &str) -> Option<&Vec<DnsRecordIntf>> {
+         self.ptr.get(ty_domain)
+     }
+@@ -219,8 +276,15 @@ impl DnsCache {
+ 
+     /// Update a DNSRecord TTL if already exists, otherwise insert a new record.
+     ///
+-    /// Returns `None` if `incoming` is invalid / unrecognized, otherwise returns
+-    /// (a new record, true) or (existing record with TTL updated, false).
++    /// Returns `None` if `incoming` is invalid / unrecognized, or refused,
++    /// otherwise returns (a new record, true) or (existing record with TTL
++    /// updated, false).
++    ///
++    /// A new record is taken only if `is_for_us`, if its name holds fewer
++    /// than its cap of records, and if `room` -- what is left of
++    /// [`MAX_CACHED_RECORDS`] -- is not used up; a new PTR record must also
++    /// have passed [`DnsCache::make_room_for_ptr`]. `src` is the source
++    /// address of the packet it came in.
+     ///
+     /// If you need to add new timers for related records, push into `timers`.
+     pub(crate) fn add_or_update(
+@@ -229,9 +293,52 @@ impl DnsCache {
+         incoming: DnsRecordBox,
+         timers: &mut Vec<u64>,
+         is_for_us: bool,
++        src: IpAddr,
++        room: &mut usize,
+     ) -> Option<(&DnsRecordIntf, bool)> {
+         let entry_name = incoming.get_name().to_string();
+ 
++        // Look up the existing records without creating an entry yet.
++        let entry_name_lower = entry_name.to_lowercase();
++        let existing = match incoming.get_type() {
++            RRType::PTR => self.ptr.get(&entry_name),
++            RRType::SRV => self.srv.get(&entry_name),
++            RRType::TXT => self.txt.get(&entry_name),
++            RRType::A | RRType::AAAA => self.addr.get(&entry_name_lower),
++            RRType::NSEC => self.nsec.get(&entry_name),
++            _ => return None,
++        };
++        let known = existing.map_or(false, |records| {
++            records.iter().any(|r| r.record.matches(incoming.as_ref()))
++        });
++
++        if !known {
++            // `is_for_us` is decided per record by the daemon: a new record
++            // is cached only if it answers something asked. A record already
++            // cached is always refreshed, which keeps the cache coherent and
++            // does not grow it.
++            if !is_for_us {
++                trace!(
++                    "add_or_update: dropping new record not for us: {} (type {:?})",
++                    incoming.get_name(),
++                    incoming.get_type()
++                );
++                return None;
++            }
++            let cap = match incoming.get_type() {
++                RRType::PTR => MAX_INSTANCES_PER_TYPE,
++                RRType::A | RRType::AAAA => MAX_ADDRS_PER_HOST,
++                _ => MAX_RECORDS_PER_NAME,
++            };
++            if existing.map_or(0, Vec::len) >= cap || *room == 0 {
++                debug!(
++                    "add_or_update: dropping new record (type {:?}): no room for it",
++                    incoming.get_type()
++                );
++                return None;
++            }
++        }
++
+         // If it is PTR with subtype, store a mapping from the instance fullname
+         // to the subtype in this cache.
+         if incoming.get_type() == RRType::PTR && is_for_us {
+@@ -246,31 +353,6 @@ impl DnsCache {
+             }
+         }
+ 
+-        // Look up the existing records without creating an entry yet.
+-        let entry_name_lower = entry_name.to_lowercase();
+-        let empty_records = match incoming.get_type() {
+-            RRType::PTR => self.ptr.get(&entry_name),
+-            RRType::SRV => self.srv.get(&entry_name),
+-            RRType::TXT => self.txt.get(&entry_name),
+-            RRType::A | RRType::AAAA => self.addr.get(&entry_name_lower),
+-            RRType::NSEC => self.nsec.get(&entry_name),
+-            _ => return None,
+-        }
+-        .map_or(true, |records| records.is_empty());
+-
+-        // No existing records for this name and type, and not for us.
+-        //
+-        // `is_for_us` is heuristic per message, not per record. We never grow the cache for
+-        // records nobody asked for, but always keep what's already there coherent.
+-        if empty_records && !is_for_us {
+-            trace!(
+-                "add_or_update: dropping new record not for us: {} (type {:?})",
+-                incoming.get_name(),
+-                incoming.get_type()
+-            );
+-            return None;
+-        }
+-
+         // We want to process this `incoming`. For convenience, repeats the lookup
+         // above but doing `entry().or_default()` to create an empty Vec as needed.
+         let record_vec = match incoming.get_type() {
+@@ -302,8 +384,10 @@ impl DnsCache {
+                 let new_record = DnsRecordIntf {
+                     record: incoming,
+                     src_intf: intf.into(),
++                    src_addr: src,
+                 };
+                 record_vec.insert(0, new_record); // A new record.
++                *room = room.saturating_sub(1);
+                 (0, true)
+             }
+         };
+@@ -311,6 +395,110 @@ impl DnsCache {
+         Some((record_vec.get(idx).unwrap(), updated))
+     }
+ 
++    /// Makes room for `incoming`, a new PTR record from `src` for a browsed
++    /// type, before [`DnsCache::add_or_update`] takes it.
++    ///
++    /// A source keeps at most [`MAX_INSTANCES_PER_SOURCE`] instances of a
++    /// type: a new one replaces its own oldest. When the type holds
++    /// [`MAX_INSTANCES_PER_TYPE`], a newcomer replaces the oldest instance of
++    /// the source that holds the most, as long as that source would still
++    /// hold more than the newcomer's; otherwise it is refused. So whoever
++    /// fills the cache first cannot keep a device with fewer instances out:
++    /// only as many distinct sources as there are places could.
++    ///
++    /// A goodbye (TTL 1 or less) for an instance not cached is refused: it
++    /// would take a place, maybe someone else's, for a second, to say
++    /// nothing.
++    ///
++    /// Returns `Err(())` when `incoming` is to be refused, else the name of
++    /// the instance it replaced, if any, for the listeners to be told.
++    pub(crate) fn make_room_for_ptr(
++        &mut self,
++        incoming: &DnsRecordBox,
++        src: IpAddr,
++    ) -> Result<Option<String>, ()> {
++        let expiring = incoming.get_record().get_ttl() <= 1;
++        let Some(records) = self.ptr.get_mut(incoming.get_name()) else {
++            return if expiring { Err(()) } else { Ok(None) };
++        };
++        if records.iter().any(|r| r.record.matches(incoming.as_ref())) {
++            return Ok(None); // A refresh takes no room.
++        }
++        if expiring {
++            return Err(());
++        }
++        let from_src = records.iter().filter(|r| r.src_addr == src).count();
++        let evict_from = if from_src >= MAX_INSTANCES_PER_SOURCE {
++            src
++        } else if records.len() >= MAX_INSTANCES_PER_TYPE {
++            let mut per_source: HashMap<IpAddr, usize> = HashMap::new();
++            for r in records.iter() {
++                *per_source.entry(r.src_addr).or_default() += 1;
++            }
++            match per_source.into_iter().max_by_key(|(_, n)| *n) {
++                Some((top, n)) if n > from_src + 1 => top,
++                _ => return Err(()),
++            }
++        } else {
++            return Ok(None);
++        };
++        let oldest = records
++            .iter()
++            .enumerate()
++            .filter(|(_, r)| r.src_addr == evict_from)
++            .min_by_key(|(_, r)| r.record.get_record().get_created())
++            .map(|(i, _)| i);
++        let Some(i) = oldest else {
++            return Err(());
++        };
++        let evicted = records.remove(i);
++        Ok(evicted
++            .record
++            .any()
++            .downcast_ref::<DnsPointer>()
++            .map(|ptr| ptr.alias().to_string()))
++    }
++
++    /// Drops what nothing needs any more: expired SRV, TXT, NSEC and
++    /// address records wherever they are (expired PTR records are
++    /// [`DnsCache::evict_expired_services`]'s, which reports them), and,
++    /// unless `keep_all`, every record that no browsed type or hostname
++    /// resolution leads to -- PTR records of types no longer browsed, SRV,
++    /// TXT and NSEC records of instances no PTR record points to, addresses
++    /// of hosts no such SRV record names. Before, such records were kept
++    /// for good: expiry only followed PTR records.
++    pub(crate) fn sweep(
++        &mut self,
++        now: u64,
++        keep_all: bool,
++        is_browsed: impl Fn(&str) -> bool,
++        is_resolving: impl Fn(&str) -> bool,
++    ) {
++        for map in [&mut self.srv, &mut self.txt, &mut self.nsec, &mut self.addr] {
++            map.retain(|_, records| {
++                records.retain(|r| !r.record.get_record().is_expired(now));
++                !records.is_empty()
++            });
++        }
++        self.ptr
++            .retain(|ty, records| !records.is_empty() && (keep_all || is_browsed(ty)));
++        let instances = self.instance_names();
++        self.subtype
++            .retain(|instance, _| instances.contains(instance));
++        if keep_all {
++            return;
++        }
++        self.srv.retain(|name, _| instances.contains(name));
++        self.txt.retain(|name, _| instances.contains(name));
++        let hosts = self.host_names(&instances);
++        self.addr
++            .retain(|host, _| hosts.contains(host) || is_resolving(host));
++        self.nsec.retain(|name, _| {
++            let lower = name.to_lowercase();
++            instances.contains(name) || hosts.contains(&lower) || is_resolving(&lower)
++        });
++    }
++
+     /// Remove a record from the cache if exists, otherwise no-op
+     pub(crate) fn remove(&mut self, record: &DnsRecordBox) -> bool {
+         let mut found = false;
+@@ -882,7 +1070,9 @@ mod tests {
+         MAX_PKT_DEFAULT,
+     };
+     use std::collections::HashSet;
+-    use std::net::IpAddr;
++    use std::net::{IpAddr, Ipv4Addr};
++
++    const SRC: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2));
+ 
+     fn make_intf(name: &str, index: u32) -> MyIntf {
+         MyIntf {
+@@ -917,10 +1107,11 @@ mod tests {
+ 
+         let mut cache = DnsCache::new();
+         let mut timers = Vec::new();
++        let mut room = MAX_CACHED_RECORDS;
+ 
+         macro_rules! add {
+             ($intf:expr, $record:expr) => {
+-                cache.add_or_update(&$intf, $record.boxed(), &mut timers, true)
++                cache.add_or_update(&$intf, $record.boxed(), &mut timers, true, SRC, &mut room)
+             };
+         }
+ 
+@@ -999,12 +1190,14 @@ mod tests {
+ 
+         let mut cache = DnsCache::new();
+         let mut timers = Vec::new();
++        let mut room = MAX_CACHED_RECORDS;
+ 
+         // Feed PTR / SRV / TXT / ADDR records with `is_for_us = false` and no
+         // pre-existing entries. Each must be dropped.
+         macro_rules! add_not_for_us {
+             ($record:expr) => {{
+-                let result = cache.add_or_update(&intf, $record.boxed(), &mut timers, false);
++                let result =
++                    cache.add_or_update(&intf, $record.boxed(), &mut timers, false, SRC, &mut room);
+                 assert!(
+                     result.is_none(),
+                     "a not-for-us record should be dropped, got {:?}",
+diff --git a/src/dns_parser.rs b/src/dns_parser.rs
+index ca79e3f..0e47521 100644
+--- a/src/dns_parser.rs
++++ b/src/dns_parser.rs
+@@ -296,6 +296,12 @@ pub const CLASS_CACHE_FLUSH: u16 = 0x8000;
+ /// be greater than ten seconds.
+ pub const LEGACY_UNICAST_MAX_TTL: u32 = 10;
+ 
++/// The longest TTL a received record is kept for, in seconds: 75 minutes,
++/// what RFC 6762 §10 recommends for records other than host names. The TTL
++/// is the sender's choice, and a record kept for up to 136 years (the u32
++/// range) is a record kept forever.
++pub(crate) const MAX_RECEIVED_TTL: u32 = 4500;
++
+ /// Absolute max size of UDP datagram payload for an mDNS packet over IPv4.
+ ///
+ /// RFC 6762 section 17:
+@@ -2426,6 +2432,7 @@ impl DnsIncoming {
+ 
+                 ttl = 1;
+             }
++            ttl = ttl.min(MAX_RECEIVED_TTL);
+             let rdata_len = u16_from_be_slice(&slice[8..10]) as usize;
+             self.offset += RR_HEADER_REMAIN;
+             let next_offset = self.offset + rdata_len;
+diff --git a/src/service_daemon.rs b/src/service_daemon.rs
+index 5ad2ae0..6e8ded2 100644
+--- a/src/service_daemon.rs
++++ b/src/service_daemon.rs
+@@ -32,7 +32,7 @@
+ use crate::log::{debug, error, trace};
+ use crate::{
+     current_time_millis,
+-    dns_cache::{DnsCache, IpType},
++    dns_cache::{DnsCache, IpType, MAX_CACHED_RECORDS},
+     dns_parser::{
+         ip_address_rr_type, max_pkt_absolute, DnsAddress, DnsEntryExt, DnsIncoming, DnsNSec,
+         DnsOutgoing, DnsPointer, DnsQuestion, DnsRecordBox, DnsRecordExt, DnsSrv, DnsTxt,
+@@ -149,6 +149,23 @@ const UNICAST_REPLY_ADDRS_MAX: usize = 64;
+ /// anyway; beyond this many, a new one is dropped rather than queued.
+ const DELAYED_RESPONSES_MAX: usize = 16;
+ 
++/// Most wake-up times the run loop keeps. Each cached record used to add two
++/// on arrival and two more on every refresh, so a neighbour re-sending the
++/// same records grew the heap by 16 bytes a record a packet, for good. Past
++/// this many a new one is dropped, and from then on the loop never sleeps
++/// longer than [`CACHE_CHECK_MILLIS`] -- what it would have woken for is
++/// found by the scans it runs on every pass.
++const MAX_TIMERS: usize = 4096;
++
++/// How often, at least, the run loop wakes while it caches records or has
++/// dropped a timer, and how often it sweeps the cache (`DnsCache::sweep`).
++const CACHE_CHECK_MILLIS: u64 = 1000;
++
++/// Most datagrams read from one socket per wake-up. Reading until the socket
++/// was empty meant that a steady stream of packets kept the run loop from
++/// ever reaching its commands -- a shutdown included.
++const READS_PER_WAKEUP: usize = 256;
++
+ /// Response status code for the service `unregister` call.
+ #[derive(Debug)]
+ pub enum UnregisterStatus {
+@@ -1184,6 +1201,61 @@ impl std::fmt::Debug for SourcePredicate {
+     }
+ }
+ 
++/// Which records of a response are for us: those that answer something
++/// asked. A PTR record of a browsed type; an SRV or TXT record of an
++/// instance such a PTR record points to; an address record of a host such
++/// an SRV record names, or of a host being resolved; an NSEC record of any
++/// of these. Worked out once per response, lazily, as its records come in
++/// that order.
++#[derive(Default)]
++struct Wanted {
++    instances: Option<HashSet<String>>,
++    hosts: Option<HashSet<String>>,
++}
++
++impl Wanted {
++    fn wants(&mut self, zc: &Zeroconf, record: &DnsRecordBox) -> bool {
++        let name = record.get_name();
++        match record.get_type() {
++            RRType::PTR => zc.service_queriers.contains_key(name),
++            RRType::SRV | RRType::TXT => self.instances(zc).contains(name),
++            RRType::A | RRType::AAAA => {
++                let host = name.to_lowercase();
++                zc.hostname_resolvers.contains_key(&host) || self.hosts(zc).contains(&host)
++            }
++            RRType::NSEC => {
++                let host = name.to_lowercase();
++                self.instances(zc).contains(name)
++                    || zc.hostname_resolvers.contains_key(&host)
++                    || self.hosts(zc).contains(&host)
++            }
++            _ => false,
++        }
++    }
++
++    /// The instances of the browsed types.
++    fn instances(&mut self, zc: &Zeroconf) -> &HashSet<String> {
++        self.instances.get_or_insert_with(|| {
++            zc.service_queriers
++                .keys()
++                .filter_map(|ty| zc.cache.get_ptr(ty))
++                .flatten()
++                .filter_map(|r| r.record.any().downcast_ref::<DnsPointer>())
++                .map(|ptr| ptr.alias().to_string())
++                .collect()
++        })
++    }
++
++    /// The hosts, in lowercase, of the instances of the browsed types.
++    fn hosts(&mut self, zc: &Zeroconf) -> &HashSet<String> {
++        if self.hosts.is_none() {
++            let hosts = zc.cache.host_names(self.instances(zc));
++            self.hosts = Some(hosts);
++        }
++        self.hosts.get_or_insert_with(HashSet::new)
++    }
++}
++
+ /// Counts legacy-unicast responses per destination address, for
+ /// [`UNICAST_REPLIES_PER_ADDR_PER_SEC`].
+ #[derive(Default)]
+@@ -1331,6 +1403,12 @@ struct Zeroconf {
+     /// Legacy-unicast responses sent, per destination.
+     unicast_replies: UnicastReplyLimiter,
+ 
++    /// Whether a timer was dropped for [`MAX_TIMERS`].
++    timers_dropped: bool,
++
++    /// When the cache is next swept.
++    next_sweep: u64,
++
+     #[cfg(test)]
+     test_down_interfaces: HashSet<String>,
+ }
+@@ -1512,6 +1590,8 @@ impl Zeroconf {
+             signal_addr,
+             source_filter: None,
+             unicast_replies: UnicastReplyLimiter::default(),
++            timers_dropped: false,
++            next_sweep: 0,
+ 
+             #[cfg(test)]
+             test_down_interfaces: HashSet::new(),
+@@ -1674,11 +1754,18 @@ impl Zeroconf {
+             let now = current_time_millis();
+ 
+             let earliest_timer = self.peek_earliest_timer();
+-            let timeout = earliest_timer.map(|timer| {
++            let mut timeout = earliest_timer.map(|timer| {
+                 // If `timer` already passed, set `timeout` to be 1ms.
+                 let millis = if timer > now { timer - now } else { 1 };
+                 Duration::from_millis(millis)
+             });
++            // Cached records expire and fall due for refresh without a timer
++            // of their own (refreshes add none, and a timer may have been
++            // dropped): look at them at least this often.
++            if self.timers_dropped || self.cache.total_records() > 0 {
++                let most = Duration::from_millis(CACHE_CHECK_MILLIS);
++                timeout = Some(timeout.map_or(most, |t| t.min(most)));
++            }
+ 
+             // Process incoming packets, command events and optional timeout.
+             events.clear();
+@@ -1789,6 +1876,25 @@ impl Zeroconf {
+                 self.resolve_updated_instances(&instance_set);
+             }
+ 
++            // Drop what nothing leads to any more, and forget resolutions of
++            // instances that are gone: `resolved` used to keep every
++            // instance name it ever saw.
++            if now >= self.next_sweep {
++                self.next_sweep = now + CACHE_CHECK_MILLIS;
++                let queriers = &self.service_queriers;
++                let resolvers = &self.hostname_resolvers;
++                self.cache.sweep(
++                    now,
++                    self.accept_unsolicited,
++                    |ty| queriers.contains_key(ty),
++                    |host| resolvers.contains_key(host),
++                );
++                let live = self.cache.instance_names();
++                self.resolved.retain(|instance| live.contains(instance));
++                self.pending_resolves
++                    .retain(|instance| live.contains(instance));
++            }
++
+             // Send out probing queries.
+             self.probing_handler();
+ 
+@@ -1940,6 +2046,10 @@ impl Zeroconf {
+     }
+ 
+     fn add_timer(&mut self, next_time: u64) {
++        if self.timers.len() >= MAX_TIMERS {
++            self.timers_dropped = true;
++            return;
++        }
+         self.timers.push(Reverse(next_time));
+     }
+ 
+@@ -2904,7 +3014,7 @@ impl Zeroconf {
+                     // silently ignore any Multicast DNS responses they
+                     // receive where the source UDP port is not 5353."
+                     if pktinfo.addr_src.port() == self.port {
+-                        self.handle_response(msg, pkt_if_index);
++                        self.handle_response(msg, pkt_if_index, src_ip);
+                     } else {
+                         debug!(
+                             "handle_read: ignoring a response from port {}",
+@@ -3183,8 +3293,13 @@ impl Zeroconf {
+                 continue; // Next event.
+             }
+ 
+-            // Read until no more packets available.
+-            while self.handle_read(ev.token().0) {}
++            // Read until no more packets available, or the budget is spent:
++            // the socket is re-registered below, and reported again while
++            // packets are waiting.
++            let mut reads = 0;
++            while reads < READS_PER_WAKEUP && self.handle_read(ev.token().0) {
++                reads += 1;
++            }
+ 
+             // we continue to monitor this socket.
+             if ev.token().0 == IPV4_SOCK_EVENT_KEY {
+@@ -3213,9 +3328,10 @@ impl Zeroconf {
+         }
+     }
+ 
+-    /// Deal with incoming response packets.  All answers
+-    /// are held in the cache, and listeners are notified.
+-    fn handle_response(&mut self, mut msg: DnsIncoming, if_index: u32) {
++    /// Deal with incoming response packets.  The answers that answer
++    /// something asked are held in the cache, within its bounds, and
++    /// listeners are notified. `src` is the packet's source address.
++    fn handle_response(&mut self, mut msg: DnsIncoming, if_index: u32, src: IpAddr) {
+         let now = current_time_millis();
+ 
+         // remove records that are expired.
+@@ -3247,34 +3363,22 @@ impl Zeroconf {
+         // check possible conflicts and handle them.
+         self.conflict_handler(&msg, if_index);
+ 
+-        // check if the message is for us.
+-        let mut is_for_us = true; // assume it is for us.
+-
+-        // If there are any PTR records in the answers, there should be
+-        // at least one PTR for us. Otherwise, the message is not for us.
+-        // If there are no PTR records at all, assume this message is for us.
+-        for answer in msg.answers() {
+-            if answer.get_type() == RRType::PTR {
+-                if self.service_queriers.contains_key(answer.get_name()) {
+-                    is_for_us = true;
+-                    break; // OK to break: at least one PTR for us.
+-                } else {
+-                    is_for_us = false;
+-                }
+-            } else if answer.get_type() == RRType::A || answer.get_type() == RRType::AAAA {
+-                // If there is a hostname querier for this address, then it is for us.
+-                let answer_lowercase = answer.get_name().to_lowercase();
+-                if self.hostname_resolvers.contains_key(&answer_lowercase) {
+-                    is_for_us = true;
+-                    break; // OK to break: at least one hostname for us.
+-                }
+-            }
+-        }
+-
+-        // if we explicitily want to accept unsolicited responses, we should consider all messages as for us.
+-        if self.accept_unsolicited {
+-            is_for_us = true;
+-        }
++        // Whether a record is for us is decided record by record (see
++        // `Wanted`): the message used to be taken whole unless it carried a
++        // PTR answer for a type nobody browsed, so a response of nothing but
++        // SRV, TXT or address records for made-up names went into the cache
++        // entire. PTR records come first, then SRV and TXT, then the rest,
++        // so that each is judged by what the ones it hangs off made of the
++        // cache.
++        let mut records: Vec<DnsRecordBox> = msg.all_records().collect();
++        records.sort_by_key(|r| match r.get_type() {
++            RRType::PTR => 0,
++            RRType::SRV | RRType::TXT => 1,
++            _ => 2,
++        });
++        let mut wanted = Wanted::default();
++        let mut room = MAX_CACHED_RECORDS.saturating_sub(self.cache.total_records());
++        let mut replaced: HashMap<String, HashSet<String>> = HashMap::new();
+ 
+         /// Represents a DNS record change that involves one service instance.
+         struct InstanceChange {
+@@ -3294,10 +3398,26 @@ impl Zeroconf {
+         let Some(my_intf) = self.my_intfs.get(&if_index) else {
+             return;
+         };
+-        for record in msg.all_records() {
++        for record in records {
++            let is_for_us = self.accept_unsolicited || wanted.wants(self, &record);
++            if is_for_us && record.get_type() == RRType::PTR {
++                match self.cache.make_room_for_ptr(&record, src) {
++                    Ok(None) => {}
++                    Ok(Some(instance)) => {
++                        replaced
++                            .entry(record.get_name().to_string())
++                            .or_default()
++                            .insert(instance);
++                    }
++                    Err(()) => {
++                        debug!("handle_response: no room for another instance");
++                        continue;
++                    }
++                }
++            }
+             match self
+                 .cache
+-                .add_or_update(my_intf, record, &mut timers, is_for_us)
++                .add_or_update(my_intf, record, &mut timers, is_for_us, src, &mut room)
+             {
+                 Some((dns_record, true)) => {
+                     timers.push(dns_record.record.get_record().get_expire_time());
+@@ -3340,14 +3460,24 @@ impl Zeroconf {
+                         });
+                     }
+                 }
+-                Some((dns_record, false)) => {
+-                    timers.push(dns_record.record.get_record().get_expire_time());
+-                    timers.push(dns_record.record.get_record().get_refresh_time());
+-                }
++                // A refresh, `Some((_, false))`, adds no timer: the record's
++                // new deadlines are later than those it had, and the run loop
++                // checks cached records at least every CACHE_CHECK_MILLIS.
+                 _ => {}
+             }
+         }
+ 
++        // Instances replaced to make room are gone, as if they had expired.
++        for instances in replaced.values() {
++            for instance in instances {
++                self.resolved.remove(instance);
++                self.pending_resolves.remove(instance);
++            }
++        }
++        if !replaced.is_empty() {
++            self.notify_service_removal(replaced);
++        }
++
+         // Add timers for the new records.
+         for t in timers {
+             self.add_timer(t);

@@ -1,0 +1,288 @@
+diff --git a/src/lib.rs b/src/lib.rs
+index fb98feb..b6e6baf 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -185,8 +185,9 @@ pub use dns_parser::{InterfaceId, RRType, ScopedIp, ScopedIpV4, ScopedIpV6, MAX_
+ pub use error::{Error, Result};
+ pub use service_daemon::{
+     DaemonEvent, DaemonStatus, DnsNameChange, HostnameResolutionEvent, IfKind, IfPredicate,
+-    Metrics, ServiceDaemon, ServiceEvent, UnregisterStatus, IP_CHECK_INTERVAL_IN_SECS_DEFAULT,
+-    MDNS_PORT, SERVICE_NAME_LEN_MAX_DEFAULT, VERIFY_TIMEOUT_DEFAULT,
++    Metrics, ServiceDaemon, ServiceEvent, SourcePredicate, UnregisterStatus,
++    IP_CHECK_INTERVAL_IN_SECS_DEFAULT, MDNS_PORT, SERVICE_NAME_LEN_MAX_DEFAULT,
++    VERIFY_TIMEOUT_DEFAULT,
+ };
+ pub use service_info::{
+     AsIpAddrs, IntoTxtProperties, ResolvedService, ServiceInfo, TxtProperties, TxtProperty,
+diff --git a/src/service_daemon.rs b/src/service_daemon.rs
+index 5e50bcf..5ad2ae0 100644
+--- a/src/service_daemon.rs
++++ b/src/service_daemon.rs
+@@ -133,6 +133,22 @@ const SHARED_RESPONSE_DELAY_MAX_MILLIS: u64 = 50;
+ const INITIAL_QUERY_DELAY_MIN_MILLIS: u64 = 10;
+ const INITIAL_QUERY_DELAY_MAX_MILLIS: u64 = 50;
+ 
++/// Most legacy-unicast responses sent to one address per second. They go to
++/// whatever address and port the query came from, and are exempt from the
++/// once-per-second multicast limit of RFC 6762 §6, so without this a stream
++/// of small queries turns the responder into a reflector of bigger answers.
++const UNICAST_REPLIES_PER_ADDR_PER_SEC: u32 = 4;
++
++/// Most addresses [`UNICAST_REPLIES_PER_ADDR_PER_SEC`] keeps count of. When
++/// that many have been answered within the last second, nobody new is
++/// answered until one of them ages out.
++const UNICAST_REPLY_ADDRS_MAX: usize = 64;
++
++/// Most deferred PTR responses (RFC 6762 §6) waiting at once. Each is
++/// multicast, and the multicast limit lets one per record per second out
++/// anyway; beyond this many, a new one is dropped rather than queued.
++const DELAYED_RESPONSES_MAX: usize = 16;
++
+ /// Response status code for the service `unregister` call.
+ #[derive(Debug)]
+ pub enum UnregisterStatus {
+@@ -349,6 +365,27 @@ impl ServiceDaemon {
+     /// reported by this constructor — listen for such failures via
+     /// [`monitor`](Self::monitor).
+     pub fn new_with_port(port: u16) -> Result<Self> {
++        Self::spawn(port, None)
++    }
++
++    /// Creates a new mDNS service daemon using a custom port, which reads
++    /// only packets whose source address `source_filter` accepts: every
++    /// other packet is dropped before it is parsed, so it is neither
++    /// answered nor cached.
++    ///
++    /// The filter is in place before the daemon reads its first packet.
++    /// It comes on top of the check every daemon makes, that a packet's
++    /// source is on the local link of the interface it arrived on (RFC 6762
++    /// §5.5, §11).
++    ///
++    /// # Errors
++    ///
++    /// See [`new`](Self::new).
++    pub fn new_with_source_filter(port: u16, source_filter: SourcePredicate) -> Result<Self> {
++        Self::spawn(port, Some(source_filter))
++    }
++
++    fn spawn(port: u16, source_filter: Option<SourcePredicate>) -> Result<Self> {
+         // Use port 0 to allow the system assign a random available port,
+         // no need for a pre-defined port number.
+         let signal_addr = SocketAddrV4::new(LOOPBACK_V4, 0);
+@@ -376,7 +413,15 @@ impl ServiceDaemon {
+         thread::Builder::new()
+             .name("mDNS_daemon".to_string())
+             .spawn(move || {
+-                Self::daemon_thread(mio_sock, poller, receiver, port, cmd_sender, signal_addr)
++                Self::daemon_thread(
++                    mio_sock,
++                    poller,
++                    receiver,
++                    port,
++                    cmd_sender,
++                    signal_addr,
++                    source_filter,
++                )
+             })
+             .map_err(|e| e_fmt!("thread builder failed to spawn: {}", e))?;
+ 
+@@ -835,8 +880,10 @@ impl ServiceDaemon {
+         port: u16,
+         cmd_sender: Sender<Command>,
+         signal_addr: SocketAddr,
++        source_filter: Option<SourcePredicate>,
+     ) {
+         let mut zc = Zeroconf::new(signal_sock, poller, port, cmd_sender, signal_addr);
++        zc.source_filter = source_filter;
+ 
+         if let Some(cmd) = zc.run(receiver) {
+             match cmd {
+@@ -1103,6 +1150,73 @@ impl std::fmt::Debug for IfPredicate {
+     }
+ }
+ 
++/// A predicate on the source address of a received packet, for
++/// [`ServiceDaemon::new_with_source_filter`].
++#[derive(Clone)]
++pub struct SourcePredicate(std::sync::Arc<dyn Fn(&IpAddr) -> bool + Send + Sync>);
++
++impl SourcePredicate {
++    /// Creates a predicate from a closure that decides whether packets from
++    /// an address are read.
++    ///
++    /// # Example
++    ///
++    /// ```no_run
++    /// # use mdns_sd::SourcePredicate;
++    /// // Only private IPv4 peers.
++    /// SourcePredicate::new(|ip| match ip {
++    ///     std::net::IpAddr::V4(v4) => v4.is_private(),
++    ///     std::net::IpAddr::V6(_) => false,
++    /// });
++    /// ```
++    pub fn new(predicate: impl Fn(&IpAddr) -> bool + Send + Sync + 'static) -> Self {
++        Self(std::sync::Arc::new(predicate))
++    }
++
++    pub(crate) fn matches(&self, ip: &IpAddr) -> bool {
++        self.0(ip)
++    }
++}
++
++impl std::fmt::Debug for SourcePredicate {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        write!(f, "SourcePredicate(...)")
++    }
++}
++
++/// Counts legacy-unicast responses per destination address, for
++/// [`UNICAST_REPLIES_PER_ADDR_PER_SEC`].
++#[derive(Default)]
++struct UnicastReplyLimiter {
++    /// Per address: when its current one-second window began (UNIX millis),
++    /// and how many responses went to it since.
++    sent: HashMap<IpAddr, (u64, u32)>,
++}
++
++impl UnicastReplyLimiter {
++    /// Whether one more response may go to `ip` at `now`; counts it if so.
++    fn allow(&mut self, ip: IpAddr, now: u64) -> bool {
++        const WINDOW_MILLIS: u64 = 1000;
++        if !self.sent.contains_key(&ip) && self.sent.len() >= UNICAST_REPLY_ADDRS_MAX {
++            self.sent
++                .retain(|_, (start, _)| now < start.saturating_add(WINDOW_MILLIS));
++            if self.sent.len() >= UNICAST_REPLY_ADDRS_MAX {
++                return false;
++            }
++        }
++        let (start, count) = self.sent.entry(ip).or_insert((now, 0));
++        if now >= start.saturating_add(WINDOW_MILLIS) {
++            *start = now;
++            *count = 0;
++        }
++        if *count >= UNICAST_REPLIES_PER_ADDR_PER_SEC {
++            return false;
++        }
++        *count += 1;
++        true
++    }
++}
++
+ /// Selection of interfaces.
+ struct IfSelection {
+     /// The interfaces to be selected.
+@@ -1211,6 +1325,12 @@ struct Zeroconf {
+ 
+     signal_addr: SocketAddr,
+ 
++    /// Which packet sources are read at all, on top of the local-link check.
++    source_filter: Option<SourcePredicate>,
++
++    /// Legacy-unicast responses sent, per destination.
++    unicast_replies: UnicastReplyLimiter,
++
+     #[cfg(test)]
+     test_down_interfaces: HashSet<String>,
+ }
+@@ -1390,6 +1510,8 @@ impl Zeroconf {
+             include_apple_p2p: false,
+             cmd_sender,
+             signal_addr,
++            source_filter: None,
++            unicast_replies: UnicastReplyLimiter::default(),
+ 
+             #[cfg(test)]
+             test_down_interfaces: HashSet::new(),
+@@ -2738,6 +2860,27 @@ impl Zeroconf {
+             return true;
+         }
+ 
++        // Only the local link is believed or answered (RFC 6762 §5.5, §11):
++        // a packet whose source is neither link-local nor on a subnet of the
++        // interface it arrived on was routed here or spoofed, and one the
++        // embedder's source filter refuses is from outside its reach. Either
++        // is dropped unread, before a response is cached or a query answered
++        // -- which, for a legacy-unicast query, would mean sending to that
++        // address.
++        let src_ip = pktinfo.addr_src.ip();
++        if !is_on_link(&src_ip, my_intf)
++            || !self
++                .source_filter
++                .as_ref()
++                .map_or(true, |filter| filter.matches(&src_ip))
++        {
++            debug!(
++                "handle_read: dropping a packet from {} on intf {}: not from the local link or refused by the source filter",
++                src_ip, my_intf.name
++            );
++            return true;
++        }
++
+         buf.truncate(sz); // reduce potential processing errors
+ 
+         match DnsIncoming::new(buf, my_intf.into()) {
+@@ -2757,7 +2900,17 @@ impl Zeroconf {
+                     let querier_addr = pktinfo.addr_src;
+                     self.handle_query(msg, pkt_if_index, querier_addr);
+                 } else if msg.is_response() {
+-                    self.handle_response(msg, pkt_if_index);
++                    // RFC 6762 §6: "Multicast DNS implementations MUST
++                    // silently ignore any Multicast DNS responses they
++                    // receive where the source UDP port is not 5353."
++                    if pktinfo.addr_src.port() == self.port {
++                        self.handle_response(msg, pkt_if_index);
++                    } else {
++                        debug!(
++                            "handle_read: ignoring a response from port {}",
++                            pktinfo.addr_src.port()
++                        );
++                    }
+                 } else {
+                     debug!("Invalid message: not query and not response");
+                 }
+@@ -3548,6 +3701,10 @@ impl Zeroconf {
+ 
+         // Defer PTR responses (RFC 6762 §6).
+         if delayed && out.answers_count() > 0 {
++            if self.delayed_responses.len() >= DELAYED_RESPONSES_MAX {
++                debug!("handle_query: too many deferred responses, dropping one more");
++                return;
++            }
+             out.set_id(msg.id());
+             self.increase_counter(Counter::KnownAnswerSuppression, out.known_answer_count());
+             let delay =
+@@ -3578,6 +3735,17 @@ impl Zeroconf {
+         querier_addr: SocketAddr,
+     ) {
+         let querier_ip = querier_addr.ip();
++        // A legacy-unicast response (below) goes to the querier's address and
++        // port, whatever they are, and the multicast rate limit does not
++        // apply to it: count them per address instead.
++        if querier_addr.port() != MDNS_PORT
++            && !self
++                .unicast_replies
++                .allow(querier_ip, current_time_millis())
++        {
++            debug!("send_response: legacy-unicast response limit reached for a querier");
++            return;
++        }
+         let is_ipv4 = querier_ip.is_ipv4();
+         let sock_opt = if is_ipv4 {
+             &self.ipv4_sock
+@@ -4999,6 +5167,16 @@ fn valid_instance_name(name: &str) -> bool {
+     name.split('.').count() >= 5
+ }
+ 
++/// Whether `ip` is on the local link of `intf`: link-local, or on the subnet
++/// of one of the interface's addresses (RFC 6762 §5.5, §11).
++fn is_on_link(ip: &IpAddr, intf: &MyIntf) -> bool {
++    let link_local = match ip {
++        IpAddr::V4(v4) => v4.is_link_local(),
++        IpAddr::V6(v6) => (v6.segments()[0] & 0xffc0) == 0xfe80,
++    };
++    link_local || intf.addrs.iter().any(|a| valid_ip_on_intf(ip, a))
++}
++
+ fn notify_monitors(monitors: &mut Vec<Sender<DaemonEvent>>, event: DaemonEvent) {
+     monitors.retain(|sender| {
+         if let Err(e) = sender.try_send(event.clone()) {

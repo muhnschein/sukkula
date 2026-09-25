@@ -1,0 +1,70 @@
+diff --git a/src/service_daemon.rs b/src/service_daemon.rs
+index 6e8ded2..8ee6645 100644
+--- a/src/service_daemon.rs
++++ b/src/service_daemon.rs
+@@ -3201,6 +3201,17 @@ impl Zeroconf {
+             port: 0,
+             addresses: HashSet::new(),
+             txt_properties: TxtProperties::new(),
++            source: self.cache.get_ptr(ty_domain).and_then(|records| {
++                records
++                    .iter()
++                    .find(|r| {
++                        r.record
++                            .any()
++                            .downcast_ref::<DnsPointer>()
++                            .map_or(false, |ptr| ptr.alias() == fullname)
++                    })
++                    .map(|r| r.src_addr)
++            }),
+         };
+ 
+         // Be sure setting `subtype` if available even when querying for the parent domain.
+diff --git a/src/service_info.rs b/src/service_info.rs
+index 4a65c71..3255aa2 100644
+--- a/src/service_info.rs
++++ b/src/service_info.rs
+@@ -521,6 +521,7 @@ impl ServiceInfo {
+             port: self.port,
+             addresses,
+             txt_properties: self.txt_properties,
++            source: None,
+         }
+     }
+ 
+@@ -1444,6 +1445,14 @@ pub struct ResolvedService {
+ 
+     /// Properties of the service, decoded from TXT record.
+     pub txt_properties: TxtProperties,
++
++    /// The source address of the packet that brought the PTR record which
++    /// announced this instance, when it came off the network.
++    ///
++    /// Unlike `addresses`, which the announcer writes as it likes, this is
++    /// where the announcement came from: what to count an announcer's
++    /// instances by, or to rate-limit it by.
++    pub source: Option<IpAddr>,
+ }
+ 
+ impl ResolvedService {
+@@ -1496,6 +1505,12 @@ impl ResolvedService {
+         &self.txt_properties
+     }
+ 
++    /// See [`ResolvedService::source`].
++    #[inline]
++    pub fn get_source(&self) -> Option<IpAddr> {
++        self.source
++    }
++
+     #[inline]
+     pub fn get_property(&self, key: &str) -> Option<&TxtProperty> {
+         self.txt_properties.get(key)
+@@ -2070,6 +2085,7 @@ mod tests {
+                 port: 1234,
+                 addresses,
+                 txt_properties: TxtProperties::new(),
++                source: None,
+             };
+ 
+             let json = serde_json::to_value(&service)?;
