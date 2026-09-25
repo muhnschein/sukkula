@@ -149,6 +149,25 @@ impl DnsCache {
             + self.nsec_count()
     }
 
+    /// The earliest time after `now` at which a cached record expires or
+    /// falls due for refresh (RFC 6762 §5.2). The run loop sleeps no longer
+    /// than this, in place of the two timers each record used to add on
+    /// arrival and on every refresh: those were a heap that a neighbour
+    /// re-sending the same records grew by 16 bytes a record a packet. A
+    /// deadline already passed is not one: what it was for is done on the
+    /// pass that finds it.
+    pub(crate) fn next_deadline(&self, now: u64) -> Option<u64> {
+        [&self.ptr, &self.srv, &self.txt, &self.addr, &self.nsec]
+            .into_iter()
+            .flat_map(|map| map.values().flatten())
+            .flat_map(|r| {
+                let record = r.record.get_record();
+                [record.get_expire_time(), record.get_refresh_time()]
+            })
+            .filter(|&t| t > now)
+            .min()
+    }
+
     /// The instance names that PTR records point to.
     pub(crate) fn instance_names(&self) -> HashSet<String> {
         self.ptr
@@ -330,12 +349,41 @@ impl DnsCache {
                 RRType::A | RRType::AAAA => MAX_ADDRS_PER_HOST,
                 _ => MAX_RECORDS_PER_NAME,
             };
-            if existing.map_or(0, Vec::len) >= cap || *room == 0 {
+            let held = existing.map_or(0, Vec::len);
+            // A new unique record (the cache-flush bit set) says it and its
+            // companions are the whole set of the name (RFC 6762 §10.2): at
+            // the cap, it takes the place of the oldest, which the flush
+            // below would have let go within a second anyway. PTR records
+            // are shared; their room is `make_room_for_ptr`'s alone.
+            let replaces =
+                held >= cap && incoming.get_cache_flush() && incoming.get_type() != RRType::PTR;
+            if (held >= cap && !replaces) || (*room == 0 && !replaces) {
                 debug!(
                     "add_or_update: dropping new record (type {:?}): no room for it",
                     incoming.get_type()
                 );
                 return None;
+            }
+            if replaces {
+                let records = match incoming.get_type() {
+                    RRType::PTR => self.ptr.get_mut(&entry_name),
+                    RRType::SRV => self.srv.get_mut(&entry_name),
+                    RRType::TXT => self.txt.get_mut(&entry_name),
+                    RRType::A | RRType::AAAA => self.addr.get_mut(&entry_name_lower),
+                    RRType::NSEC => self.nsec.get_mut(&entry_name),
+                    _ => None,
+                };
+                if let Some(records) = records {
+                    let oldest = records
+                        .iter()
+                        .enumerate()
+                        .min_by_key(|(_, r)| r.record.get_record().get_created())
+                        .map(|(i, _)| i);
+                    if let Some(i) = oldest {
+                        records.remove(i);
+                        *room = room.saturating_add(1);
+                    }
+                }
             }
         }
 
@@ -1253,5 +1301,292 @@ mod tests {
             "addr map leaked: {:?}",
             cache.addr.keys()
         );
+    }
+}
+
+/// Sukkula's tests of the bounds its patch adds (third_party/mdns-sd.patches).
+#[cfg(test)]
+mod bounded_cache_tests {
+    use super::*;
+    use crate::{
+        dns_parser::{
+            DnsAddress, DnsPointer, DnsRecordExt, DnsSrv, DnsTxt, RRType, CLASS_CACHE_FLUSH,
+            CLASS_IN,
+        },
+        service_info::MyIntf,
+        MAX_PKT_DEFAULT,
+    };
+    use std::collections::HashSet;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    const TY: &str = "_FC9F5ED42C8A._tcp.local.";
+
+    fn intf() -> MyIntf {
+        MyIntf {
+            name: "wlan0".to_string(),
+            index: 3,
+            addrs: HashSet::new(),
+            max_packet_size_v4: MAX_PKT_DEFAULT,
+            max_packet_size_v6: MAX_PKT_DEFAULT,
+        }
+    }
+
+    fn src(n: u16) -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(
+            192,
+            168,
+            (n / 250) as u8,
+            (n % 250) as u8 + 1,
+        ))
+    }
+
+    fn ptr(instance: &str, ttl: u32) -> DnsRecordBox {
+        DnsPointer::new(TY, RRType::PTR, CLASS_IN, ttl, instance.to_string()).boxed()
+    }
+
+    /// Offers a PTR record the way `handle_response` does: room first.
+    fn offer_ptr(cache: &mut DnsCache, instance: &str, from: IpAddr) -> Result<Option<String>, ()> {
+        let record = ptr(instance, 4500);
+        let replaced = cache.make_room_for_ptr(&record, from)?;
+        let mut room = MAX_CACHED_RECORDS.saturating_sub(cache.total_records());
+        cache
+            .add_or_update(&intf(), record, &mut Vec::new(), true, from, &mut room)
+            .ok_or(())?;
+        Ok(replaced)
+    }
+
+    fn instances(cache: &DnsCache) -> HashSet<String> {
+        cache.instance_names()
+    }
+
+    #[test]
+    fn a_new_record_needs_to_be_asked_for_and_to_have_room() {
+        let mut cache = DnsCache::new();
+        let mut timers = Vec::new();
+        let instance = "a._FC9F5ED42C8A._tcp.local.";
+        let host = "a.local.";
+        let mut room = MAX_CACHED_RECORDS;
+        let srv = |port| DnsSrv::new(instance, CLASS_IN, 120, 0, 0, port, host.to_string()).boxed();
+
+        // Not asked for: dropped.
+        assert!(cache
+            .add_or_update(&intf(), srv(1), &mut timers, false, src(1), &mut room)
+            .is_none());
+        // Asked for: taken, up to the cap per name.
+        for port in 1..=MAX_RECORDS_PER_NAME as u16 {
+            assert!(cache
+                .add_or_update(&intf(), srv(port), &mut timers, true, src(1), &mut room)
+                .is_some());
+        }
+        assert!(cache
+            .add_or_update(&intf(), srv(99), &mut timers, true, src(1), &mut room)
+            .is_none());
+        assert_eq!(cache.srv_count(), MAX_RECORDS_PER_NAME);
+        assert_eq!(room, MAX_CACHED_RECORDS - MAX_RECORDS_PER_NAME);
+
+        // A record already held is refreshed even when nothing is left and
+        // nobody asked: that keeps the cache coherent and grows nothing.
+        let mut none_left = 0;
+        assert!(matches!(
+            cache.add_or_update(&intf(), srv(1), &mut timers, false, src(1), &mut none_left),
+            Some((_, false))
+        ));
+        // A new one is not taken once the total is used up.
+        let other = DnsTxt::new(instance, CLASS_IN, 120, vec![1, b'x']).boxed();
+        assert!(cache
+            .add_or_update(&intf(), other, &mut timers, true, src(1), &mut none_left)
+            .is_none());
+
+        // Addresses: at most MAX_ADDRS_PER_HOST per host name.
+        let id = InterfaceId {
+            name: "wlan0".to_string(),
+            index: 3,
+        };
+        for i in 0..=MAX_ADDRS_PER_HOST as u8 {
+            let a = DnsAddress::new(
+                host,
+                RRType::A,
+                CLASS_IN,
+                120,
+                IpAddr::V4(Ipv4Addr::new(192, 168, 1, i)),
+                id.clone(),
+            )
+            .boxed();
+            let taken = cache
+                .add_or_update(&intf(), a, &mut timers, true, src(1), &mut room)
+                .is_some();
+            assert_eq!(taken, usize::from(i) < MAX_ADDRS_PER_HOST, "address {i}");
+        }
+    }
+
+    #[test]
+    fn a_unique_record_at_the_cap_replaces_the_oldest() {
+        let mut cache = DnsCache::new();
+        let mut timers = Vec::new();
+        let mut room = MAX_CACHED_RECORDS;
+        let instance = "a._FC9F5ED42C8A._tcp.local.";
+        let txt = |v: u8, class| DnsTxt::new(instance, class, 120, vec![1, v]).boxed();
+        for v in 0..MAX_RECORDS_PER_NAME as u8 {
+            cache.add_or_update(
+                &intf(),
+                txt(v, CLASS_IN),
+                &mut timers,
+                true,
+                src(1),
+                &mut room,
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        // A shared record at the cap is refused...
+        assert!(cache
+            .add_or_update(
+                &intf(),
+                txt(50, CLASS_IN),
+                &mut timers,
+                true,
+                src(1),
+                &mut room
+            )
+            .is_none());
+        // ... a unique one takes the oldest one's place.
+        let new = txt(51, CLASS_IN | CLASS_CACHE_FLUSH);
+        assert!(cache
+            .add_or_update(&intf(), new, &mut timers, true, src(1), &mut room)
+            .is_some());
+        assert_eq!(cache.txt_count(), MAX_RECORDS_PER_NAME);
+        let held: Vec<Vec<u8>> = cache.txt[instance]
+            .iter()
+            .filter_map(|r| r.record.any().downcast_ref::<DnsTxt>())
+            .map(|t| t.text().to_vec())
+            .collect();
+        assert!(!held.contains(&vec![1, 0]), "the oldest is gone: {held:?}");
+        assert!(held.contains(&vec![1, 51]));
+    }
+
+    #[test]
+    fn one_source_holds_at_most_a_few_instances_of_a_type() {
+        let mut cache = DnsCache::new();
+        let one = src(1);
+        for i in 0..MAX_INSTANCES_PER_SOURCE {
+            assert_eq!(offer_ptr(&mut cache, &format!("i{i}.{TY}"), one), Ok(None));
+        }
+        // The next one from the same source replaces its own oldest.
+        let replaced = offer_ptr(&mut cache, &format!("new.{TY}"), one).unwrap();
+        assert!(replaced.is_some());
+        assert_eq!(cache.ptr_count(), MAX_INSTANCES_PER_SOURCE);
+        assert!(instances(&cache).contains(&format!("new.{TY}")));
+        // A refresh takes no room and replaces nothing.
+        assert_eq!(offer_ptr(&mut cache, &format!("new.{TY}"), one), Ok(None));
+        assert_eq!(cache.ptr_count(), MAX_INSTANCES_PER_SOURCE);
+    }
+
+    #[test]
+    fn a_full_type_still_takes_a_source_with_fewer_instances() {
+        // Filled by as few sources as can fill it, each at its own cap.
+        let mut cache = DnsCache::new();
+        let sources = MAX_INSTANCES_PER_TYPE / MAX_INSTANCES_PER_SOURCE;
+        for s in 0..sources {
+            for i in 0..MAX_INSTANCES_PER_SOURCE {
+                offer_ptr(&mut cache, &format!("s{s}i{i}.{TY}"), src(s as u16)).unwrap();
+            }
+        }
+        assert_eq!(cache.ptr_count(), MAX_INSTANCES_PER_TYPE);
+        // An honest device announcing one instance gets in, in the place of
+        // an instance of a source holding the most.
+        let honest = src(1000);
+        let replaced = offer_ptr(&mut cache, &format!("honest.{TY}"), honest).unwrap();
+        assert!(replaced.is_some());
+        assert_eq!(cache.ptr_count(), MAX_INSTANCES_PER_TYPE);
+        assert!(instances(&cache).contains(&format!("honest.{TY}")));
+
+        // Filled by as many sources as there are places, one each: a
+        // newcomer is refused, as it would take someone's only place.
+        let mut cache = DnsCache::new();
+        for s in 0..MAX_INSTANCES_PER_TYPE {
+            offer_ptr(&mut cache, &format!("s{s}.{TY}"), src(s as u16)).unwrap();
+        }
+        assert_eq!(
+            offer_ptr(&mut cache, &format!("late.{TY}"), honest),
+            Err(())
+        );
+        assert_eq!(cache.ptr_count(), MAX_INSTANCES_PER_TYPE);
+    }
+
+    #[test]
+    fn a_goodbye_for_an_instance_not_held_takes_no_place() {
+        let mut cache = DnsCache::new();
+        assert_eq!(
+            cache.make_room_for_ptr(&ptr(&format!("x.{TY}"), 1), src(1)),
+            Err(())
+        );
+        offer_ptr(&mut cache, &format!("x.{TY}"), src(1)).unwrap();
+        // A goodbye for one held is let through, to expire it.
+        assert_eq!(
+            cache.make_room_for_ptr(&ptr(&format!("x.{TY}"), 1), src(1)),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn the_next_deadline_is_the_earliest_one_still_ahead() {
+        let mut cache = DnsCache::new();
+        assert_eq!(cache.next_deadline(0), None);
+        let mut room = MAX_CACHED_RECORDS;
+        let short = DnsPointer::new(TY, RRType::PTR, CLASS_IN, 10, format!("a.{TY}")).boxed();
+        let long = DnsPointer::new(TY, RRType::PTR, CLASS_IN, 100, format!("b.{TY}")).boxed();
+        let created = short.get_record().get_created();
+        cache.add_or_update(&intf(), short, &mut Vec::new(), true, src(1), &mut room);
+        cache.add_or_update(&intf(), long, &mut Vec::new(), true, src(1), &mut room);
+        // 80 % of the short TTL comes first; then its expiry.
+        let refresh = cache.next_deadline(created).unwrap();
+        assert!(
+            (created + 7_990..=created + 8_010).contains(&refresh),
+            "{refresh}"
+        );
+        let expiry = cache.next_deadline(refresh).unwrap();
+        assert!(
+            (created + 9_990..=created + 10_010).contains(&expiry),
+            "{expiry}"
+        );
+        // Past both, the long record's refresh is next, not a deadline gone by.
+        let next = cache.next_deadline(expiry).unwrap();
+        assert!(next >= created + 79_990, "{next}");
+    }
+
+    #[test]
+    fn records_nothing_leads_to_are_swept() {
+        let mut cache = DnsCache::new();
+        let mut room = MAX_CACHED_RECORDS;
+        let mut timers = Vec::new();
+        let instance = format!("a.{TY}");
+        let host = "a.local.";
+        let id = InterfaceId {
+            name: "wlan0".to_string(),
+            index: 3,
+        };
+        let records = [
+            ptr(&instance, 4500),
+            DnsSrv::new(&instance, CLASS_IN, 120, 0, 0, 9, host.to_string()).boxed(),
+            DnsTxt::new(&instance, CLASS_IN, 4500, vec![1, b'n']).boxed(),
+            DnsAddress::new(
+                host,
+                RRType::A,
+                CLASS_IN,
+                120,
+                IpAddr::V4(Ipv4Addr::new(192, 168, 1, 7)),
+                id,
+            )
+            .boxed(),
+        ];
+        for r in records {
+            cache.add_or_update(&intf(), r, &mut timers, true, src(1), &mut room);
+        }
+        let now = crate::current_time_millis();
+        // While the type is browsed, everything stays.
+        cache.sweep(now, false, |ty| ty == TY, |_| false);
+        assert_eq!(cache.total_records(), 4);
+        // Once it is not, nothing leads to any of it.
+        cache.sweep(now, false, |_| false, |_| false);
+        assert_eq!(cache.total_records(), 0);
     }
 }

@@ -149,16 +149,15 @@ const UNICAST_REPLY_ADDRS_MAX: usize = 64;
 /// anyway; beyond this many, a new one is dropped rather than queued.
 const DELAYED_RESPONSES_MAX: usize = 16;
 
-/// Most wake-up times the run loop keeps. Each cached record used to add two
-/// on arrival and two more on every refresh, so a neighbour re-sending the
-/// same records grew the heap by 16 bytes a record a packet, for good. Past
-/// this many a new one is dropped, and from then on the loop never sleeps
-/// longer than [`CACHE_CHECK_MILLIS`] -- what it would have woken for is
-/// found by the scans it runs on every pass.
+/// Most wake-up times the run loop keeps. Cached records no longer add any
+/// (see `DnsCache::next_deadline`); this bounds the rest. Past this many a
+/// new one is dropped, and from then on the loop never sleeps longer than
+/// [`CACHE_CHECK_MILLIS`] -- what it would have woken for is found by the
+/// scans it runs on every pass.
 const MAX_TIMERS: usize = 4096;
 
-/// How often, at least, the run loop wakes while it caches records or has
-/// dropped a timer, and how often it sweeps the cache (`DnsCache::sweep`).
+/// How often, at least, the run loop wakes once it has dropped a timer, and
+/// how often at most it sweeps the cache (`DnsCache::sweep`).
 const CACHE_CHECK_MILLIS: u64 = 1000;
 
 /// Most datagrams read from one socket per wake-up. Reading until the socket
@@ -1753,16 +1752,20 @@ impl Zeroconf {
         loop {
             let now = current_time_millis();
 
-            let earliest_timer = self.peek_earliest_timer();
+            // Cached records have no timers of their own (see
+            // `DnsCache::next_deadline`): wake for whichever comes first.
+            let earliest_timer = match (self.peek_earliest_timer(), self.cache.next_deadline(now)) {
+                (Some(timer), Some(deadline)) => Some(timer.min(deadline)),
+                (timer, deadline) => timer.or(deadline),
+            };
             let mut timeout = earliest_timer.map(|timer| {
                 // If `timer` already passed, set `timeout` to be 1ms.
                 let millis = if timer > now { timer - now } else { 1 };
                 Duration::from_millis(millis)
             });
-            // Cached records expire and fall due for refresh without a timer
-            // of their own (refreshes add none, and a timer may have been
-            // dropped): look at them at least this often.
-            if self.timers_dropped || self.cache.total_records() > 0 {
+            // A timer was dropped for MAX_TIMERS, and what it was for is not
+            // known any more: look at everything at least this often.
+            if self.timers_dropped {
                 let most = Duration::from_millis(CACHE_CHECK_MILLIS);
                 timeout = Some(timeout.map_or(most, |t| t.min(most)));
             }
@@ -3431,9 +3434,6 @@ impl Zeroconf {
                 .add_or_update(my_intf, record, &mut timers, is_for_us, src, &mut room)
             {
                 Some((dns_record, true)) => {
-                    timers.push(dns_record.record.get_record().get_expire_time());
-                    timers.push(dns_record.record.get_record().get_refresh_time());
-
                     let ty = dns_record.record.get_type();
                     let name = dns_record.record.get_name();
 
@@ -3443,10 +3443,6 @@ impl Zeroconf {
 
                     // Only process PTR that does not expire soon (i.e. TTL > 1).
                     if ty == RRType::PTR && dns_record.record.get_record().get_ttl() > 1 {
-                        if self.service_queriers.contains_key(name) {
-                            timers.push(dns_record.record.get_record().get_refresh_time());
-                        }
-
                         // send ServiceFound
                         if let Some(dns_ptr) = dns_record.record.any().downcast_ref::<DnsPointer>()
                         {
@@ -3471,9 +3467,8 @@ impl Zeroconf {
                         });
                     }
                 }
-                // A refresh, `Some((_, false))`, adds no timer: the record's
-                // new deadlines are later than those it had, and the run loop
-                // checks cached records at least every CACHE_CHECK_MILLIS.
+                // A refresh, `Some((_, false))`, needs nothing more: the run
+                // loop wakes for the record's new deadlines by itself.
                 _ => {}
             }
         }
@@ -3489,10 +3484,9 @@ impl Zeroconf {
             self.notify_service_removal(replaced);
         }
 
-        // Add timers for the new records.
-        for t in timers {
-            self.add_timer(t);
-        }
+        // `timers` holds the deadlines of new and flushed records, which the
+        // run loop wakes for without timers (`DnsCache::next_deadline`).
+        drop(timers);
 
         // Go through remaining changes to see if any hostname resolutions were found or updated.
         for change in changes
@@ -3737,6 +3731,11 @@ impl Zeroconf {
 
         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
         let mut delayed = false;
+        // A querier on the port this daemon runs on is a full mDNS querier;
+        // anything else is a legacy one (RFC 6762 §6.7). The constant 5353
+        // stood here, so a daemon on another port took its own peers for
+        // legacy queriers and answered them by unicast.
+        let own_port = self.port;
 
         // Special meta-query "_services._dns-sd._udp.<Domain>".
         // See https://datatracker.ietf.org/doc/html/rfc6763#section-9
@@ -3760,7 +3759,7 @@ impl Zeroconf {
                 // PTR answers are shared records: defer the response unless this
                 // is a legacy-unicast (source port != 5353) or probe-defense
                 // (records in the Authority Section) query.
-                if querier_addr.port() == MDNS_PORT && msg.num_authorities() == 0 {
+                if querier_addr.port() == own_port && msg.num_authorities() == 0 {
                     delayed = true;
                 }
                 for service in self.my_services.values() {
@@ -3879,7 +3878,7 @@ impl Zeroconf {
         // A legacy-unicast response (below) goes to the querier's address and
         // port, whatever they are, and the multicast rate limit does not
         // apply to it: count them per address instead.
-        if querier_addr.port() != MDNS_PORT
+        if querier_addr.port() != self.port
             && !self
                 .unicast_replies
                 .allow(querier_ip, current_time_millis())
@@ -3919,7 +3918,7 @@ impl Zeroconf {
         // responses must also echo the question section, clear the
         // cache-flush bit (legacy resolvers don't understand it), and cap
         // record TTLs to 10 seconds (see update_records_for_legacy_unicast).
-        let unicast_dest = if querier_addr.port() != MDNS_PORT {
+        let unicast_dest = if querier_addr.port() != self.port {
             Some(querier_addr)
         } else {
             None
@@ -7599,5 +7598,88 @@ mod tests {
                 ._types(),
             [1]
         );
+    }
+}
+
+/// Sukkula's tests of what its patches add (third_party/mdns-sd.patches).
+#[cfg(test)]
+mod local_link_tests {
+    use super::{
+        is_on_link, MyIntf, UnicastReplyLimiter, UNICAST_REPLIES_PER_ADDR_PER_SEC,
+        UNICAST_REPLY_ADDRS_MAX,
+    };
+    use crate::dns_parser::MAX_PKT_DEFAULT;
+    use if_addrs::{IfAddr, Ifv4Addr};
+    use std::collections::HashSet;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+    fn wifi() -> MyIntf {
+        MyIntf {
+            name: "wlan0".to_string(),
+            index: 3,
+            addrs: HashSet::from([IfAddr::V4(Ifv4Addr {
+                ip: Ipv4Addr::new(192, 168, 1, 10),
+                netmask: Ipv4Addr::new(255, 255, 255, 0),
+                broadcast: None,
+                prefixlen: 24,
+            })]),
+            max_packet_size_v4: MAX_PKT_DEFAULT,
+            max_packet_size_v6: MAX_PKT_DEFAULT,
+        }
+    }
+
+    #[test]
+    fn only_the_subnet_and_link_local_addresses_are_on_link() {
+        let intf = wifi();
+        for (ip, on_link) in [
+            (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 77)), true),
+            (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)), true),
+            (IpAddr::V4(Ipv4Addr::new(169, 254, 3, 4)), true),
+            (IpAddr::V6("fe80::1".parse::<Ipv6Addr>().unwrap()), true),
+            // Private, but another subnet: routed here, or spoofed.
+            (IpAddr::V4(Ipv4Addr::new(192, 168, 2, 77)), false),
+            (IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), false),
+            (IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), false),
+            (IpAddr::V6("fd00::1".parse::<Ipv6Addr>().unwrap()), false),
+            (
+                IpAddr::V6("2001:db8::1".parse::<Ipv6Addr>().unwrap()),
+                false,
+            ),
+        ] {
+            assert_eq!(is_on_link(&ip, &intf), on_link, "{ip}");
+        }
+    }
+
+    #[test]
+    fn legacy_unicast_replies_are_limited_per_address() {
+        let mut limiter = UnicastReplyLimiter::default();
+        let a = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20));
+        let b = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 21));
+        let t0 = 1_000_000;
+        for _ in 0..UNICAST_REPLIES_PER_ADDR_PER_SEC {
+            assert!(limiter.allow(a, t0));
+        }
+        assert!(!limiter.allow(a, t0));
+        assert!(!limiter.allow(a, t0 + 999));
+        // Another address has a budget of its own.
+        assert!(limiter.allow(b, t0 + 999));
+        // A second later the first has one again.
+        assert!(limiter.allow(a, t0 + 1000));
+    }
+
+    #[test]
+    fn legacy_unicast_replies_are_limited_in_how_many_addresses() {
+        let mut limiter = UnicastReplyLimiter::default();
+        let t0 = 1_000_000;
+        let addr = |i: usize| IpAddr::V4(Ipv4Addr::new(10, 0, (i / 256) as u8, (i % 256) as u8));
+        for i in 0..UNICAST_REPLY_ADDRS_MAX {
+            assert!(limiter.allow(addr(i), t0));
+        }
+        // Full: nobody new within the second, and the table stays at its cap.
+        assert!(!limiter.allow(addr(UNICAST_REPLY_ADDRS_MAX), t0 + 500));
+        assert_eq!(limiter.sent.len(), UNICAST_REPLY_ADDRS_MAX);
+        // Once the second is over, the old entries make room.
+        assert!(limiter.allow(addr(UNICAST_REPLY_ADDRS_MAX), t0 + 1000));
+        assert!(limiter.sent.len() <= UNICAST_REPLY_ADDRS_MAX);
     }
 }

@@ -1,3 +1,38 @@
+S7: believe and answer only the local link, and bound the replies
+
+mdns-sd reads every datagram that reaches port 5353 on an enabled
+interface and acts on it, whatever its source:
+
+- A query from any address is answered. One whose source port is not
+  5353 gets a legacy-unicast reply (RFC 6762 §6.7) sent straight to that
+  address and port, which the kernel routes off the link if it has to;
+  such replies are exempt from the once-per-second multicast limit, so a
+  stream of 50-byte queries with a spoofed source makes the responder an
+  unthrottled reflector of 300-byte answers carrying the device name and
+  port.
+- A response from any address and any source port is believed and cached.
+- Deferred PTR responses queue without limit.
+- The legacy-unicast test compares the source port with the constant
+  5353, not the daemon's own port, so two daemons on another port (tests,
+  development) answer each other by unicast.
+
+Now a packet whose source is neither link-local nor on a subnet of the
+interface it arrived on (RFC 6762 §5.5, §11: routed here, or spoofed) is
+dropped unread, and so is one the embedder's new source filter refuses
+(`ServiceDaemon::new_with_source_filter`; Sukkula passes its reach policy,
+private, link-local and ULA only). A response from a port other than the
+daemon's is ignored (RFC 6762 §6, "MUST silently ignore"). Legacy-unicast
+replies are limited to 4 a second per address, for at most 64 addresses at
+once; at most 16 deferred responses wait. "Legacy" means a source port
+other than the daemon's own.
+
+Findings: Sukkula review 2026-09-25 kept[15] (S7 on the Quick Share mDNS
+responder).
+---
+ src/lib.rs            |   5 +-
+ src/service_daemon.rs | 274 +++++++++++++++++++++++++++++++++++++++++-
+ 2 files changed, 273 insertions(+), 6 deletions(-)
+
 diff --git a/src/lib.rs b/src/lib.rs
 index fb98feb..b6e6baf 100644
 --- a/src/lib.rs
@@ -15,7 +50,7 @@ index fb98feb..b6e6baf 100644
  pub use service_info::{
      AsIpAddrs, IntoTxtProperties, ResolvedService, ServiceInfo, TxtProperties, TxtProperty,
 diff --git a/src/service_daemon.rs b/src/service_daemon.rs
-index 5e50bcf..5ad2ae0 100644
+index 5e50bcf..de2c530 100644
 --- a/src/service_daemon.rs
 +++ b/src/service_daemon.rs
 @@ -133,6 +133,22 @@ const SHARED_RESPONSE_DELAY_MAX_MILLIS: u64 = 50;
@@ -240,7 +275,28 @@ index 5e50bcf..5ad2ae0 100644
                  } else {
                      debug!("Invalid message: not query and not response");
                  }
-@@ -3548,6 +3701,10 @@ impl Zeroconf {
+@@ -3443,6 +3596,11 @@ impl Zeroconf {
+ 
+         let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
+         let mut delayed = false;
++        // A querier on the port this daemon runs on is a full mDNS querier;
++        // anything else is a legacy one (RFC 6762 §6.7). The constant 5353
++        // stood here, so a daemon on another port took its own peers for
++        // legacy queriers and answered them by unicast.
++        let own_port = self.port;
+ 
+         // Special meta-query "_services._dns-sd._udp.<Domain>".
+         // See https://datatracker.ietf.org/doc/html/rfc6763#section-9
+@@ -3466,7 +3624,7 @@ impl Zeroconf {
+                 // PTR answers are shared records: defer the response unless this
+                 // is a legacy-unicast (source port != 5353) or probe-defense
+                 // (records in the Authority Section) query.
+-                if querier_addr.port() == MDNS_PORT && msg.num_authorities() == 0 {
++                if querier_addr.port() == own_port && msg.num_authorities() == 0 {
+                     delayed = true;
+                 }
+                 for service in self.my_services.values() {
+@@ -3548,6 +3706,10 @@ impl Zeroconf {
  
          // Defer PTR responses (RFC 6762 §6).
          if delayed && out.answers_count() > 0 {
@@ -251,14 +307,14 @@ index 5e50bcf..5ad2ae0 100644
              out.set_id(msg.id());
              self.increase_counter(Counter::KnownAnswerSuppression, out.known_answer_count());
              let delay =
-@@ -3578,6 +3735,17 @@ impl Zeroconf {
+@@ -3578,6 +3740,17 @@ impl Zeroconf {
          querier_addr: SocketAddr,
      ) {
          let querier_ip = querier_addr.ip();
 +        // A legacy-unicast response (below) goes to the querier's address and
 +        // port, whatever they are, and the multicast rate limit does not
 +        // apply to it: count them per address instead.
-+        if querier_addr.port() != MDNS_PORT
++        if querier_addr.port() != self.port
 +            && !self
 +                .unicast_replies
 +                .allow(querier_ip, current_time_millis())
@@ -269,7 +325,16 @@ index 5e50bcf..5ad2ae0 100644
          let is_ipv4 = querier_ip.is_ipv4();
          let sock_opt = if is_ipv4 {
              &self.ipv4_sock
-@@ -4999,6 +5167,16 @@ fn valid_instance_name(name: &str) -> bool {
+@@ -3610,7 +3783,7 @@ impl Zeroconf {
+         // responses must also echo the question section, clear the
+         // cache-flush bit (legacy resolvers don't understand it), and cap
+         // record TTLs to 10 seconds (see update_records_for_legacy_unicast).
+-        let unicast_dest = if querier_addr.port() != MDNS_PORT {
++        let unicast_dest = if querier_addr.port() != self.port {
+             Some(querier_addr)
+         } else {
+             None
+@@ -4999,6 +5172,16 @@ fn valid_instance_name(name: &str) -> bool {
      name.split('.').count() >= 5
  }
  
@@ -286,3 +351,90 @@ index 5e50bcf..5ad2ae0 100644
  fn notify_monitors(monitors: &mut Vec<Sender<DaemonEvent>>, event: DaemonEvent) {
      monitors.retain(|sender| {
          if let Err(e) = sender.try_send(event.clone()) {
+@@ -7282,3 +7465,86 @@ mod tests {
+         );
+     }
+ }
++
++/// Sukkula's tests of what its patches add (third_party/mdns-sd.patches).
++#[cfg(test)]
++mod local_link_tests {
++    use super::{
++        is_on_link, MyIntf, UnicastReplyLimiter, UNICAST_REPLIES_PER_ADDR_PER_SEC,
++        UNICAST_REPLY_ADDRS_MAX,
++    };
++    use crate::dns_parser::MAX_PKT_DEFAULT;
++    use if_addrs::{IfAddr, Ifv4Addr};
++    use std::collections::HashSet;
++    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
++
++    fn wifi() -> MyIntf {
++        MyIntf {
++            name: "wlan0".to_string(),
++            index: 3,
++            addrs: HashSet::from([IfAddr::V4(Ifv4Addr {
++                ip: Ipv4Addr::new(192, 168, 1, 10),
++                netmask: Ipv4Addr::new(255, 255, 255, 0),
++                broadcast: None,
++                prefixlen: 24,
++            })]),
++            max_packet_size_v4: MAX_PKT_DEFAULT,
++            max_packet_size_v6: MAX_PKT_DEFAULT,
++        }
++    }
++
++    #[test]
++    fn only_the_subnet_and_link_local_addresses_are_on_link() {
++        let intf = wifi();
++        for (ip, on_link) in [
++            (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 77)), true),
++            (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)), true),
++            (IpAddr::V4(Ipv4Addr::new(169, 254, 3, 4)), true),
++            (IpAddr::V6("fe80::1".parse::<Ipv6Addr>().unwrap()), true),
++            // Private, but another subnet: routed here, or spoofed.
++            (IpAddr::V4(Ipv4Addr::new(192, 168, 2, 77)), false),
++            (IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), false),
++            (IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), false),
++            (IpAddr::V6("fd00::1".parse::<Ipv6Addr>().unwrap()), false),
++            (
++                IpAddr::V6("2001:db8::1".parse::<Ipv6Addr>().unwrap()),
++                false,
++            ),
++        ] {
++            assert_eq!(is_on_link(&ip, &intf), on_link, "{ip}");
++        }
++    }
++
++    #[test]
++    fn legacy_unicast_replies_are_limited_per_address() {
++        let mut limiter = UnicastReplyLimiter::default();
++        let a = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20));
++        let b = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 21));
++        let t0 = 1_000_000;
++        for _ in 0..UNICAST_REPLIES_PER_ADDR_PER_SEC {
++            assert!(limiter.allow(a, t0));
++        }
++        assert!(!limiter.allow(a, t0));
++        assert!(!limiter.allow(a, t0 + 999));
++        // Another address has a budget of its own.
++        assert!(limiter.allow(b, t0 + 999));
++        // A second later the first has one again.
++        assert!(limiter.allow(a, t0 + 1000));
++    }
++
++    #[test]
++    fn legacy_unicast_replies_are_limited_in_how_many_addresses() {
++        let mut limiter = UnicastReplyLimiter::default();
++        let t0 = 1_000_000;
++        let addr = |i: usize| IpAddr::V4(Ipv4Addr::new(10, 0, (i / 256) as u8, (i % 256) as u8));
++        for i in 0..UNICAST_REPLY_ADDRS_MAX {
++            assert!(limiter.allow(addr(i), t0));
++        }
++        // Full: nobody new within the second, and the table stays at its cap.
++        assert!(!limiter.allow(addr(UNICAST_REPLY_ADDRS_MAX), t0 + 500));
++        assert_eq!(limiter.sent.len(), UNICAST_REPLY_ADDRS_MAX);
++        // Once the second is over, the old entries make room.
++        assert!(limiter.allow(addr(UNICAST_REPLY_ADDRS_MAX), t0 + 1000));
++        assert!(limiter.sent.len() <= UNICAST_REPLY_ADDRS_MAX);
++    }
++}

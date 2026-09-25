@@ -3439,6 +3439,27 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_received_ttl_is_capped() {
+        // Sukkula's patch: the sender's TTL is kept no longer than
+        // MAX_RECEIVED_TTL, however long it asks for.
+        use super::{DnsRecordExt, FLAGS_AA, MAX_RECEIVED_TTL};
+        let mut out = DnsOutgoing::new(FLAGS_QR_RESPONSE | FLAGS_AA);
+        out.add_answer_at_time(
+            DnsPointer::new(
+                "_x._tcp.local.",
+                RRType::PTR,
+                CLASS_IN,
+                u32::MAX,
+                "a._x._tcp.local.".to_string(),
+            ),
+            0,
+        );
+        let data = out.to_data_on_wire(MAX_PKT_DEFAULT, true).remove(0);
+        let parsed = DnsIncoming::new(data, test_interface_id()).unwrap();
+        assert_eq!(parsed.answers()[0].get_record().get_ttl(), MAX_RECEIVED_TTL);
+    }
+
     fn test_interface_id() -> InterfaceId {
         InterfaceId {
             name: "test".to_string(),
