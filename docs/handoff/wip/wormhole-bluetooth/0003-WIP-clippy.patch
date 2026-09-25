@@ -1,0 +1,33 @@
+From cbeca1b1596096c61027f584dd4f7f51f93711d8 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 25 Sep 2026 06:54:50 +0000
+Subject: [PATCH 3/3] WIP: clippy
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01ENZSCiAud5Vs29ugEacpyR
+---
+ crates/sukkula-engine/src/wormhole/session.rs | 8 +++-----
+ 1 file changed, 3 insertions(+), 5 deletions(-)
+
+diff --git a/crates/sukkula-engine/src/wormhole/session.rs b/crates/sukkula-engine/src/wormhole/session.rs
+index bdd49b7..b4bf911 100644
+--- a/crates/sukkula-engine/src/wormhole/session.rs
++++ b/crates/sukkula-engine/src/wormhole/session.rs
+@@ -491,11 +491,9 @@ mod tests {
+ 
+     /// Holds its thread without yielding, as the library's hashcash mint
+     /// does, until released or for three seconds.
+-    fn stuck(release: std::sync::mpsc::Receiver<()>) -> impl Future<Output = u8> + Send {
+-        async move {
+-            let _ = release.recv_timeout(Duration::from_secs(3));
+-            7
+-        }
++    async fn stuck(release: std::sync::mpsc::Receiver<()>) -> u8 {
++        let _ = release.recv_timeout(Duration::from_secs(3));
++        7
+     }
+ 
+     // One test, not several: the thread count is process-wide.
+-- 
+2.43.0
+

@@ -35,12 +35,13 @@ how many commits; refresh with `docs/handoff/snapshot.sh`).
 | Area | State at handoff |
 | --- | --- |
 | qml-ui | **finished**, all its findings fixed (patch in `wip/qml-ui`). Must merge **together with** engine-core: the UI now writes `settings.wormhole.enabled`, which the engine only accepts once engine-core adds the field. |
-| engine-core | in progress (WIP patches in `wip/engine-core`) |
-| localsend | in progress (WIP patch in `wip/localsend`) |
-| wormhole-bluetooth | in progress (WIP patch in `wip/wormhole-bluetooth`) |
-| quickshare-mdns | in progress, nothing committed yet |
-| ci-harbour | in progress, nothing committed yet |
+| engine-core | in progress: 3 commits (owner-refusal tests and chaos cleanup; settings recovery, wormhole switch, command budgets, progress, requested offers; hub tests) |
+| localsend | in progress: 2 WIP commits |
+| wormhole-bluetooth | in progress: 3 WIP commits (guard ordering, off-runtime hashcash, transit cap, obex cancel barrier; docs; clippy) |
+| quickshare-mdns | in progress: 1 WIP commit (vendored mdns-sd 0.21.4 with bounded-cache and link-only patches); the rqs_lib host-name patch not yet |
+| ci-harbour | in progress: 2 WIP commits |
 
+All five stopped at a session usage limit on 2026-09-25 and were relaunched in the same worktrees.
 This table is refreshed each time `snapshot.sh` runs and the result is
 pushed; `wip/*/STATE` is the source of truth.
 

@@ -1,0 +1,219 @@
+From 8c44013121e74fea1ab4a90f48459688d8ef8960 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 25 Sep 2026 06:54:20 +0000
+Subject: [PATCH 2/2] WIP: clippy ban selftest, workflow policy lint, interop
+ make target
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01ENZSCiAud5Vs29ugEacpyR
+---
+ .github/workflows/ci.yml |  5 ++++
+ Makefile                 | 39 +++++++++++++++++++++++-------
+ ci/check-dicts.sh        |  5 ++++
+ ci/packaging-lint.sh     | 52 ++++++++++++++++++++++++++++++++++++++++
+ 4 files changed, 92 insertions(+), 9 deletions(-)
+
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 2ad55d4..8695487 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -66,6 +66,11 @@ jobs:
+       # the runner -- and clippy, which runs first, must not be the one to
+       # rewrite it.
+       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
++      # The bans in clippy.toml fire on what they were added for, in a
++      # crate of its own that breaks each one (and the D-Bus constructors
++      # the engine does use stay allowed). Offline, after the line above
++      # fetched the dependencies.
++      - run: ./ci/clippy-bans-selftest.sh
+       - run: cargo test --workspace --locked
+       # The vendored Quick Share library's own tests. third_party/ is not a
+       # workspace member, so `cargo test --workspace` never runs them; the
+diff --git a/Makefile b/Makefile
+index e865b78..969bd51 100644
+--- a/Makefile
++++ b/Makefile
+@@ -2,10 +2,11 @@
+ #
+ # The rule, from vuo: `make check` runs exactly what CI's per-pull-request
+ # gate runs (.github/workflows/ci.yml), job for job, from a clean checkout,
+-# with no phone and no Sailfish SDK. Two jobs are left out because they need
+-# the network rather than this tree -- `deny` (the RustSec advisory
+-# database) and `vendor` (open-quickshare at the pinned commit) -- and are
+-# targets of their own. The device RPM is `make rpm`, which needs Docker
++# with no phone and no Sailfish SDK. Three jobs are left out because they
++# need the network rather than this tree -- `deny` (the RustSec advisory
++# database), `vendor` (open-quickshare at the pinned commit) and
++# `wormhole-interop` (the Python client from PyPI) -- and are targets of
++# their own. The device RPM is `make rpm`, which needs Docker
+ # and the SDK image; its Harbour validation is part of it.
+ #
+ # A missing tool fails, like CI's strict modes: a green `make check` that
+@@ -33,17 +34,18 @@ export SUKKULA_NIGHTLY
+ 
+ .PHONY: all check fmt fmt-check lint test rqs-lib-tests doc features deny deps \
+         lockfile fuzz-lint fuzz-smoke ffi-asan cross qml cpp packaging vendor harbour \
+-        rpm sdk-image clean help
++        wormhole-interop rpm sdk-image clean help
+ 
+ all: check
+ 
+ ## check: every per-pull-request CI job that needs no network: test,
+ ## features, deps, fuzz-smoke, ffi-asan, cross, qml, cpp, packaging, harbour,
+-## and the vendor check's selftest. Not deny or vendor (network), not rpm (SDK).
++## and the vendor check's selftest. Not deny, vendor or wormhole-interop
++## (network), not rpm (SDK).
+ check: fmt-check lint test rqs-lib-tests doc features deps lockfile harbour packaging \
+        qml cpp cross ffi-asan fuzz-smoke
+ 	./ci/vendor-check-selftest.sh
+-	@echo "== make check passed (deny and vendor need the network: make deny vendor) =="
++	@echo "== make check passed (deny, vendor and wormhole-interop need the network) =="
+ 
+ ## fmt: format the workspace
+ fmt:
+@@ -53,10 +55,12 @@ fmt-check:
+ 	@echo "== rustfmt =="
+ 	$(CARGO) fmt --all --check
+ 
+-## lint: clippy over the workspace, tests included, warnings denied
++## lint: clippy over the workspace, tests included, warnings denied; then
++## the proof that clippy.toml's bans fire (ci/clippy-bans-selftest.sh)
+ lint:
+ 	@echo "== clippy =="
+ 	$(CARGO) clippy --workspace --all-targets --locked -- -D warnings
++	./ci/clippy-bans-selftest.sh
+ 
+ test:
+ 	@echo "== tests =="
+@@ -98,10 +102,13 @@ deps:
+ lockfile:
+ 	./ci/check-lockfile.sh
+ 
+-## fuzz-lint: clippy over the fuzz crate (its own workspace), on the pinned
++## fuzz-lint: every target's seeds and dictionary (ci/check-dicts.sh, and its
++## self-test); clippy over the fuzz crate (its own workspace), on the pinned
+ ## toolchain, so a target that stopped compiling fails before any fuzzing;
+ ## then the harness's tests (the generated seeds still decode and reach)
+ fuzz-lint:
++	./ci/check-dicts.sh --self-test
++	./ci/check-dicts.sh
+ 	@echo "== clippy, fuzz/ =="
+ 	$(CARGO) clippy --manifest-path fuzz/Cargo.toml --all-targets --locked -- -D warnings
+ 	$(CARGO) test --manifest-path fuzz/Cargo.toml --lib --locked
+@@ -150,6 +157,20 @@ vendor:
+ 	./ci/vendor-check-selftest.sh
+ 	./ci/vendor-check.sh
+ 
++## wormhole-interop: Sukkula against the Python magic-wormhole client, pinned
++## by hash (ci/wormhole-interop-requirements.txt), both ways. Network (PyPI),
++## and Python 3.12 (PYTHON=...).
++PYTHON ?= python3.12
++wormhole-interop:
++	@t=$${CARGO_TARGET_DIR:-target}; case $$t in /*) ;; *) t="$(CURDIR)/$$t" ;; esac; \
++		v="$$t/wormhole-interop-venv"; rm -rf "$$v"; \
++		$(PYTHON) -m venv "$$v" && \
++		"$$v/bin/pip" install --quiet --require-hashes --only-binary=:all: \
++			-r ci/wormhole-interop-requirements.txt && \
++		SUKKULA_PY_WORMHOLE="$$v/bin/wormhole" $(CARGO) test -p sukkula-engine \
++			--no-default-features --features wormhole --locked \
++			--test wormhole_interop -- --include-ignored
++
+ ## harbour: the source-level Harbour gate, then the proof that it bites
+ harbour:
+ 	HARBOUR_CHECK_STRICT=1 ./ci/harbour-check.sh
+diff --git a/ci/check-dicts.sh b/ci/check-dicts.sh
+index a4dd83c..02da71c 100755
+--- a/ci/check-dicts.sh
++++ b/ci/check-dicts.sh
+@@ -43,6 +43,7 @@ esac
+ 
+ # ParseOneDictionaryEntry, line for line; prints libFuzzer's own message
+ # for a line it would refuse.
++# shellcheck disable=SC2016 # awk's program: its $ are awk's own
+ PARSER='
+ function is_space(ch) { return ch == " " || ch == "\t" || ch == "\r" || ch == "\v" || ch == "\f" }
+ function is_hex(ch) { return index("0123456789abcdefABCDEF", ch) > 0 }
+@@ -229,6 +230,9 @@ tree_case() {
+     fi
+     return 0
+ }
++# The changes are single-quoted on purpose: eval runs them in the tree.
++# shellcheck disable=SC2016
++{
+ tree_case pass "a crate whose every target has seeds and a dictionary" ':'
+ tree_case fail "a target with no dictionary" 'rm fuzz/dicts/beta.dict'
+ tree_case fail "a target with no seed directory" 'rm -r fuzz/seeds/beta'
+@@ -238,6 +242,7 @@ tree_case fail "an empty dictionary" ': > fuzz/dicts/beta.dict'
+ tree_case fail "a dictionary whose target is gone" 'printf "\"x\"\n" > fuzz/dicts/gamma.dict'
+ tree_case fail "seeds whose target is gone" 'mkdir fuzz/seeds/gamma && : > fuzz/seeds/gamma/0'
+ tree_case fail "a crate with no targets" 'sed -i "/^\[\[bin\]\]/,\$d" fuzz/Cargo.toml'
++}
+ 
+ if [[ "$status" -eq 0 ]]; then
+     echo "check-dicts: self-test ok ($cases cases)"
+diff --git a/ci/packaging-lint.sh b/ci/packaging-lint.sh
+index c6ede74..90bcb8b 100755
+--- a/ci/packaging-lint.sh
++++ b/ci/packaging-lint.sh
+@@ -111,6 +111,58 @@ else
+     echo "packaging-lint: the rpm workflow stamps a unique Release"
+ fi
+ 
++# The workflow rules docs/BUILDING.md states, each once broken (the review
++# findings named), each a line a later edit could quietly undo:
++#
++#   - the SDK image is never pulled by its tag, which anyone who can push
++#     to the registry can repoint, and nothing that runs a pull request's
++#     code or a crate's build script can push one: rpm.yml holds no
++#     `packages: write`, the one workflow that does runs from main only,
++#     and scripts/build-rpm.sh pulls by digest ("Any branch or dependency
++#     build script with packages:write can overwrite the SDK image");
++#   - a `v*` tag releases only a commit main contains ("A 'v*' tag on any
++#     commit publishes a GitHub release");
++#   - a pull request's runs are grouped by its number, never by the bare
++#     head_ref two forks can share ("Concurrency groups keyed on the bare
++#     head_ref").
++ran=$((ran + 1))
++wf="$root/.github/workflows"
++policy_ok=1
++if grep -n 'group:.*head_ref' "$wf"/*.yml >&2; then
++    fail "a concurrency group keyed on head_ref: two forks' same-named branches cancel each other; key on github.event.pull_request.number"
++    policy_ok=0
++fi
++for f in "$wf"/*.yml; do
++    grep -q 'packages:[[:space:]]*write' "$f" || continue
++    case "$(basename "$f")" in
++        sdk-image.yml)
++            grep -q "^    if: github.ref == 'refs/heads/main'\$" "$f" || {
++                fail "sdk-image.yml holds packages: write but does not refuse to run from a branch other than main"
++                policy_ok=0; }
++            ;;
++        *)
++            fail "$(basename "$f") holds packages: write; only sdk-image.yml may publish the SDK image"
++            policy_ok=0
++            ;;
++    esac
++done
++if grep -n '^[^#]*docker pull' "$wf/rpm.yml" >&2; then
++    fail "rpm.yml pulls an image itself; the SDK image comes from scripts/build-rpm.sh pull, by digest"
++    policy_ok=0
++fi
++# shellcheck disable=SC2016 # the pattern is the script's literal text
++if grep -n '^[^#]*docker pull' "$root/scripts/build-rpm.sh" | grep -v '@\$digest' >&2; then
++    fail "scripts/build-rpm.sh pulls an image other than by its pinned digest"
++    policy_ok=0
++fi
++# shellcheck disable=SC2016 # the pattern is the workflow's literal text
++if ! grep -q 'merge-base --is-ancestor "\$GITHUB_SHA"' "$wf/rpm.yml"; then
++    fail "rpm.yml no longer proves a v* tag's commit is on main before releasing it"
++    policy_ok=0
++fi
++[ "$policy_ok" = 1 ] &&
++    echo "packaging-lint: workflows pull the SDK image by digest, release from main, group by pull request"
++
+ # mb2 derives the package from the directory it runs in and then looks for
+ # rpm/<that>.spec; scripts/build-rpm.sh mounts the tree at a path it
+ # chooses, so that name and the spec's have to agree.
+-- 
+2.43.0
+
