@@ -484,6 +484,7 @@ pub fn settings(mailbox: &str, relay: &str) -> Settings {
         wormhole: WormholeSettings {
             mailbox_url: Some(mailbox.to_owned()),
             relay_url: Some(relay.to_owned()),
+            enabled: true, // CONTRACT: Settings.wormhole.enabled (F-C1)
         },
         ..Settings::default()
     }

@@ -104,12 +104,29 @@ pub(crate) fn open_at(parent: &OwnedFd, name: &str, share: Share) -> Result<Owne
     check(fd, share)
 }
 
+/// Opens `name` inside `parent` as [`open_at`] does, but only if it is
+/// there: `Ok(None)` when it is not, and nothing is created.
+// S3: a read-only O_RDONLY|O_DIRECTORY|O_NOFOLLOW open, relative to the
+// checked parent.
+#[allow(clippy::disallowed_methods)]
+pub(crate) fn open_existing_at(
+    parent: &OwnedFd,
+    name: &str,
+    share: Share,
+) -> Result<Option<OwnedFd>, DirError> {
+    match rustix::fs::openat(parent, name, DIR_FLAGS, Mode::empty()) {
+        Ok(fd) => check(fd, share).map(Some),
+        Err(Errno::NOENT) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
 /// Checks an open directory: ours, and not writable by anyone else.
 // S3/S9: tightening a directory of ours, through its descriptor.
 #[allow(clippy::disallowed_methods)]
 fn check(fd: OwnedFd, share: Share) -> Result<OwnedFd, DirError> {
     let st = rustix::fs::fstat(&fd)?;
-    if !is_dir(&st) || st.st_uid != rustix::process::geteuid().as_raw() {
+    if !is_dir(&st) || !ours(&st) {
         return Err(DirError::NotPlain);
     }
     let mode = st.st_mode & 0o7777;
@@ -135,6 +152,77 @@ pub(crate) type FileId = (u64, u64);
 /// The identity of what `st` describes.
 pub(crate) fn file_id(st: &Stat) -> FileId {
     (st.st_dev, st.st_ino)
+}
+
+/// Whether what `st` describes belongs to this process's effective user
+/// (S3, S9). Anything else in the app's directories was put there by
+/// someone else, and is refused rather than used.
+pub(crate) fn ours(st: &Stat) -> bool {
+    owner_of(st) == rustix::process::geteuid().as_raw()
+}
+
+#[cfg(not(test))]
+fn owner_of(st: &Stat) -> u32 {
+    st.st_uid
+}
+
+#[cfg(test)]
+fn owner_of(st: &Stat) -> u32 {
+    if theirs::is_disowned(file_id(st)) {
+        // Anyone but us.
+        st.st_uid.wrapping_add(1)
+    } else {
+        st.st_uid
+    }
+}
+
+/// Makes a file or directory "someone else's" for a test. Giving it away
+/// for real (`chown`) needs root, and CI runs unprivileged, so tests that
+/// did that returned early everywhere that mattered and the owner checks
+/// went untested ("The ownership-refusal tests return early unless run as
+/// root"). This changes what [`ours`] is told about one inode, and nothing
+/// else: the check itself runs as it does in the app.
+#[cfg(test)]
+pub(crate) mod theirs {
+    use std::path::Path;
+    use std::sync::{Mutex, PoisonError};
+
+    use super::FileId;
+
+    static DISOWNED: Mutex<Vec<FileId>> = Mutex::new(Vec::new());
+
+    /// Treats what `path` names -- not following a symlink -- as another
+    /// user's until the guard is dropped. Every test gives its own files
+    /// away, so tests running in parallel do not see each other's.
+    #[must_use]
+    pub(crate) fn disown(path: &Path) -> Disowned {
+        let st = rustix::fs::lstat(path).unwrap();
+        let id = super::file_id(&st);
+        DISOWNED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(id);
+        Disowned(id)
+    }
+
+    pub(super) fn is_disowned(id: FileId) -> bool {
+        DISOWNED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(&id)
+    }
+
+    /// Gives the inode back when dropped.
+    pub(crate) struct Disowned(FileId);
+
+    impl Drop for Disowned {
+        fn drop(&mut self) {
+            let mut all = DISOWNED.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(i) = all.iter().position(|id| *id == self.0) {
+                all.swap_remove(i);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -209,31 +297,62 @@ mod tests {
         assert!(!dir.path().join("nowhere").exists());
     }
 
-    /// Only testable where the tests may give a directory away: as root, as
-    /// in the CI container. Elsewhere it says so and passes.
     #[test]
     fn a_directory_owned_by_someone_else_is_refused() {
-        if !rustix::process::geteuid().is_root() {
-            eprintln!("skipped: not root, cannot chown");
-            return;
-        }
         let dir = tempfile::tempdir().unwrap();
         let theirs = dir.path().join("theirs");
         std::fs::create_dir(&theirs).unwrap();
-        rustix::fs::chown(&theirs, Some(rustix::fs::Uid::from_raw(4242)), None).unwrap();
-        assert!(matches!(
-            open(&theirs, Share::Nothing),
-            Err(DirError::NotPlain)
-        ));
-        let root = open(dir.path(), Share::ReadOnly).unwrap();
-        assert!(matches!(
-            open_at(&root, "theirs", Share::Nothing),
-            Err(DirError::NotPlain)
-        ));
-        // And its mode is left alone: not ours to change.
         std::fs::set_permissions(&theirs, std::fs::Permissions::from_mode(0o777)).unwrap();
-        assert!(open(&theirs, Share::Nothing).is_err());
-        assert_eq!(mode(&theirs), 0o777);
+        let root = open(dir.path(), Share::ReadOnly).unwrap();
+        {
+            let _given_away = theirs::disown(&theirs);
+            assert!(matches!(
+                open(&theirs, Share::Nothing),
+                Err(DirError::NotPlain)
+            ));
+            assert!(matches!(
+                open_at(&root, "theirs", Share::Nothing),
+                Err(DirError::NotPlain)
+            ));
+            assert!(matches!(
+                open_existing_at(&root, "theirs", Share::Nothing),
+                Err(DirError::NotPlain)
+            ));
+            // And its mode is left alone: not ours to change.
+            assert_eq!(mode(&theirs), 0o777);
+        }
+        // The same directory, ours again, is used and tightened.
+        open(&theirs, Share::Nothing).unwrap();
+        assert_eq!(mode(&theirs), 0o700);
+    }
+
+    #[test]
+    fn an_existing_directory_is_opened_and_a_missing_one_left_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = open(dir.path(), Share::ReadOnly).unwrap();
+        assert!(
+            open_existing_at(&root, "absent", Share::Nothing)
+                .unwrap()
+                .is_none()
+        );
+        assert!(!dir.path().join("absent").exists());
+        std::fs::create_dir(dir.path().join("here")).unwrap();
+        std::fs::set_permissions(
+            dir.path().join("here"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        assert!(
+            open_existing_at(&root, "here", Share::Nothing)
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(mode(&dir.path().join("here")), 0o700);
+        std::os::unix::fs::symlink(dir.path().join("here"), dir.path().join("link")).unwrap();
+        assert!(matches!(
+            open_existing_at(&root, "link", Share::Nothing),
+            Err(DirError::NotPlain)
+        ));
     }
 
     #[test]
