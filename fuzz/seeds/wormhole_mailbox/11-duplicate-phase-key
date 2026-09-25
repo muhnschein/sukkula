@@ -1,0 +1,10 @@
+{"type":"welcome","welcome":{}}
+{"type":"ack","id":null}
+{"type":"claimed","mailbox":"m"}
+{"type":"message","side":"9ec0ffee01","phase":"0123456789","phase":"pake","body":"7b2270616b655f7631223a22353335383636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636227d"}
+{"type":"message","side":"5ec0ffee01","phase":"version","body":"abababababababababababababababababababababababababababababababababababababababababababababababab"}
+{"type":"message","side":"0123456789","phase":"version","body":"abababababababababababababababababababababababababababababababababababababababababababababababab"}
+{"type":"message","side":																																																																														"0123456789","phase":"0","body":"abababababababababababababababababababababababababababababababababababababababababababababababab"}
+{"type":"message","side":"5ec0ffee01","phase":"0","body":"abababababababababababababababababababababababababababababababababababababababababababababababab"}
+{"type":"message","side":"0123456789","phase":"pake","body":"7b2270616b655f7631223a22353335383636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636227d"}
+{"type":"message","side":"0123456789","phase":"1","body":"abababababababababababababacabababababababababababababababababababababababababababababababababab"}
