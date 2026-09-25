@@ -518,8 +518,9 @@ async fn stops_reading(port: u16, source: Option<Ipv4Addr>) -> tokio::task::Join
         .await
         .unwrap();
     tokio::spawn(async move {
-        // About 1 MiB of answers; far more than every buffer between.
-        let requests = b"GET /x HTTP/1.1\r\nHost: x\r\n\r\n".repeat(8000);
+        // About 700 KiB of answers: several times every buffer between --
+        // the server's capped send buffer, rustls's 64 KiB, hyper's own.
+        let requests = b"GET /x HTTP/1.1\r\nHost: x\r\n\r\n".repeat(4000);
         let _ = s.write_all(&requests).await;
         std::future::pending::<()>().await;
     })
@@ -529,23 +530,43 @@ async fn stops_reading(port: u16, source: Option<Ipv4Addr>) -> tokio::task::Join
 /// Nothing timed out a response that could not be written: four addresses
 /// with eight such connections each held every connection the server has,
 /// for as long as they liked, and every honest peer was turned away.
+///
+/// The receiver's handshake timeout is the longest there is, so neither
+/// hyper's header timer nor a connection's lifetime (see
+/// `a_connection_kept_busy_is_retired`) can end these connections within
+/// the bound checked: only the write deadline can.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_sender_that_stops_reading_is_cut_off() {
-    let b = receiver();
+    let mut cfg = NodeConfig::new(1, "Bob");
+    cfg.idle = Duration::from_secs(6);
+    cfg.handshake = Duration::from_secs(20);
+    let b = Node::new(&cfg);
     let port = b.receive().await;
     let listening = b.ls.tasks_running();
+    let start = Instant::now();
     let mut held = Vec::new();
     for a in 0..4 {
         for _ in 0..8 {
             held.push(stops_reading(port, src(90 + a)).await);
         }
     }
-    assert!(b.ls.tasks_running() > listening, "the connections are up");
-    // Every one ends once its answers stop moving.
+    // Every connection the server has is held: a fifth address is dropped
+    // before its handshake.
+    assert!(
+        raw_tls(port, Some(EVE), src(95)).await.is_err(),
+        "every connection is held"
+    );
+    // Every one ends once its answers have not moved for the idle timeout
+    // -- well before the 26 s a connection may live.
     wait("the stalled connections to be cut off", || {
         (b.ls.tasks_running() <= listening).then_some(())
     })
     .await;
+    assert!(
+        start.elapsed() < Duration::from_secs(16),
+        "cut off after {:?}",
+        start.elapsed()
+    );
     an_honest_transfer_still_works(&b).await;
     for h in held {
         h.abort();

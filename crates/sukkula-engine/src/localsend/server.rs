@@ -59,7 +59,7 @@ use sukkula_core::limits::RATE_LIMIT_ENTRIES;
 use sukkula_core::offer::{OfferFile, RawFile, RawOffer};
 use sukkula_core::reach::RateLimiter;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use tokio_rustls::TlsAcceptor;
 use tokio_util::sync::CancellationToken;
@@ -89,6 +89,21 @@ const MAX_BUF_BYTES: usize = 64 * 1024;
 
 /// Most request headers.
 const MAX_HEADERS: usize = 32;
+
+/// The kernel's send buffer for each connection (Linux doubles it).
+///
+/// Everything the server sends is a short JSON answer; files only ever
+/// arrive. Left to itself, Linux grows a connection's send buffer up to
+/// `tcp_wmem`'s maximum, 4 MiB by default, and a peer that stops reading
+/// keeps whatever it filled pinned in the phone's kernel for as long as the
+/// connection lives -- 128 MiB over [`MAX_CONNECTIONS`]. Capped, a stalled
+/// peer pins little, and its answers back up into [`WriteDeadline`] at
+/// once rather than after megabytes.
+const SEND_BUFFER_BYTES: u32 = 32 * 1024;
+
+/// Connections waiting to be accepted: the standard library's backlog, as
+/// `TcpListener::bind` uses.
+const LISTEN_BACKLOG: u32 = 128;
 
 /// Upload requests waiting for the session task at once: as many as the
 /// sender can have connections, so a sender uploading in parallel is
@@ -206,17 +221,11 @@ impl Server {
         identity: Arc<Identity>,
     ) -> Result<Server, ErrorInfo> {
         let config = tls::server_config(&identity)?;
-        // IPv4 only: LocalSend's baseline. Every IPv6 peer would also be one
-        // more reach to reason about (S7), for no peer that lacks IPv4.
-        let listener = TcpListener::bind((shared.opts.bind, shared.opts.port))
-            .await
-            .map_err(|_| {
-                ErrorInfo::new(ErrorCode::Network, "the LocalSend port is not available")
-            })?;
-        let port = listener
-            .local_addr()
-            .map_err(|_| ErrorInfo::new(ErrorCode::Network, "the LocalSend port is not available"))?
-            .port();
+        let unavailable =
+            |_| ErrorInfo::new(ErrorCode::Network, "the LocalSend port is not available");
+        let listener = listen(SocketAddr::new(shared.opts.bind.into(), shared.opts.port))
+            .map_err(unavailable)?;
+        let port = listener.local_addr().map_err(unavailable)?.port();
         shared.set_port(port);
         let inner = Arc::new(Inner::new(shared.clone(), identity, config));
         let task = shared.tasks.spawn(accept_loop(inner.clone(), listener));
@@ -318,6 +327,20 @@ impl Inner {
         }
         idle
     }
+}
+
+/// The listening socket, as `TcpListener::bind` makes it (address reuse, the
+/// standard backlog) but with [`SEND_BUFFER_BYTES`], which every accepted
+/// connection inherits.
+///
+/// IPv4 only: LocalSend's baseline. Every IPv6 peer would also be one more
+/// reach to reason about (S7), for no peer that lacks IPv4.
+fn listen(addr: SocketAddr) -> std::io::Result<TcpListener> {
+    let socket = TcpSocket::new_v4()?;
+    socket.set_reuseaddr(true)?;
+    socket.set_send_buffer_size(SEND_BUFFER_BYTES)?;
+    socket.bind(addr)?;
+    socket.listen(LISTEN_BACKLOG)
 }
 
 async fn accept_loop(inner: Arc<Inner>, listener: TcpListener) {
