@@ -31,9 +31,9 @@ Findings: Sukkula review 2026-09-25 kept[15], kept[1], kept[6].
 ---
  Cargo.toml                |  13 +-
  src/hdl/mdns.rs           |   9 +-
- src/hdl/mdns_discovery.rs | 208 ++++++++++++++++++++++---
- tests/mdns.rs             | 309 +++++++++++++++++++++++++++++++++++++-
- 4 files changed, 508 insertions(+), 31 deletions(-)
+ src/hdl/mdns_discovery.rs | 228 ++++++++++++++++++++++---
+ tests/mdns.rs             | 349 +++++++++++++++++++++++++++++++++++++-
+ 4 files changed, 568 insertions(+), 31 deletions(-)
 
 diff --git a/Cargo.toml b/Cargo.toml
 index 136a2bd..b92c972 100644
@@ -98,7 +98,7 @@ index e16be59..ddb968e 100644
          };
          // Quick Share peers resolve us over IPv4 only (the fork this used to
 diff --git a/src/hdl/mdns_discovery.rs b/src/hdl/mdns_discovery.rs
-index 98c612a..ba02415 100644
+index 98c612a..e32ac76 100644
 --- a/src/hdl/mdns_discovery.rs
 +++ b/src/hdl/mdns_discovery.rs
 @@ -3,7 +3,7 @@ use std::net::IpAddr;
@@ -306,7 +306,7 @@ index 98c612a..ba02415 100644
                              }
                          }
                          _ => {}
-@@ -185,9 +282,80 @@ impl Drop for MDnsDiscovery {
+@@ -185,9 +282,100 @@ impl Drop for MDnsDiscovery {
      }
  }
  
@@ -334,11 +334,21 @@ index 98c612a..ba02415 100644
 +    use super::*;
 +
 +    fn src(i: usize) -> Option<IpAddr> {
-+        Some(IpAddr::from([192, 168, (i / 250) as u8, (i % 250) as u8 + 1]))
++        Some(IpAddr::from([
++            192,
++            168,
++            (i / 250) as u8,
++            (i % 250) as u8 + 1,
++        ]))
 +    }
 +
 +    /// Adds `name` from `source` the way `run` does; false when refused.
-+    fn add(cache: &mut HashMap<String, Remembered>, seq: &mut u64, name: &str, source: Option<IpAddr>) -> bool {
++    fn add(
++        cache: &mut HashMap<String, Remembered>,
++        seq: &mut u64,
++        name: &str,
++        source: Option<IpAddr>,
++    ) -> bool {
 +        match make_room(cache, source) {
 +            Err(()) => return false,
 +            Ok(Some(old)) => {
@@ -347,8 +357,18 @@ index 98c612a..ba02415 100644
 +            Ok(None) => {}
 +        }
 +        *seq += 1;
-+        let info = EndpointInfo { fullname: name.to_string(), ..Default::default() };
-+        cache.insert(name.to_string(), Remembered { info, source, seq: *seq });
++        let info = EndpointInfo {
++            fullname: name.to_string(),
++            ..Default::default()
++        };
++        cache.insert(
++            name.to_string(),
++            Remembered {
++                info,
++                source,
++                seq: *seq,
++            },
++        );
 +        true
 +    }
 +
@@ -388,10 +408,10 @@ index 98c612a..ba02415 100644
 +    }
 +}
 diff --git a/tests/mdns.rs b/tests/mdns.rs
-index 14532b8..0769076 100644
+index 78d15cf..5e2d191 100644
 --- a/tests/mdns.rs
 +++ b/tests/mdns.rs
-@@ -2,14 +2,17 @@
+@@ -2,14 +2,19 @@
  //! the test's own instead of 5353, so nothing is announced on, or read
  //! from, the network the tests run on.
  
@@ -408,14 +428,16 @@ index 14532b8..0769076 100644
 -use rqs_lib::{DeviceType, MDnsServer};
 +use mdns_sd::{IfKind, Receiver, ResolvedService, ServiceDaemon, ServiceEvent, SourcePredicate};
 +use rqs_lib::hdl::{AddrFilter, MAX_ENDPOINTS_PER_SOURCE, SERVICE_TYPE};
-+use rqs_lib::utils::{gen_mdns_endpoint_info, gen_mdns_name, parse_mdns_endpoint_info, parse_mdns_name};
++use rqs_lib::utils::{
++    gen_mdns_endpoint_info, gen_mdns_name, parse_mdns_endpoint_info, parse_mdns_name,
++};
 +use rqs_lib::{DeviceType, EndpointInfo, MDnsDiscovery, MDnsServer};
 +use socket2::{Domain, Protocol, Socket, Type};
 +use tokio::sync::broadcast;
  use tokio_util::sync::CancellationToken;
  
  /// How long anything here may take: registration probes for 750 ms first.
-@@ -106,3 +109,297 @@ async fn the_announcement_registers_and_another_daemon_resolves_it() {
+@@ -114,3 +119,335 @@ async fn the_announcement_registers_and_another_daemon_resolves_it() {
      removed(&events, &fullname).await;
      peer.shutdown().unwrap();
  }
@@ -449,24 +471,44 @@ index 14532b8..0769076 100644
 +    pub fn ptr(ty: &str, instance: &str, ttl: u32) -> Record {
 +        let mut rdata = Vec::new();
 +        name(&mut rdata, instance);
-+        Record { name: ty.to_string(), ty: PTR, ttl, rdata }
++        Record {
++            name: ty.to_string(),
++            ty: PTR,
++            ttl,
++            rdata,
++        }
 +    }
 +
 +    pub fn srv(instance: &str, host: &str, port: u16, ttl: u32) -> Record {
 +        let mut rdata = vec![0, 0, 0, 0];
 +        rdata.extend_from_slice(&port.to_be_bytes());
 +        name(&mut rdata, host);
-+        Record { name: instance.to_string(), ty: SRV, ttl, rdata }
++        Record {
++            name: instance.to_string(),
++            ty: SRV,
++            ttl,
++            rdata,
++        }
 +    }
 +
 +    pub fn txt(instance: &str, entry: &str, ttl: u32) -> Record {
 +        let mut rdata = vec![entry.len() as u8];
 +        rdata.extend_from_slice(entry.as_bytes());
-+        Record { name: instance.to_string(), ty: TXT, ttl, rdata }
++        Record {
++            name: instance.to_string(),
++            ty: TXT,
++            ttl,
++            rdata,
++        }
 +    }
 +
 +    pub fn a(host: &str, ip: std::net::Ipv4Addr, ttl: u32) -> Record {
-+        Record { name: host.to_string(), ty: A, ttl, rdata: ip.octets().to_vec() }
++        Record {
++            name: host.to_string(),
++            ty: A,
++            ttl,
++            rdata: ip.octets().to_vec(),
++        }
 +    }
 +
 +    /// A response carrying `records` as answers.
@@ -511,7 +553,9 @@ index 14532b8..0769076 100644
 +        let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).unwrap();
 +        socket.set_reuse_address(true).unwrap();
 +        socket.set_reuse_port(true).unwrap();
-+        socket.bind(&SocketAddr::from(SocketAddrV4::new(ip, port)).into()).unwrap();
++        socket
++            .bind(&SocketAddr::from(SocketAddrV4::new(ip, port)).into())
++            .unwrap();
 +        socket.set_multicast_if_v4(&Ipv4Addr::LOCALHOST).unwrap();
 +        socket.set_multicast_loop_v4(true).unwrap();
 +        let group = SocketAddr::from((Ipv4Addr::new(224, 0, 0, 251), port));
@@ -527,7 +571,10 @@ index 14532b8..0769076 100644
 +    fn announce(&self, id: [u8; 4], at: Ipv4Addr, ttl: u32) {
 +        let instance = format!("{}.{SERVICE_TYPE}", gen_mdns_name(id));
 +        let host = format!("{}.local.", gen_mdns_name(id));
-+        let n = format!("n={}", gen_mdns_endpoint_info(DeviceType::Phone as u8, "Phone"));
++        let n = format!(
++            "n={}",
++            gen_mdns_endpoint_info(DeviceType::Phone as u8, "Phone")
++        );
 +        self.send(&wire::response(&[
 +            wire::ptr(SERVICE_TYPE, &instance, ttl),
 +            wire::srv(&instance, &host, 4000, ttl),
@@ -601,9 +648,11 @@ index 14532b8..0769076 100644
 +    let to = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
 +    let answers = |from: Ipv4Addr, queries: u16| {
 +        let s = UdpSocket::bind((from, 0)).unwrap();
-+        s.set_read_timeout(Some(Duration::from_millis(1500))).unwrap();
++        s.set_read_timeout(Some(Duration::from_millis(1500)))
++            .unwrap();
 +        for id in 0..queries {
-+            s.send_to(&wire::ptr_query(SERVICE_TYPE, 0x5000 + id), to).unwrap();
++            s.send_to(&wire::ptr_query(SERVICE_TYPE, 0x5000 + id), to)
++                .unwrap();
 +        }
 +        let mut got = 0;
 +        let mut buf = [0u8; 9000];
@@ -623,7 +672,11 @@ index 14532b8..0769076 100644
 +    assert!((1..=4).contains(&burst), "{burst} replies to a burst of 12");
 +
 +    ctk.cancel();
-+    tokio::time::timeout(WAIT, task).await.unwrap().unwrap().unwrap();
++    tokio::time::timeout(WAIT, task)
++        .await
++        .unwrap()
++        .unwrap()
++        .unwrap();
 +}
 +
 +// kept[1], kept[6]: one host on the link announcing without end -- 1500
@@ -692,7 +745,10 @@ index 14532b8..0769076 100644
 +        .values()
 +        .filter(|s| **s == Some(IpAddr::V4(attacker_ip)))
 +        .count();
-+    assert!(from_attacker <= MAX_ENDPOINTS_PER_SOURCE, "{from_attacker} listed from one host");
++    assert!(
++        from_attacker <= MAX_ENDPOINTS_PER_SOURCE,
++        "{from_attacker} listed from one host"
++    );
 +
 +    // What the daemon under it keeps is bounded too: a few instances of the
 +    // attacker's and the phone's, their records, and hardly any timers --
@@ -711,5 +767,9 @@ index 14532b8..0769076 100644
 +    let _ = tokio::time::timeout(WAIT, drain).await;
 +
 +    ctk.cancel();
-+    tokio::time::timeout(WAIT, task).await.unwrap().unwrap().unwrap();
++    tokio::time::timeout(WAIT, task)
++        .await
++        .unwrap()
++        .unwrap()
++        .unwrap();
 +}

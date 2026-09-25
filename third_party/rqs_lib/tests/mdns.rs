@@ -9,7 +9,9 @@ use std::time::{Duration, Instant};
 
 use mdns_sd::{IfKind, Receiver, ResolvedService, ServiceDaemon, ServiceEvent, SourcePredicate};
 use rqs_lib::hdl::{AddrFilter, MAX_ENDPOINTS_PER_SOURCE, SERVICE_TYPE};
-use rqs_lib::utils::{gen_mdns_endpoint_info, gen_mdns_name, parse_mdns_endpoint_info, parse_mdns_name};
+use rqs_lib::utils::{
+    gen_mdns_endpoint_info, gen_mdns_name, parse_mdns_endpoint_info, parse_mdns_name,
+};
 use rqs_lib::{DeviceType, EndpointInfo, MDnsDiscovery, MDnsServer};
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::sync::broadcast;
@@ -96,7 +98,11 @@ async fn the_announcement_registers_and_another_daemon_resolves_it() {
 
     let info = resolved(&events, &fullname).await;
     assert_eq!(info.get_port(), 4242);
-    assert!(info.get_hostname().ends_with(".local."), "{}", info.get_hostname());
+    assert!(
+        info.get_hostname().ends_with(".local."),
+        "{}",
+        info.get_hostname()
+    );
     assert!(info.get_addresses_v4().contains(&Ipv4Addr::LOCALHOST));
     let n = info.get_property_val_str("n").expect("the endpoint info");
     let (device_type, name) = parse_mdns_endpoint_info(n).unwrap();
@@ -105,7 +111,11 @@ async fn the_announcement_registers_and_another_daemon_resolves_it() {
 
     // Stopping says goodbye: the peer forgets us at once, not at expiry.
     ctk.cancel();
-    tokio::time::timeout(WAIT, task).await.unwrap().unwrap().unwrap();
+    tokio::time::timeout(WAIT, task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
     removed(&events, &fullname).await;
     peer.shutdown().unwrap();
 }
@@ -139,24 +149,44 @@ mod wire {
     pub fn ptr(ty: &str, instance: &str, ttl: u32) -> Record {
         let mut rdata = Vec::new();
         name(&mut rdata, instance);
-        Record { name: ty.to_string(), ty: PTR, ttl, rdata }
+        Record {
+            name: ty.to_string(),
+            ty: PTR,
+            ttl,
+            rdata,
+        }
     }
 
     pub fn srv(instance: &str, host: &str, port: u16, ttl: u32) -> Record {
         let mut rdata = vec![0, 0, 0, 0];
         rdata.extend_from_slice(&port.to_be_bytes());
         name(&mut rdata, host);
-        Record { name: instance.to_string(), ty: SRV, ttl, rdata }
+        Record {
+            name: instance.to_string(),
+            ty: SRV,
+            ttl,
+            rdata,
+        }
     }
 
     pub fn txt(instance: &str, entry: &str, ttl: u32) -> Record {
         let mut rdata = vec![entry.len() as u8];
         rdata.extend_from_slice(entry.as_bytes());
-        Record { name: instance.to_string(), ty: TXT, ttl, rdata }
+        Record {
+            name: instance.to_string(),
+            ty: TXT,
+            ttl,
+            rdata,
+        }
     }
 
     pub fn a(host: &str, ip: std::net::Ipv4Addr, ttl: u32) -> Record {
-        Record { name: host.to_string(), ty: A, ttl, rdata: ip.octets().to_vec() }
+        Record {
+            name: host.to_string(),
+            ty: A,
+            ttl,
+            rdata: ip.octets().to_vec(),
+        }
     }
 
     /// A response carrying `records` as answers.
@@ -201,7 +231,9 @@ impl Host {
         let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).unwrap();
         socket.set_reuse_address(true).unwrap();
         socket.set_reuse_port(true).unwrap();
-        socket.bind(&SocketAddr::from(SocketAddrV4::new(ip, port)).into()).unwrap();
+        socket
+            .bind(&SocketAddr::from(SocketAddrV4::new(ip, port)).into())
+            .unwrap();
         socket.set_multicast_if_v4(&Ipv4Addr::LOCALHOST).unwrap();
         socket.set_multicast_loop_v4(true).unwrap();
         let group = SocketAddr::from((Ipv4Addr::new(224, 0, 0, 251), port));
@@ -217,7 +249,10 @@ impl Host {
     fn announce(&self, id: [u8; 4], at: Ipv4Addr, ttl: u32) {
         let instance = format!("{}.{SERVICE_TYPE}", gen_mdns_name(id));
         let host = format!("{}.local.", gen_mdns_name(id));
-        let n = format!("n={}", gen_mdns_endpoint_info(DeviceType::Phone as u8, "Phone"));
+        let n = format!(
+            "n={}",
+            gen_mdns_endpoint_info(DeviceType::Phone as u8, "Phone")
+        );
         self.send(&wire::response(&[
             wire::ptr(SERVICE_TYPE, &instance, ttl),
             wire::srv(&instance, &host, 4000, ttl),
@@ -291,9 +326,11 @@ async fn the_responder_answers_only_the_policy_and_not_without_limit() {
     let to = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
     let answers = |from: Ipv4Addr, queries: u16| {
         let s = UdpSocket::bind((from, 0)).unwrap();
-        s.set_read_timeout(Some(Duration::from_millis(1500))).unwrap();
+        s.set_read_timeout(Some(Duration::from_millis(1500)))
+            .unwrap();
         for id in 0..queries {
-            s.send_to(&wire::ptr_query(SERVICE_TYPE, 0x5000 + id), to).unwrap();
+            s.send_to(&wire::ptr_query(SERVICE_TYPE, 0x5000 + id), to)
+                .unwrap();
         }
         let mut got = 0;
         let mut buf = [0u8; 9000];
@@ -313,7 +350,11 @@ async fn the_responder_answers_only_the_policy_and_not_without_limit() {
     assert!((1..=4).contains(&burst), "{burst} replies to a burst of 12");
 
     ctk.cancel();
-    tokio::time::timeout(WAIT, task).await.unwrap().unwrap().unwrap();
+    tokio::time::timeout(WAIT, task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
 }
 
 // kept[1], kept[6]: one host on the link announcing without end -- 1500
@@ -382,7 +423,10 @@ async fn a_flood_from_one_host_is_bounded_and_keeps_nobody_else_out() {
         .values()
         .filter(|s| **s == Some(IpAddr::V4(attacker_ip)))
         .count();
-    assert!(from_attacker <= MAX_ENDPOINTS_PER_SOURCE, "{from_attacker} listed from one host");
+    assert!(
+        from_attacker <= MAX_ENDPOINTS_PER_SOURCE,
+        "{from_attacker} listed from one host"
+    );
 
     // What the daemon under it keeps is bounded too: a few instances of the
     // attacker's and the phone's, their records, and hardly any timers --
@@ -401,5 +445,9 @@ async fn a_flood_from_one_host_is_bounded_and_keeps_nobody_else_out() {
     let _ = tokio::time::timeout(WAIT, drain).await;
 
     ctk.cancel();
-    tokio::time::timeout(WAIT, task).await.unwrap().unwrap().unwrap();
+    tokio::time::timeout(WAIT, task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
 }

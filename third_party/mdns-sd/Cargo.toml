@@ -9,6 +9,11 @@
 # will likely look very different (and much more reasonable).
 # See Cargo.toml.orig for the original contents.
 
+# Sukkula: a workspace of its own. Sukkula's workspace lists third_party/
+# under `exclude`, and this keeps cargo from searching further up for one
+# (a checkout inside another one would otherwise be taken for a member).
+[workspace]
+
 [package]
 edition = "2018"
 rust-version = "1.71.0"

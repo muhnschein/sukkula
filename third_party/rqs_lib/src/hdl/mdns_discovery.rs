@@ -306,11 +306,21 @@ mod tests {
     use super::*;
 
     fn src(i: usize) -> Option<IpAddr> {
-        Some(IpAddr::from([192, 168, (i / 250) as u8, (i % 250) as u8 + 1]))
+        Some(IpAddr::from([
+            192,
+            168,
+            (i / 250) as u8,
+            (i % 250) as u8 + 1,
+        ]))
     }
 
     /// Adds `name` from `source` the way `run` does; false when refused.
-    fn add(cache: &mut HashMap<String, Remembered>, seq: &mut u64, name: &str, source: Option<IpAddr>) -> bool {
+    fn add(
+        cache: &mut HashMap<String, Remembered>,
+        seq: &mut u64,
+        name: &str,
+        source: Option<IpAddr>,
+    ) -> bool {
         match make_room(cache, source) {
             Err(()) => return false,
             Ok(Some(old)) => {
@@ -319,8 +329,18 @@ mod tests {
             Ok(None) => {}
         }
         *seq += 1;
-        let info = EndpointInfo { fullname: name.to_string(), ..Default::default() };
-        cache.insert(name.to_string(), Remembered { info, source, seq: *seq });
+        let info = EndpointInfo {
+            fullname: name.to_string(),
+            ..Default::default()
+        };
+        cache.insert(
+            name.to_string(),
+            Remembered {
+                info,
+                source,
+                seq: *seq,
+            },
+        );
         true
     }
 

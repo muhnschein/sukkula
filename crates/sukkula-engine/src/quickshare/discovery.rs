@@ -162,9 +162,7 @@ fn found_or_lost(shared: &Arc<Shared>, info: EndpointInfo) {
     // S7: the policy again (mdns-sd and rqs_lib applied it too), and the
     // rate per source, so one host flooding announcements costs bounded
     // work -- counted on Quick Share's budget and the packets' source.
-    if !shared.ctx.permits(source)
-        || !lock(&shared.announcements).allow(source, Instant::now())
-    {
+    if !shared.ctx.permits(source) || !lock(&shared.announcements).allow(source, Instant::now()) {
         return;
     }
     let name = info.name.unwrap_or_default();

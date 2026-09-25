@@ -24,10 +24,10 @@ record, then the goodbye. Without the host-name fix, `new` fails with
 
 Findings: Sukkula review 2026-09-25 kept[0].
 ---
- src/hdl/mdns.rs           |  70 ++++++++++++++++++------
- src/hdl/mdns_discovery.rs |  33 ++++++++----
- tests/mdns.rs             | 108 ++++++++++++++++++++++++++++++++++++++
- 3 files changed, 186 insertions(+), 25 deletions(-)
+ src/hdl/mdns.rs           |  70 ++++++++++++++++++-----
+ src/hdl/mdns_discovery.rs |  33 +++++++----
+ tests/mdns.rs             | 116 ++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 194 insertions(+), 25 deletions(-)
 
 diff --git a/src/hdl/mdns.rs b/src/hdl/mdns.rs
 index 67b6d88..e16be59 100644
@@ -207,10 +207,10 @@ index 9f857f9..98c612a 100644
      pub async fn run(self, ctk: CancellationToken) -> Result<(), anyhow::Error> {
 diff --git a/tests/mdns.rs b/tests/mdns.rs
 new file mode 100644
-index 0000000..14532b8
+index 0000000..78d15cf
 --- /dev/null
 +++ b/tests/mdns.rs
-@@ -0,0 +1,108 @@
+@@ -0,0 +1,116 @@
 +//! mDNS for real: the daemons on the loopback interface and a UDP port of
 +//! the test's own instead of 5353, so nothing is announced on, or read
 +//! from, the network the tests run on.
@@ -306,7 +306,11 @@ index 0000000..14532b8
 +
 +    let info = resolved(&events, &fullname).await;
 +    assert_eq!(info.get_port(), 4242);
-+    assert!(info.get_hostname().ends_with(".local."), "{}", info.get_hostname());
++    assert!(
++        info.get_hostname().ends_with(".local."),
++        "{}",
++        info.get_hostname()
++    );
 +    assert!(info.get_addresses_v4().contains(&Ipv4Addr::LOCALHOST));
 +    let n = info.get_property_val_str("n").expect("the endpoint info");
 +    let (device_type, name) = parse_mdns_endpoint_info(n).unwrap();
@@ -315,7 +319,11 @@ index 0000000..14532b8
 +
 +    // Stopping says goodbye: the peer forgets us at once, not at expiry.
 +    ctk.cancel();
-+    tokio::time::timeout(WAIT, task).await.unwrap().unwrap().unwrap();
++    tokio::time::timeout(WAIT, task)
++        .await
++        .unwrap()
++        .unwrap()
++        .unwrap();
 +    removed(&events, &fullname).await;
 +    peer.shutdown().unwrap();
 +}

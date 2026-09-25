@@ -158,7 +158,7 @@ impl DnsCache {
     /// pass that finds it.
     pub(crate) fn next_deadline(&self, now: u64) -> Option<u64> {
         [&self.ptr, &self.srv, &self.txt, &self.addr, &self.nsec]
-            .into_iter()
+            .iter()
             .flat_map(|map| map.values().flatten())
             .flat_map(|r| {
                 let record = r.record.get_record();

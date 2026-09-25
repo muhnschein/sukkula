@@ -1,0 +1,27 @@
+Packaging: a workspace of its own
+
+Sukkula's workspace lists third_party/ under `exclude`, so cargo, loading
+this crate as a path dependency, goes on looking for a workspace further
+up; a checkout of Sukkula inside another Cargo workspace then fails to
+load ("believes it's in a workspace when it's not"). An empty
+[workspace] ends the search here, as rqs_lib's manifest does.
+---
+ Cargo.toml | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/Cargo.toml b/Cargo.toml
+index b2f319a..85630c6 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -9,6 +9,11 @@
+ # will likely look very different (and much more reasonable).
+ # See Cargo.toml.orig for the original contents.
+ 
++# Sukkula: a workspace of its own. Sukkula's workspace lists third_party/
++# under `exclude`, and this keeps cargo from searching further up for one
++# (a checkout inside another one would otherwise be taken for a member).
++[workspace]
++
+ [package]
+ edition = "2018"
+ rust-version = "1.71.0"

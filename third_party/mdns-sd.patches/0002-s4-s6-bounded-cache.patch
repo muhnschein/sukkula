@@ -47,7 +47,7 @@ table admitted nobody new).
  3 files changed, 901 insertions(+), 82 deletions(-)
 
 diff --git a/src/dns_cache.rs b/src/dns_cache.rs
-index 395ada0..3bbe1a6 100644
+index 395ada0..7348340 100644
 --- a/src/dns_cache.rs
 +++ b/src/dns_cache.rs
 @@ -12,9 +12,34 @@ use crate::{
@@ -116,7 +116,7 @@ index 395ada0..3bbe1a6 100644
 +    /// pass that finds it.
 +    pub(crate) fn next_deadline(&self, now: u64) -> Option<u64> {
 +        [&self.ptr, &self.srv, &self.txt, &self.addr, &self.nsec]
-+            .into_iter()
++            .iter()
 +            .flat_map(|map| map.values().flatten())
 +            .flat_map(|r| {
 +                let record = r.record.get_record();

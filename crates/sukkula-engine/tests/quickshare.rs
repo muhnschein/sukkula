@@ -549,7 +549,12 @@ async fn peers_are_bounded_and_reported() {
     use sukkula_core::limits::MAX_PEERS;
     const PER_SOURCE: usize = 4;
     let rig = Rig::new("Looking");
-    let from = |s: usize| SocketAddr::new(Ipv4Addr::new(127, 3, (s / 250) as u8, (s % 250) as u8 + 1).into(), 9);
+    let from = |s: usize| {
+        SocketAddr::new(
+            Ipv4Addr::new(127, 3, (s / 250) as u8, (s % 250) as u8 + 1).into(),
+            9,
+        )
+    };
     let endpoint = |i: usize| {
         [
             b'a',
@@ -594,7 +599,9 @@ async fn peers_are_bounded_and_reported() {
     assert_eq!(listed(&rig).len(), MAX_PEERS);
     // A device announcing from an address of its own still gets in.
     assert_eq!(
-        rig.adapter.insert_peer(*b"Hnst", from(900), "Honest").as_deref(),
+        rig.adapter
+            .insert_peer(*b"Hnst", from(900), "Honest")
+            .as_deref(),
         Some("qs:Hnst")
     );
     assert!(listed(&rig).contains("qs:Hnst"));

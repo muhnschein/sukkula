@@ -257,7 +257,11 @@ async fn a_host_announcing_without_end_keeps_no_phone_off_the_send_page() {
         }
     }
     tokio::time::sleep(Duration::from_millis(500)).await;
-    let from_attacker = rig.listed().iter().filter(|id| id.starts_with("qs:Z")).count();
+    let from_attacker = rig
+        .listed()
+        .iter()
+        .filter(|id| id.starts_with("qs:Z"))
+        .count();
     assert!(
         from_attacker <= 4,
         "{from_attacker} of one host's devices listed"
