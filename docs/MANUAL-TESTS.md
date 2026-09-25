@@ -23,7 +23,7 @@ Every ID names the requirement it covers.
 | M-3 | §2 lifecycle | Receive on, close the app from the cover. From the desktop, try to send. | Nothing answers on 53317; no Sukkula process remains (`ps`). |
 | M-4 | §2 KeepAlive | Receive a 2 GB file with the screen off. | The transfer completes; with no transfer running the phone suspends as usual. |
 | M-5 | §2 cover | Receive on, go to the home screen. | The cover says "Receiving" and shows progress during a transfer. |
-| M-6 | F-C6 | Share a photo from Gallery and a link from the browser. | Sukkula is offered; "Send via…" opens with the item. |
+| M-6 | F-C6 | Share a photo from Gallery and a link from the browser. With "Send via…" open and a LocalSend or Quick Share peer listed, share a second photo from Gallery. | Sukkula is offered; "Send via…" opens with the item. After the second share one Send page shows the new photo, and the peers come back to its list (discovery kept running). |
 | M-7 | F-C7 | Rename the device in Settings. | LocalSend and Quick Share peers show the new name; empty falls back to the model name. |
 | M-8 | §2 sandbox | Share a photo from Gallery (it lives in `~/Pictures`), and pick a file in `~/Documents` with the file picker. | Record whether each can be sent. With only `Downloads` granted, Sukkula shows "Sukkula can read files in Downloads only" instead of failing silently; if the Share-menu photo is unreadable, raise it with the owner (it needs `UserDirs`, a spec change). |
 | M-9 | S9 | Run `journalctl --user -f \| grep 'sukkula:'` over SSH. Receive a file over each protocol with debug logging off; turn it on in Settings and receive again, a text too; turn it off. | Off: no line at all unless something failed. On: `DEBUG` lines such as `offer accepted` and `transfer finished`, with counts and sizes only: no file name, text, device name, PIN, code or address in any line. Off again: `debug logging off`, then silence. Nothing of Sukkula's under `$HOME` looks like a log file. |
@@ -38,6 +38,8 @@ Every ID names the requirement it covers.
 | M-13 | F-C4 | Send a text containing a URL. | Shown as plain text with Copy; nothing opens; the URL is not a link. |
 | M-14 | S2 | Rename the desktop's LocalSend alias to `Alice`, then U+202E RIGHT-TO-LEFT OVERRIDE, then `gpj.exe`. | Sukkula shows `Alicegpj.exe`, left to right. |
 | M-15 | F-C5 | Cancel a large transfer from each side, in each direction. | Both sides stop; no partial file remains on the phone. |
+| M-16 | F-C1 | Receive on. In Settings, switch off LocalSend, Quick Share, Magic Wormhole and Bluetooth one at a time, leaving Settings after each; each time, try that protocol both ways: from the desktop `nc -vz <phone-ip> 53317` and a LocalSend send; the Pixel's share sheet; `wormhole send` on the laptop and "Receive with a code"; a Bluetooth send. Then switch them all on again. | A protocol switched off is not on the Send page, and nothing reaches the phone over it: 53317 refuses, the phone is not in the Pixel's list, "Receive with a code" is gone from the main page's menu. The others keep working. Switched on again, each works as before. |
+| M-17 | F-C2 | Receive on. Open Settings, change the device name and stay on the page; send a file from the desktop's LocalSend. Accept it, then leave Settings. | The dialog stays until it is answered (Settings being covered restarts nothing) and the file arrives; the new name is used once Settings is left (M-7). |
 
 ## LocalSend
 
@@ -54,7 +56,7 @@ Every ID names the requirement it covers.
 | ID | Covers | Steps | Pass when |
 | --- | --- | --- | --- |
 | M-30 | F-QS1 | Share a file from the Pixel and from the Samsung to the phone, and from the phone to each. | All four arrive intact. |
-| M-31 | F-QS2 | With the Android phone's Quick Share closed, turn Receive on, then open its share sheet. | The phone appears (the BLE nudge worked), or appears after a moment over mDNS. |
+| M-31 | F-QS2 | The nudge goes out only while Sukkula looks for devices to *send* to, so this is a sending test, run twice. Pixel: Quick Share visible to Everyone (Android keeps that for 10 minutes: set it again before (b) if it has lapsed), its Quick Share screen and share sheet closed, screen on and unlocked. Jolla: Receive off, debug logging on, M-9's `journalctl` running. (a) Settings: Bluetooth nudge **off**. Open Send…, choose Quick Share, watch the list for 60 s, go back. (b) Settings: Bluetooth nudge **on**. Open Send…, choose Quick Share, watch for 60 s. | Record for (a) and for (b) whether the Pixel appeared and after how many seconds. Pass: not in (a), within 30 s in (b), with a `BLE nudge on the air` line in the journal in (b) only. If the Pixel appears in (a), it is announcing itself without the nudge and the run proves nothing: close Quick Share on it, lock and unlock it, and repeat (a) until it stays away before running (b). If it never appears in (b), F-QS2 fails: record the journal's `quickshare:` lines (`no BLE nudge` says why). |
 | M-32 | F-QS3 | Share from the Pixel. | The PIN in Sukkula's dialog matches the Pixel's screen. |
 | M-33 | F-QS4 | Set visibility to Hidden. | Neither Android phone can see the phone. |
 | M-34 | F-QS5 | Share a Wi-Fi network from the Pixel. | Refused; no network change on the phone. |

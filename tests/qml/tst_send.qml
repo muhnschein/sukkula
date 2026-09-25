@@ -9,7 +9,9 @@ import "helpers/Events.js" as Ev
  * "Send via…" (F-C6) with each protocol: discovery while the page is up,
  * peers shown as plain text, the send command's exact shape, the file
  * picker, Magic Wormhole's one-item rule and its code page with the QR
- * (F-MW1), and Bluetooth's paired list (F-BT1).
+ * (F-MW1), Bluetooth's paired list (F-BT1), and each protocol switched
+ * off in Settings gone from the page -- Magic Wormhole too, with the main
+ * page's "Receive with a code" (F-C1).
  */
 Script {
     id: test
@@ -213,14 +215,44 @@ Script {
             window.pageStack.pop()
         },
         function () {
-            // Every protocol off: nothing to choose.
+            // F-C1: every protocol but Magic Wormhole off.
             bridge.emitEvent(Ev.settings({ localsend: { enabled: false, pin: null },
                                            quickshare: { enabled: false, visibility: "hidden", ble_nudge: false },
                                            bluetooth: { enabled: false } }))
             test.page = window.pageStack.push(Qt.resolvedUrl("../../qml/pages/SendPage.qml"), { engine: engine })
         },
         function () {
-            test.compare(test.page.available, ["wormhole"], "wormhole has no switch")
+            test.compare(test.page.available, ["wormhole"], "only what is switched on")
+            test.compare(test.page.protocol, "wormhole")
+            // Magic Wormhole switched off under the open page: it goes too.
+            bridge.emitEvent(Ev.settings({ localsend: { enabled: false, pin: null },
+                                           quickshare: { enabled: false, visibility: "hidden", ble_nudge: false },
+                                           wormhole: { enabled: false, mailbox_url: null, relay_url: null },
+                                           bluetooth: { enabled: false } }))
+        },
+        function () {
+            test.compare(test.page.available, [], "Magic Wormhole has a switch as well (F-C1)")
+            test.compare(test.page.protocol, "")
+            test.verify(!probe.find(test.page, "wormholeSend").parent.visible, "no code to make")
+            test.verify(!probe.find(test.page, "protocolChoice").visible, "nothing to choose")
+            test.verify(probe.texts(test.page).indexOf("Every way of sending is switched off in Settings.") >= 0,
+                        "and it says why")
+            window.pageStack.pop()
+            return 50
+        },
+        function () {
+            // (Checked with the main page on top: a covered page's items
+            // are all invisible.)
+            test.verify(!probe.find(window, "receiveWithCode").visible, "no receiving with a code either")
+            // Magic Wormhole alone on.
+            bridge.emitEvent(Ev.settings({ localsend: { enabled: false, pin: null },
+                                           quickshare: { enabled: false, visibility: "hidden", ble_nudge: false },
+                                           bluetooth: { enabled: false } }))
+            return 50
+        },
+        function () {
+            test.verify(probe.find(window, "receiveWithCode").visible, "receiving with a code is back")
+            test.page = window.pageStack.push(Qt.resolvedUrl("../../qml/pages/SendPage.qml"), { engine: engine })
             test.compare(test.page.protocol, "wormhole")
             test.verify(!probe.find(test.page, "wormholeSend").enabled, "nothing chosen, nothing to send")
             // A reply after the page has gone is dropped quietly.

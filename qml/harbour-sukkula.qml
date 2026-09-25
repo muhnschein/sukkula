@@ -46,7 +46,9 @@ ApplicationWindow {
         enabled: sukkula.activeTransfers > 0
     }
 
-    /// The consent dialog on screen, or null.
+    /// The consent dialog in the stack, or null. Cleared only once the
+    /// dialog has left the stack (consentGone), so nothing -- the next
+    /// offer's dialog, a share -- is ever pushed over one.
     property Item consentPage: null
     /// What the Share menu handed over, waiting for the stack.
     property var pendingShare: null
@@ -76,7 +78,7 @@ ApplicationWindow {
             appWindow.consentPage = pageStack.push(Qt.resolvedUrl("pages/ConsentDialog.qml"),
                                                    { engine: sukkula, offer: offer })
             if (appWindow.consentPage) {
-                appWindow.consentPage.finished.connect(appWindow.consentFinished)
+                appWindow.consentPage.gone.connect(appWindow.consentGone)
             }
             return
         }
@@ -95,7 +97,15 @@ ApplicationWindow {
         }
     }
 
-    function consentFinished() {
+    /// The dialog has left the stack: the next offer or share may come.
+    /// Not as soon as it is answered: an answered dialog -- one the engine
+    /// closed above all -- is still on the stack until its own way out
+    /// (ConsentDialog's closer, or Silica's pop) is done, and a dialog
+    /// pushed over it meanwhile left it stranded underneath, a stale offer
+    /// with a frozen countdown that came back once the new one was
+    /// answered. The next push waits for the timer: this runs inside the
+    /// dialog's destruction.
+    function consentGone() {
         appWindow.consentPage = null
         navigation.restart()
     }

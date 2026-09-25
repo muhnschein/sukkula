@@ -30,9 +30,9 @@
 //! reply has been delivered, so at most [`MAX_IN_FLIGHT_COMMANDS`] commands
 //! and their replies exist at once; the next is refused as
 //! [`Refused::Busy`] without a reply. Each runs in a task of its own under
-//! [`COMMAND_TIMEOUT`]. A [`ReplyGuard`] owns the slot: whatever becomes of
-//! the task -- it finishes, it panics, it times out, the runtime drops it
-//! at stop -- exactly one `Reply` is emitted for it.
+//! a time limit ([`command_timeout`]). A [`ReplyGuard`] owns the slot:
+//! whatever becomes of the task -- it finishes, it panics, it times out,
+//! the runtime drops it at stop -- exactly one `Reply` is emitted for it.
 
 use std::cell::Cell;
 use std::collections::VecDeque;
@@ -40,7 +40,7 @@ use std::future::Future;
 use std::io::{self, Read as _};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{JoinHandle, ThreadId};
 use std::time::Duration;
@@ -50,15 +50,15 @@ use sukkula_core::config::{MAX_SETTINGS_BYTES, SETTINGS_FILE, Settings};
 use sukkula_core::consent::{ConsentBroker, ConsentEvent, Decision};
 use sukkula_core::inbox::Inbox;
 use sukkula_core::limits::{
-    MAX_EVENT_BYTES, MAX_FILE_BYTES, MAX_FILES_PER_OFFER, MAX_MESSAGE_BYTES, MAX_MODEL_CHARS,
-    MAX_OFFER_BYTES, MAX_PEERS, OFFER_TIMEOUT,
+    HANDSHAKE_TIMEOUT, MAX_EVENT_BYTES, MAX_FILE_BYTES, MAX_FILES_PER_OFFER, MAX_MESSAGE_BYTES,
+    MAX_MODEL_CHARS, MAX_OFFER_BYTES, MAX_PEERS, NETWORK_IDLE_TIMEOUT, OFFER_TIMEOUT,
 };
 use sukkula_core::name;
 use sukkula_core::reach::ReachPolicy;
 use sukkula_core::store::{Store, StoreError};
 use sukkula_core::text;
 use thiserror::Error;
-use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::{Mutex as AsyncMutex, MutexGuard as AsyncMutexGuard};
 use tokio_util::sync::CancellationToken;
 
 use crate::adapter::{Adapter, Outgoing, OutgoingFile};
@@ -83,6 +83,20 @@ const ADAPTER_TIMEOUT: Duration = Duration::from_secs(15);
 /// timeouts: without it one hung adapter call would hold a command slot
 /// for the life of the engine.
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The most a `receive_wormhole` may take: 150 s. It is answered only once
+/// the user has answered the offer (F-MW2), so it waits for the network and
+/// then for the user, each bounded by the adapter: the mailbox connection
+/// and the key exchange ([`HANDSHAKE_TIMEOUT`] each), the offer
+/// ([`NETWORK_IDLE_TIMEOUT`]), the consent dialog's full [`OFFER_TIMEOUT`],
+/// and a goodbye, with room to spare. Under [`COMMAND_TIMEOUT`] the command
+/// died before the dialog's countdown did ("Wormhole receive consent is
+/// killed by the 60 s command timeout").
+const RECEIVE_CODE_TIMEOUT: Duration = HANDSHAKE_TIMEOUT
+    .saturating_mul(2)
+    .saturating_add(NETWORK_IDLE_TIMEOUT)
+    .saturating_add(OFFER_TIMEOUT)
+    .saturating_add(Duration::from_secs(20));
 
 /// Most events waiting for the sink, not counting replies (which are
 /// bounded by [`MAX_IN_FLIGHT_COMMANDS`]).
@@ -134,6 +148,9 @@ struct Hub {
     discovery: AsyncMutex<()>,
     /// This engine's log (S9), switched by `Settings::logging`.
     logging: Logging,
+    /// The settings file was not used as it was saved; the UI is told with
+    /// every `settings` event until a `set_settings` replaces it.
+    recovered: AtomicBool,
 }
 
 struct HubState {
@@ -201,7 +218,7 @@ impl Engine {
         // Again, now that both exist: a symlink could make two different
         // strings one directory.
         apart(&resolved(&data_dir)?, &resolved(&download_dir)?)?;
-        let settings = load_settings(&store);
+        let (settings, recovered) = load_settings(&store);
         logging.set(settings.logging);
         let model = config
             .device_model
@@ -249,6 +266,7 @@ impl Engine {
             }),
             discovery: AsyncMutex::new(()),
             logging,
+            recovered: AtomicBool::new(recovered),
         });
 
         hub.ctx.emit(Event::Started {
@@ -417,6 +435,7 @@ impl Hub {
         permit: Permit,
     ) {
         let hub = self.clone();
+        let limit = command_timeout(&env.cmd);
         let work = async move { hub.dispatch(env.cmd).await };
         spawn_reply(
             runtime.handle(),
@@ -426,6 +445,7 @@ impl Hub {
                 permit,
                 self.ctx.shutdown_token().clone(),
             ),
+            limit,
             work,
         );
     }
@@ -433,7 +453,7 @@ impl Hub {
     async fn dispatch(self: &Arc<Self>, cmd: Command) -> Result<Option<TransferId>, ErrorInfo> {
         match cmd {
             Command::SetReceiving { on } => {
-                let mut state = self.state.lock().await;
+                let mut state = self.switch().await?;
                 self.set_receiving(&mut state, on).await;
                 Ok(None)
             }
@@ -444,7 +464,7 @@ impl Hub {
                 // Held from the write to the restart: two `set_settings`
                 // cannot leave the file and the engine disagreeing, and a
                 // `set_receiving` cannot slip between a stop and a start.
-                let mut state = self.state.lock().await;
+                let mut state = self.switch().await?;
                 let store = self.ctx.store().clone();
                 let saved = settings.clone();
                 let logging = settings.logging;
@@ -452,6 +472,7 @@ impl Hub {
                     .await
                     .map_err(|_| ErrorInfo::new(ErrorCode::Internal, "the settings write failed"))?
                     .map_err(|e| ErrorInfo::new(ErrorCode::Storage, e.to_string()))?;
+                self.recovered.store(false, Ordering::Release);
                 self.ctx.set_settings(settings);
                 self.logging.set(logging);
                 self.emit_settings();
@@ -540,6 +561,30 @@ impl Hub {
         }
     }
 
+    /// Takes the receive switch for a `set_receiving` or `set_settings`,
+    /// waiting at most [`COMMAND_TIMEOUT`] for the commands before it. Past
+    /// that the command is refused having changed nothing.
+    ///
+    /// These two commands are not under a timeout as a whole (see
+    /// [`command_timeout`]): once one has the switch, it runs to the end, so
+    /// the final `receiving` is always emitted and the statuses are never
+    /// left at `starting`. That end is bounded all the same: every protocol
+    /// start or stop by [`ADAPTER_TIMEOUT`], a `set_settings` by two of
+    /// them and a write of the settings file. A timeout around the whole
+    /// could stop it half-way, with the switch turned and adapters started
+    /// in tasks nobody waits for ("COMMAND_TIMEOUT can cancel
+    /// set_receiving/set_settings mid-critical-section").
+    async fn switch(&self) -> Result<AsyncMutexGuard<'_, HubState>, ErrorInfo> {
+        tokio::time::timeout(COMMAND_TIMEOUT, self.state.lock())
+            .await
+            .map_err(|_| {
+                ErrorInfo::new(
+                    ErrorCode::Internal,
+                    "the receive switch stayed busy; nothing was changed",
+                )
+            })
+    }
+
     /// Turns the receivers on or off. Every receiving adapter is started or
     /// stopped at once, in a task of its own under [`ADAPTER_TIMEOUT`], so
     /// one that hangs or panics is reported as failed and the rest carry
@@ -620,6 +665,7 @@ impl Hub {
         self.ctx.emit(Event::Settings {
             settings: self.ctx.settings(),
             effective_device_name: self.ctx.device_name(),
+            recovered: self.recovered.load(Ordering::Acquire),
         });
     }
 
@@ -706,11 +752,13 @@ where
     out
 }
 
+/// Whether the settings let `protocol` run (F-C1): receive, discover, send,
+/// and for wormhole receive by code.
 fn enabled(settings: &Settings, protocol: Protocol) -> bool {
     match protocol {
         Protocol::LocalSend => settings.localsend.enabled,
         Protocol::QuickShare => settings.quickshare.enabled,
-        Protocol::Wormhole => true,
+        Protocol::Wormhole => settings.wormhole.enabled,
         Protocol::Bluetooth => settings.bluetooth.enabled,
     }
 }
@@ -763,23 +811,33 @@ fn consent_observer(events: EventSink) -> sukkula_core::consent::Observer {
     })
 }
 
-fn load_settings(store: &Store) -> Settings {
-    match store.read_json::<Settings>(SETTINGS_FILE, MAX_SETTINGS_BYTES) {
-        Ok(Some(s)) => s.validate().unwrap_or_else(|e| {
-            // ConfigError's messages are fixed; they name the setting only.
-            tracing::warn!(error = %e, "settings invalid; using defaults");
-            Settings::default()
-        }),
-        Ok(None) => Settings::default(),
+/// The saved settings, and whether they were not usable as saved. A file
+/// that does not read is not replaced by the defaults, which are the most
+/// permissive settings there are: what cannot be read is switched off
+/// (`Settings::from_stored`). The file is left as it is.
+fn load_settings(store: &Store) -> (Settings, bool) {
+    match store.read(SETTINGS_FILE, MAX_SETTINGS_BYTES) {
+        Ok(Some(bytes)) => {
+            let stored = Settings::from_stored(&bytes);
+            if stored.unusable.is_empty() {
+                return (stored.settings, false);
+            }
+            // S9: which parts, by their fixed names; never the file's
+            // content, which holds the device name and the LocalSend PIN.
+            tracing::warn!(
+                parts = ?stored.unusable,
+                "settings file not usable as saved; what could not be read is off"
+            );
+            (stored.settings, true)
+        }
+        Ok(None) => (Settings::default(), false),
         Err(e) => {
-            // S9: only the kind. The error's text quotes the file -- serde
-            // repeats the value it choked on -- and the file holds the
-            // device name and the LocalSend PIN.
+            // S9: only the kind. The error's text names the file's path.
             tracing::warn!(
                 why = store_error_kind(&e),
-                "settings unreadable; using defaults"
+                "settings file unreadable; every protocol is off"
             );
-            Settings::default()
+            (Settings::locked_down(), true)
         }
     }
 }
@@ -889,21 +947,39 @@ impl Drop for ReplyGuard {
     }
 }
 
-/// Runs one command's work under [`COMMAND_TIMEOUT`] and replies through
-/// `guard`.
-fn spawn_reply<F>(runtime: &tokio::runtime::Handle, guard: ReplyGuard, work: F)
-where
+/// How long `cmd` may run before it is answered with `internal`: `None`
+/// for a command bounded inside instead.
+fn command_timeout(cmd: &Command) -> Option<Duration> {
+    match cmd {
+        // The wait for the switch is bounded, and so is every step after
+        // it; see `Hub::switch`.
+        Command::SetReceiving { .. } | Command::SetSettings { .. } => None,
+        // It waits for the user too.
+        Command::ReceiveWormhole { .. } => Some(RECEIVE_CODE_TIMEOUT),
+        _ => Some(COMMAND_TIMEOUT),
+    }
+}
+
+/// Runs one command's work, under `limit` if it has one, and replies
+/// through `guard`.
+fn spawn_reply<F>(
+    runtime: &tokio::runtime::Handle,
+    guard: ReplyGuard,
+    limit: Option<Duration>,
+    work: F,
+) where
     F: Future<Output = Result<Option<TransferId>, ErrorInfo>> + Send + 'static,
 {
     runtime.spawn(async move {
-        let result = tokio::time::timeout(COMMAND_TIMEOUT, work)
-            .await
-            .unwrap_or_else(|_| {
+        let result = match limit {
+            Some(limit) => tokio::time::timeout(limit, work).await.unwrap_or_else(|_| {
                 Err(ErrorInfo::new(
                     ErrorCode::Internal,
                     "the command did not finish in time",
                 ))
-            });
+            }),
+            None => work.await,
+        };
         guard.send(result);
     });
 }
@@ -1676,13 +1752,95 @@ mod tests {
         let lines = lines.lock().unwrap().clone();
         assert!(
             lines.iter().any(|l| l.starts_with("sukkula: WARN ")
-                && l.contains("settings unreadable")
-                && l.contains(r#"why="malformed""#)),
+                && l.contains("settings file not usable as saved")
+                && l.contains(r#"parts=["localsend"]"#)),
             "{lines:?}"
         );
         for l in &lines {
             assert!(!l.contains("98765") && !l.contains("Zorbulon"), "{l}");
         }
+        // A file that is not ours to read at all: by kind too.
+        std::fs::remove_file(data.join(SETTINGS_FILE)).unwrap();
+        std::os::unix::fs::symlink("/etc/hostname", data.join(SETTINGS_FILE)).unwrap();
+        let (engine, _, lines) = start_logged_engine(dir.path());
+        engine.stop();
+        let lines = lines.lock().unwrap().clone();
+        assert!(
+            lines.iter().any(|l| l.starts_with("sukkula: WARN ")
+                && l.contains("settings file unreadable; every protocol is off")
+                && l.contains(r#"why="not a regular file of ours""#)),
+            "{lines:?}"
+        );
+    }
+
+    fn settings_events(log: &Arc<Mutex<Vec<Event>>>) -> Vec<(Settings, bool)> {
+        log.lock()
+            .unwrap()
+            .iter()
+            .filter_map(|e| match e {
+                Event::Settings {
+                    settings,
+                    recovered,
+                    ..
+                } => Some((settings.clone(), *recovered)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The review's case: a mailbox URL an earlier build took costs the
+    /// wormhole section, not the PIN and Hidden; the UI is told until the
+    /// user saves; the file is not touched meanwhile.
+    #[test]
+    fn a_settings_file_that_does_not_read_fails_closed_and_the_ui_is_told() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        Store::open(&data).unwrap();
+        let saved = r#"{"localsend":{"enabled":true,"pin":"4711"},"quickshare":{"enabled":true,"visibility":"hidden","ble_nudge":false},"wormhole":{"mailbox_url":"wss://relay.example/v1?token=x"}}"#;
+        std::fs::write(data.join(SETTINGS_FILE), saved).unwrap();
+        let (engine, log) = start_engine(dir.path());
+        let (s, recovered) = settings_events(&log)[0].clone();
+        assert!(recovered);
+        assert_eq!(s.localsend.pin.as_deref(), Some("4711"));
+        assert!(s.localsend.enabled);
+        assert_eq!(
+            s.quickshare.visibility,
+            sukkula_core::config::Visibility::Hidden
+        );
+        assert!(!s.wormhole.enabled);
+        assert_eq!(s.wormhole.mailbox_url, None);
+        engine.command_json(r#"{"v":1,"id":1,"cmd":{"type":"get_settings"}}"#);
+        wait_for_reply(&log, 1);
+        assert!(settings_events(&log)[1].1, "told again until saved");
+        assert_eq!(
+            std::fs::read_to_string(data.join(SETTINGS_FILE)).unwrap(),
+            saved,
+            "the file is left as it is"
+        );
+        // Receive with a disabled wormhole is refused.
+        engine.command_json(
+            r#"{"v":1,"id":2,"cmd":{"type":"receive_wormhole","code":"7-guitarist-revenge"}}"#,
+        );
+        assert!(matches!(
+            wait_for_reply(&log, 2),
+            Event::Reply { ok: false, error: Some(e), .. } if e.code == ErrorCode::Unavailable
+        ));
+        // Saving settings replaces the file, and the flag goes.
+        let mut fixed = s.clone();
+        fixed.wormhole.enabled = true;
+        let cmd = serde_json::json!({"v":1,"id":3,"cmd":{"type":"set_settings","settings":fixed}});
+        engine.command_json(&cmd.to_string());
+        assert!(matches!(
+            wait_for_reply(&log, 3),
+            Event::Reply { ok: true, .. }
+        ));
+        let (after, recovered) = settings_events(&log).last().unwrap().clone();
+        assert!(!recovered);
+        assert_eq!(after, fixed);
+        engine.stop();
+        let (engine, log) = start_engine(dir.path());
+        assert_eq!(settings_events(&log)[0], (fixed, false));
+        engine.stop();
     }
 
     fn progress(n: u64) -> Event {
@@ -1797,11 +1955,12 @@ mod tests {
                 CancellationToken::new(),
             )
         };
-        spawn_reply(runtime.handle(), guard(1), async {
+        let limit = Some(COMMAND_TIMEOUT);
+        spawn_reply(runtime.handle(), guard(1), limit, async {
             panic!("a bug in dispatch");
         });
-        spawn_reply(runtime.handle(), guard(2), async { Ok(Some(9)) });
-        spawn_reply(runtime.handle(), guard(3), std::future::pending());
+        spawn_reply(runtime.handle(), guard(2), limit, async { Ok(Some(9)) });
+        spawn_reply(runtime.handle(), guard(3), None, std::future::pending());
         wait_until("two replies", || log.lock().unwrap().len() == 2);
         // The runtime drops the pending task, and its guard answers it.
         drop(runtime);
@@ -2206,6 +2365,471 @@ mod tests {
         let started = Instant::now();
         assert_eq!(read_hw_model_from(&fifo), "", "a FIFO is not opened");
         assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    /// An adapter whose every step takes as long as the test says, on the
+    /// runtime's clock: start and stop `switch`, a receive by code the
+    /// number of seconds the code names.
+    struct Slow {
+        protocol: Protocol,
+        switch: Duration,
+    }
+
+    impl Adapter for Slow {
+        fn protocol(&self) -> Protocol {
+            self.protocol
+        }
+
+        fn start_receiving(&self) -> crate::adapter::BoxFuture<'_, Result<(), ErrorInfo>> {
+            Box::pin(async move {
+                tokio::time::sleep(self.switch).await;
+                Ok(())
+            })
+        }
+
+        fn stop_receiving(&self) -> crate::adapter::BoxFuture<'_, ()> {
+            Box::pin(tokio::time::sleep(self.switch))
+        }
+
+        fn send(
+            &self,
+            _: SendTarget,
+            _: Vec<Outgoing>,
+        ) -> crate::adapter::BoxFuture<'_, Result<TransferId, ErrorInfo>> {
+            Box::pin(async { Err(crate::adapter::unavailable("sending")) })
+        }
+
+        fn receive_code(
+            &self,
+            code: String,
+        ) -> crate::adapter::BoxFuture<'_, Result<TransferId, ErrorInfo>> {
+            Box::pin(async move {
+                let secs: u64 = code.parse().unwrap();
+                tokio::time::sleep(Duration::from_secs(secs)).await;
+                Ok(7)
+            })
+        }
+    }
+
+    /// A hub as `Engine::start` builds one, with `adapters`, whose commands
+    /// run on `runtime` -- a runtime with a paused clock, so that minutes of
+    /// timeouts take no time -- and a log of what it delivers.
+    fn test_hub(
+        dir: &Path,
+        adapters: Vec<Arc<dyn Adapter>>,
+    ) -> (Arc<Hub>, Delivery, Arc<Mutex<Vec<Event>>>) {
+        let (delivery, log) = recording_delivery();
+        let events: EventSink = {
+            let gate = delivery.gate.clone();
+            Arc::new(move |e| gate.emit(e))
+        };
+        let ctx = Arc::new(Ctx::new(
+            Settings::default(),
+            "Test Phone".into(),
+            Store::open(&dir.join("data")).unwrap(),
+            Inbox::open(&dir.join("dl")).unwrap(),
+            ConsentBroker::new(consent_observer(events.clone())),
+            ReachPolicy {
+                allow_loopback: true,
+            },
+            events,
+        ));
+        let statuses = statuses(&adapters, &ctx.settings(), false);
+        let hub = Arc::new(Hub {
+            ctx,
+            adapters,
+            gate: delivery.gate.clone(),
+            in_flight: Arc::new(AtomicUsize::new(0)),
+            state: AsyncMutex::new(HubState {
+                receiving: false,
+                statuses,
+            }),
+            discovery: AsyncMutex::new(()),
+            logging: quiet(),
+            recovered: AtomicBool::new(false),
+        });
+        (hub, delivery, log)
+    }
+
+    fn paused_runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .start_paused(true)
+            .build()
+            .unwrap()
+    }
+
+    fn take(hub: &Arc<Hub>, runtime: &tokio::runtime::Runtime, id: RequestId, cmd: &str) {
+        let env = parse_command(&format!(r#"{{"v":1,"id":{id},"cmd":{cmd}}}"#)).unwrap();
+        hub.spawn_command(runtime, env, Permit::acquire(&hub.in_flight).unwrap());
+    }
+
+    fn reply_to(
+        log: &Arc<Mutex<Vec<Event>>>,
+        id: RequestId,
+    ) -> Result<Option<TransferId>, ErrorInfo> {
+        match wait_for_reply(log, id) {
+            Event::Reply {
+                ok: true, transfer, ..
+            } => Ok(transfer),
+            Event::Reply { error: Some(e), .. } => Err(e),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// A `set_receiving` that waited 56 s for the switch behind slow
+    /// protocols still gets it and runs to the end: the final `receiving`
+    /// comes, with no protocol left `starting`. One that would wait past
+    /// 60 s is refused having changed nothing. Under a timeout around the
+    /// whole command, the first was cut off half-way at 60 s, after its
+    /// `starting`.
+    #[test]
+    fn a_switch_that_waited_long_still_finishes_and_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = paused_runtime();
+        let slow = ADAPTER_TIMEOUT.saturating_sub(Duration::from_secs(1));
+        let adapters: Vec<Arc<dyn Adapter>> = vec![
+            Arc::new(Slow {
+                protocol: Protocol::LocalSend,
+                switch: slow,
+            }),
+            Arc::new(Slow {
+                protocol: Protocol::QuickShare,
+                switch: slow,
+            }),
+        ];
+        let (hub, delivery, log) = test_hub(dir.path(), adapters);
+        let on = r#"{"type":"set_receiving","on":true}"#;
+        let off = r#"{"type":"set_receiving","on":false}"#;
+        // 0-14 s: on. 14-42 s: settings, a stop and a start. 42-56 s: off.
+        // 56-70 s: on, which waited 56 s. And one more, which would wait 70.
+        take(&hub, &runtime, 1, on);
+        take(
+            &hub,
+            &runtime,
+            2,
+            r#"{"type":"set_settings","settings":{"device_name":"x"}}"#,
+        );
+        take(&hub, &runtime, 3, off);
+        take(&hub, &runtime, 4, on);
+        take(&hub, &runtime, 5, off);
+        runtime.block_on(async { tokio::time::sleep(Duration::from_secs(300)).await });
+        for id in 1..=4 {
+            assert_eq!(reply_to(&log, id), Ok(None), "command {id}");
+        }
+        let refused = reply_to(&log, 5).unwrap_err();
+        assert_eq!(refused.code, ErrorCode::Internal);
+        assert!(
+            refused.message.contains("nothing was changed"),
+            "{refused:?}"
+        );
+        let last = log
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find_map(|e| match e {
+                Event::Receiving { on, protocols } => Some((*on, protocols.clone())),
+                _ => None,
+            })
+            .unwrap();
+        assert!(last.0, "{last:?}");
+        assert!(
+            last.1.iter().all(|p| p.state == ProtocolState::Ready),
+            "{last:?}"
+        );
+        assert!(runtime.block_on(hub.state.lock()).receiving);
+        assert_eq!(hub.in_flight.load(Ordering::Acquire), 0);
+        drop(delivery);
+    }
+
+    /// A receive by code is answered once the user has answered (F-MW2), so
+    /// it may take the mailbox connection, the key exchange and the offer
+    /// at their slowest, and then the whole minute the dialog counts down,
+    /// less a moment. Under the 60 s every other command has, it died
+    /// while the dialog still showed time left. Bounded all the same.
+    #[test]
+    fn receive_wormhole_may_wait_for_the_user_as_long_as_the_offer_does() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = paused_runtime();
+        let adapters: Vec<Arc<dyn Adapter>> = vec![Arc::new(Slow {
+            protocol: Protocol::Wormhole,
+            switch: Duration::ZERO,
+        })];
+        let (hub, delivery, log) = test_hub(dir.path(), adapters);
+        let slowest = HANDSHAKE_TIMEOUT
+            .saturating_mul(2)
+            .saturating_add(NETWORK_IDLE_TIMEOUT)
+            .saturating_add(OFFER_TIMEOUT)
+            .saturating_sub(Duration::from_secs(2));
+        let receive = |secs: u64| format!(r#"{{"type":"receive_wormhole","code":"{secs}"}}"#);
+        take(&hub, &runtime, 1, &receive(slowest.as_secs()));
+        take(&hub, &runtime, 2, &receive(3600));
+        runtime.block_on(async { tokio::time::sleep(Duration::from_secs(400)).await });
+        assert_eq!(reply_to(&log, 1), Ok(Some(7)));
+        let gave_up = reply_to(&log, 2).unwrap_err();
+        assert_eq!(gave_up.code, ErrorCode::Internal);
+        assert!(gave_up.message.contains("in time"), "{gave_up:?}");
+        // What docs/FFI.md tells the shell.
+        assert_eq!(RECEIVE_CODE_TIMEOUT, Duration::from_secs(150));
+        let doc = include_str!("../../../docs/FFI.md");
+        assert!(doc.contains("| One command's work | 60 s; `receive_wormhole` 150 s,"));
+        assert!(doc.contains("may take up to 150 s"));
+        assert_eq!(COMMAND_TIMEOUT, Duration::from_secs(60));
+        assert!(RECEIVE_CODE_TIMEOUT > slowest);
+        drop(delivery);
+    }
+
+    #[test]
+    fn every_command_has_its_time_limit() {
+        let cmd = |body: &str| {
+            parse_command(&format!(r#"{{"v":1,"id":1,"cmd":{body}}}"#))
+                .unwrap()
+                .cmd
+        };
+        assert_eq!(
+            command_timeout(&cmd(r#"{"type":"set_receiving","on":true}"#)),
+            None
+        );
+        assert_eq!(
+            command_timeout(&cmd(r#"{"type":"set_settings","settings":{}}"#)),
+            None
+        );
+        assert_eq!(
+            command_timeout(&cmd(r#"{"type":"receive_wormhole","code":"7-a-b"}"#)),
+            Some(RECEIVE_CODE_TIMEOUT)
+        );
+        for body in [
+            r#"{"type":"get_settings"}"#,
+            r#"{"type":"start_discovery"}"#,
+            r#"{"type":"answer","offer":1,"accept":true}"#,
+            r#"{"type":"cancel","transfer":1}"#,
+            r#"{"type":"list_bluetooth_devices"}"#,
+        ] {
+            assert_eq!(command_timeout(&cmd(body)), Some(COMMAND_TIMEOUT), "{body}");
+        }
+    }
+
+    /// What the fake adapters were asked to do, by protocol.
+    type Calls = Arc<Mutex<Vec<(Protocol, &'static str)>>>;
+
+    /// An adapter that does at once whatever it is asked, and records it.
+    /// Stops are not recorded: the hub may stop anything, on or off.
+    struct Fake {
+        protocol: Protocol,
+        calls: Calls,
+    }
+
+    impl Fake {
+        fn called(&self, what: &'static str) {
+            self.calls.lock().unwrap().push((self.protocol, what));
+        }
+    }
+
+    impl Adapter for Fake {
+        fn protocol(&self) -> Protocol {
+            self.protocol
+        }
+
+        fn receives(&self) -> bool {
+            matches!(self.protocol, Protocol::LocalSend | Protocol::QuickShare)
+        }
+
+        fn start_receiving(&self) -> crate::adapter::BoxFuture<'_, Result<(), ErrorInfo>> {
+            self.called("start_receiving");
+            Box::pin(async { Ok(()) })
+        }
+
+        fn stop_receiving(&self) -> crate::adapter::BoxFuture<'_, ()> {
+            Box::pin(async {})
+        }
+
+        fn start_discovery(&self) -> crate::adapter::BoxFuture<'_, Result<(), ErrorInfo>> {
+            self.called("start_discovery");
+            Box::pin(async { Ok(()) })
+        }
+
+        fn send(
+            &self,
+            _: SendTarget,
+            _: Vec<Outgoing>,
+        ) -> crate::adapter::BoxFuture<'_, Result<TransferId, ErrorInfo>> {
+            self.called("send");
+            Box::pin(async { Ok(1) })
+        }
+
+        fn receive_code(
+            &self,
+            _: String,
+        ) -> crate::adapter::BoxFuture<'_, Result<TransferId, ErrorInfo>> {
+            self.called("receive_code");
+            Box::pin(async { Ok(2) })
+        }
+
+        fn list_devices(
+            &self,
+        ) -> crate::adapter::BoxFuture<'_, Result<Vec<crate::api::BluetoothDevice>, ErrorInfo>>
+        {
+            self.called("list_devices");
+            Box::pin(async { Ok(Vec::new()) })
+        }
+    }
+
+    const EVERY_PROTOCOL: [Protocol; 4] = [
+        Protocol::LocalSend,
+        Protocol::QuickShare,
+        Protocol::Wormhole,
+        Protocol::Bluetooth,
+    ];
+
+    fn switch_off(settings: &mut Settings, protocol: Protocol) {
+        match protocol {
+            Protocol::LocalSend => settings.localsend.enabled = false,
+            Protocol::QuickShare => settings.quickshare.enabled = false,
+            Protocol::Wormhole => settings.wormhole.enabled = false,
+            Protocol::Bluetooth => settings.bluetooth.enabled = false,
+        }
+    }
+
+    /// The commands that use `protocol`, with what each asks of its adapter.
+    fn commands_of(protocol: Protocol) -> Vec<(String, &'static str)> {
+        let send = |target: &str| {
+            format!(
+                r#"{{"type":"send","target":{target},"items":[{{"kind":"text","text":"hi"}}]}}"#
+            )
+        };
+        match protocol {
+            Protocol::LocalSend => {
+                vec![(send(r#"{"protocol":"local_send","peer":"ls-1"}"#), "send")]
+            }
+            Protocol::QuickShare => {
+                vec![(send(r#"{"protocol":"quick_share","peer":"qs-1"}"#), "send")]
+            }
+            Protocol::Wormhole => vec![
+                (send(r#"{"protocol":"wormhole"}"#), "send"),
+                (
+                    r#"{"type":"receive_wormhole","code":"7-guitarist-revenge"}"#.to_owned(),
+                    "receive_code",
+                ),
+            ],
+            Protocol::Bluetooth => vec![
+                (
+                    send(r#"{"protocol":"bluetooth","address":"AA:BB:CC:DD:EE:FF"}"#),
+                    "send",
+                ),
+                (
+                    r#"{"type":"list_bluetooth_devices"}"#.to_owned(),
+                    "list_devices",
+                ),
+            ],
+        }
+    }
+
+    /// F-C1: each protocol can be switched off in the settings, and then
+    /// nothing uses it. Receive switched on leaves it off, discovery does
+    /// not start it, and its commands -- sends, a receive by code, the
+    /// device list -- are `unavailable` without reaching it. Switched off
+    /// while receiving, it stops. Every other protocol meanwhile does all
+    /// of that, so the test cannot pass by nothing working. Wormhole could
+    /// not be switched off at all ("Magic Wormhole cannot be disabled in
+    /// Settings").
+    #[test]
+    fn a_protocol_switched_off_in_the_settings_is_used_by_no_command() {
+        let final_state = |log: &Arc<Mutex<Vec<Event>>>, protocol: Protocol| {
+            log.lock()
+                .unwrap()
+                .iter()
+                .rev()
+                .find_map(|e| match e {
+                    Event::Receiving { protocols, .. } => protocols
+                        .iter()
+                        .find(|s| s.protocol == protocol)
+                        .map(|s| s.state),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let receives = |p: Protocol| matches!(p, Protocol::LocalSend | Protocol::QuickShare);
+        for off in EVERY_PROTOCOL {
+            let dir = tempfile::tempdir().unwrap();
+            let runtime = paused_runtime();
+            let calls = Calls::default();
+            let adapters: Vec<Arc<dyn Adapter>> = EVERY_PROTOCOL
+                .iter()
+                .map(|&protocol| {
+                    Arc::new(Fake {
+                        protocol,
+                        calls: calls.clone(),
+                    }) as Arc<dyn Adapter>
+                })
+                .collect();
+            let (hub, delivery, log) = test_hub(dir.path(), adapters);
+            let mut next = 0;
+            let mut run = |cmd: &str| {
+                next += 1;
+                take(&hub, &runtime, next, cmd);
+                runtime.block_on(async { tokio::time::sleep(Duration::from_secs(1)).await });
+                reply_to(&log, next)
+            };
+            let mut settings = Settings::default();
+            switch_off(&mut settings, off);
+            let set = serde_json::json!({"type": "set_settings", "settings": settings});
+            run(&set.to_string()).unwrap();
+            run(r#"{"type":"set_receiving","on":true}"#).unwrap();
+            run(r#"{"type":"start_discovery"}"#).unwrap();
+            for p in EVERY_PROTOCOL {
+                for (cmd, _) in commands_of(p) {
+                    let reply = run(&cmd);
+                    if p == off {
+                        assert_eq!(
+                            reply.unwrap_err().code,
+                            ErrorCode::Unavailable,
+                            "{off:?} off: {cmd}"
+                        );
+                    } else {
+                        assert!(reply.is_ok(), "{off:?} off: {cmd}: {reply:?}");
+                    }
+                }
+            }
+            let asked = calls.lock().unwrap().clone();
+            assert!(
+                asked.iter().all(|(p, _)| *p != off),
+                "{off:?} is off, yet: {asked:?}"
+            );
+            for p in EVERY_PROTOCOL.into_iter().filter(|p| *p != off) {
+                let mut expected = vec!["start_discovery"];
+                if receives(p) {
+                    expected.push("start_receiving");
+                }
+                expected.extend(commands_of(p).into_iter().map(|(_, call)| call));
+                for call in expected {
+                    assert!(asked.contains(&(p, call)), "{p:?} never asked {call}");
+                }
+            }
+            for p in EVERY_PROTOCOL {
+                let expected = match (receives(p), p == off) {
+                    (false, _) => ProtocolState::SendOnly,
+                    (true, true) => ProtocolState::Off,
+                    (true, false) => ProtocolState::Ready,
+                };
+                assert_eq!(final_state(&log, p), expected, "{off:?} off: {p:?}");
+            }
+
+            // Everything on while receiving, then `off` switched off again:
+            // it stops, and its commands go with it.
+            run(r#"{"type":"set_settings","settings":{}}"#).unwrap();
+            for p in EVERY_PROTOCOL.into_iter().filter(|p| receives(*p)) {
+                assert_eq!(final_state(&log, p), ProtocolState::Ready, "{p:?}");
+            }
+            run(&set.to_string()).unwrap();
+            if receives(off) {
+                assert_eq!(final_state(&log, off), ProtocolState::Off, "{off:?}");
+            }
+            for (cmd, _) in commands_of(off) {
+                assert_eq!(run(&cmd).unwrap_err().code, ErrorCode::Unavailable, "{cmd}");
+            }
+            drop(delivery);
+        }
     }
 
     #[tokio::test]

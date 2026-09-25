@@ -129,7 +129,9 @@ async fn until_accepted(
     let answer = {
         // Boxed so that dropping it -- which withdraws the offer -- can
         // happen before the goodbye rather than after.
-        let mut asking = Box::pin(inner.ctx.offer(raw));
+        // CONTRACT: the user typed the code, so the offer is one they asked
+        // for, outside the LAN's global offer limit.
+        let mut asking = Box::pin(inner.ctx.offer_requested(raw));
         loop {
             tokio::select! {
                 r = &mut asking => break r.map_err(Some),

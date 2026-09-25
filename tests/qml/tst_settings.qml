@@ -6,10 +6,11 @@ import "helpers"
 import "helpers/Events.js" as Ev
 
 /*
- * Settings (F-C7, F-LS4, F-QS4, F-QS2, F-MW4, S9): loaded from the engine,
- * checked as sukkula-core checks them, saved on the way out only when
- * something changed, with every field the page does not know kept. Then
- * the About page and receiving by wormhole code (F-MW2).
+ * Settings (F-C1, F-C7, F-LS4, F-QS4, F-QS2, F-MW4, S9): loaded from the
+ * engine, checked as sukkula-core checks them, saved when the page is left
+ * -- not when a page is pushed over it -- and only when something changed,
+ * with every field the page does not know kept. Then the About page and
+ * receiving by wormhole code (F-MW2).
  */
 Script {
     id: test
@@ -51,8 +52,15 @@ Script {
             test.compare(test.field("pinField").text, "", "no PIN by default (F-LS4)")
             test.compare(test.field("visibilityBox").currentIndex, 0, "Everyone by default")
             test.compare(test.field("loggingSwitch").checked, false, "logging off by default (S9)")
+            test.compare(test.field("wormholeSwitch").checked, true, "Magic Wormhole on by default (F-C1)")
+            test.compare(test.field("nudgeSwitch").description,
+                         "While the Send page looks for devices, a Bluetooth signal prompts Android phones nearby to show up.",
+                         "the nudge said as what it is: a sending aid (F-QS2)")
             // Leaving unchanged saves nothing.
             window.pageStack.pop()
+            return 50
+        },
+        function () {
             test.compare(test.commandsOfType("set_settings").length, 0)
             test.page = window.pageStack.push(Qt.resolvedUrl("../../qml/pages/SettingsPage.qml"), { engine: engine })
         },
@@ -81,8 +89,23 @@ Script {
             test.verify(test.page.valid, "all good again")
             test.field("deviceNameField").text = "  Pekka  "
             test.field("loggingSwitch").click()
+            test.field("wormholeSwitch").click()
             test.field("visibilityBox").choose(1)
+            // A page over this one is not leaving it: nothing is saved --
+            // the consent dialog comes up over Settings the same way.
+            window.pageStack.push(Qt.resolvedUrl("../../qml/pages/AboutPage.qml"), { engine: engine })
+            return 50
+        },
+        function () {
+            test.compare(test.commandsOfType("set_settings").length, 0, "covered is not left")
             window.pageStack.pop()
+            return 50
+        },
+        function () {
+            test.verify(window.pageStack.currentPage === test.page, "Settings again")
+            test.compare(test.commandsOfType("set_settings").length, 0, "uncovered is not left either")
+            window.pageStack.pop()
+            return 50
         },
         function () {
             var saved = test.commandsOfType("set_settings")
@@ -91,7 +114,7 @@ Script {
                 device_name: "Pekka",
                 localsend: { enabled: true, pin: "4711" },
                 quickshare: { enabled: true, visibility: "hidden", ble_nudge: true },
-                wormhole: { mailbox_url: "WSS://relay.example/v1", relay_url: null },
+                wormhole: { enabled: false, mailbox_url: "WSS://relay.example/v1", relay_url: null },
                 bluetooth: { enabled: true },
                 logging: true
             })
@@ -103,16 +126,22 @@ Script {
             test.page = window.pageStack.push(Qt.resolvedUrl("../../qml/pages/SettingsPage.qml"), { engine: engine })
             test.field("deviceNameField").text = "Other"
             window.pageStack.pop()
+            return 50
+        },
+        function () {
             var saved = test.commandsOfType("set_settings")
             test.compare(saved[saved.length - 1].settings.future_field, { x: 1 })
             test.compare(saved[saved.length - 1].settings.device_name, "Other")
             // A refusal from the engine reaches the main page's banner.
-            var cmds = bridge.parsedCommands()
             bridge.autoReply = false
             test.page = window.pageStack.push(Qt.resolvedUrl("../../qml/pages/SettingsPage.qml"), { engine: engine })
             test.field("deviceNameField").text = "Third"
             window.pageStack.pop()
-            cmds = bridge.parsedCommands()
+            return 50
+        },
+        function () {
+            var cmds = bridge.parsedCommands()
+            test.compare(cmds[cmds.length - 1].cmd.type, "set_settings")
             bridge.emitEvent(Ev.reply(cmds[cmds.length - 1].id, false, "bad_settings"))
         },
         function () {

@@ -150,7 +150,7 @@ public:
         emitEvent(QStringLiteral("{\"type\":\"settings\",\"settings\":{\"device_name\":\"\","
                                  "\"localsend\":{\"enabled\":true,\"pin\":null},"
                                  "\"quickshare\":{\"enabled\":true,\"visibility\":\"everyone\",\"ble_nudge\":true},"
-                                 "\"wormhole\":{\"mailbox_url\":null,\"relay_url\":null},"
+                                 "\"wormhole\":{\"enabled\":true,\"mailbox_url\":null,\"relay_url\":null},"
                                  "\"bluetooth\":{\"enabled\":true},\"logging\":false},"
                                  "\"effective_device_name\":\"Jolla Phone\"}"));
         emitEvent(QStringLiteral("{\"type\":\"receiving\",\"on\":false,\"protocols\":["
