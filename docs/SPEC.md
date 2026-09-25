@@ -79,7 +79,7 @@ Each requirement has an ID; every ID gets at least one automated test or a named
 
 **LocalSend (F-LS)**, via the upstream `localsend` crate, protocol v2:
 
-- **F-LS1** Discovery via multicast 224.0.0.167:53317, plus the HTTP register fallback.
+- **F-LS1** Discovery via multicast 224.0.0.167:53317, plus the HTTP register fallback. **(v0.2: the fallback registers, over HTTPS and pinned, only with servers already known -- found earlier by multicast or that registered with us -- and never scans the subnet as the upstream apps do. A phone on a network that drops multicast therefore finds only devices it has met before or that register with it.)**
 - **F-LS2** HTTPS only, with a self-signed certificate generated on first run and kept in the app data dir (mode 0600). Plain HTTP peers are refused.
 - **F-LS3** When sending, pin the peer's certificate to the fingerprint it announced; abort on mismatch.
 - **F-LS4** Optional receive PIN, off by default.
