@@ -37,7 +37,7 @@ how many commits; refresh with `docs/handoff/snapshot.sh`).
 | qml-ui | **finished**, all its findings fixed (patch in `wip/qml-ui`). Must merge **together with** engine-core: the UI now writes `settings.wormhole.enabled`, which the engine only accepts once engine-core adds the field. |
 | engine-core | in progress: 3 commits (owner-refusal tests and chaos cleanup; settings recovery, wormhole switch, command budgets, progress, requested offers; hub tests) |
 | localsend | in progress: 2 WIP commits |
-| wormhole-bluetooth | in progress: 3 WIP commits (guard ordering, off-runtime hashcash, transit cap, obex cancel barrier; docs; clippy) |
+| wormhole-bluetooth | **merged** into the integration branch (all five findings fixed and proven; SECURITY.md S8 row and fuzz/README wording left to ci-harbour) |
 | quickshare-mdns | in progress: 1 WIP commit (vendored mdns-sd 0.21.4 with bounded-cache and link-only patches); the rqs_lib host-name patch not yet |
 | ci-harbour | in progress: 2 WIP commits |
 
@@ -122,12 +122,12 @@ Practicalities learned the hard way:
 | 9 | low | confirmed | engine-core | Global offer budget is shared with user-initiated wormhole receives: a LAN attacker can make every wormhole receive fail as 'busy' and waste the code | `crates/sukkula-engine/src/ctx.rs` |
 | 10 | low | confirmed | localsend | resume()/release() race closes the listener while Receive is reported on | `crates/sukkula-engine/src/localsend/server.rs` |
 | 11 | low | confirmed | localsend | Forged UDP announcements spend a victim's shared discovery budget and hide it (also from Quick Share) | `crates/sukkula-engine/src/localsend/discovery.rs` |
-| 12 | low | confirmed | wormhole-bluetooth | Mailbox guard checks each message by its phase, but the library uses messages in arrival order, so the W3 split_at panic and the W2 todo!() are still reachable | `crates/sukkula-engine/src/wormhole/mailbox.rs` |
-| 13 | low | confirmed | wormhole-bluetooth | A peer's relay hint can make Sukkula try up to 12 peer-chosen addresses, not the documented three connections | `crates/sukkula-engine/src/wormhole/transit.rs` |
-| 14 | low | confirmed | wormhole-bluetooth | Server-requested hashcash (up to 20 bits, 256-byte resource) is minted synchronously on one of the engine's two tokio workers, beyond the reach of any timeout | `crates/sukkula-engine/src/wormhole/mailbox.rs` |
+| 12 | low | confirmed | wormhole-bluetooth | **merged** into the integration branch (all five findings fixed and proven; SECURITY.md S8 row and fuzz/README wording left to ci-harbour) |
+| 13 | low | confirmed | wormhole-bluetooth | **merged** into the integration branch (all five findings fixed and proven; SECURITY.md S8 row and fuzz/README wording left to ci-harbour) |
+| 14 | low | confirmed | wormhole-bluetooth | **merged** into the integration branch (all five findings fixed and proven; SECURITY.md S8 row and fuzz/README wording left to ci-harbour) |
 | 15 | low | disputed | quickshare-mdns | S7 not held on the Quick Share mDNS responder: any source is answered, legacy-unicast replies go to arbitrary addresses, and there is no per-IP rate limit | `third_party/rqs_lib/src/hdl/mdns.rs` |
 | 16 | low | confirmed | wormhole-bluetooth + ci-harbour | S8 gate does not cover libdbus, which can start processes; only a runtime address check that no lint enforces | `crates/sukkula-engine/src/bluetooth/bus.rs` |
-| 17 | low | confirmed | wormhole-bluetooth | A cancel during the Hello round trip still sends CreateSession, and the obexd session is orphaned | `crates/sukkula-engine/src/bluetooth/bus.rs` |
+| 17 | low | confirmed | wormhole-bluetooth | **merged** into the integration branch (all five findings fixed and proven; SECURITY.md S8 row and fuzz/README wording left to ci-harbour) |
 | 18 | low | disputed | engine-core | One invalid or unknown field in settings.json silently resets every setting to the most permissive defaults (drops the LocalSend PIN, Quick Share Hidden becomes Everyone) | `crates/sukkula-engine/src/hub.rs` |
 | 19 | low | confirmed | engine-core | deny_unknown_fields is not enforced for unit variants of the internally tagged Command and SendTarget enums | `crates/sukkula-engine/src/api.rs` |
 | 20 | low | confirmed | engine-core | COMMAND_TIMEOUT can cancel set_receiving/set_settings mid-critical-section: final Receiving never emitted, statuses stuck at 'starting', adapter tasks detached | `crates/sukkula-engine/src/hub.rs` |

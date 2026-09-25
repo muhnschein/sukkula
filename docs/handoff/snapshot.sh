@@ -19,7 +19,7 @@ area_of() {
         *a602b544075aa35fa) echo quickshare-mdns ;;
         *a506480e435f5cd36) echo localsend ;;
         *abdff3a097115f0b3) echo engine-core ;;
-        *aa31243a61787cb91) echo wormhole-bluetooth ;;
+        *aa31243a61787cb91) echo wormhole-bluetooth-merged ;;
         *a1100ec55d3d67d57) echo qml-ui ;;
         *af1887251db015b9e) echo ci-harbour ;;
         *) basename "$1" ;;
