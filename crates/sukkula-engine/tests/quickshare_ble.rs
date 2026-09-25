@@ -107,6 +107,10 @@ impl Drop for Daemon {
     }
 }
 
+// CONTRACT: S8 bans libdbus's connection constructors outside the checked
+// ones (clippy.toml); the fake connects to the test's own daemon, at an
+// address it made.
+#[allow(clippy::disallowed_methods)]
 fn connect(address: &str, name: &str) -> Channel {
     let mut ch = Channel::open_private(address).unwrap();
     ch.register().unwrap();

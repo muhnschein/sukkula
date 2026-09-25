@@ -59,22 +59,29 @@ ever prints "ok" is indistinguishable from one that has stopped looking.
 ## Why rpm.yml runs on pull requests
 
 piirit and vuo build packages only on demand. Sukkula also builds one for
-every pull request that touches what decides the package: the spec, the
-`.pro`, the `.desktop` file, icons, translations, the Harbour rules and the
-scripts that build and judge the RPM -- and `Cargo.lock`, every
-`Cargo.toml` and `build.rs`, and `rust-toolchain.toml`.
+every pull request that touches what the package is built from: the Rust
+crates and `third_party/` (the engine), `src/` (the C++ shell, its link
+flags in `src/hardening.pri` and its export list `src/dynamic.list`),
+`qml/`, icons, translations, the spec, the `.pro`, the `.desktop` file,
+`Cargo.lock`, every `Cargo.toml` and `build.rs`, `rust-toolchain.toml`,
+and the Harbour rules and scripts that build and judge the RPM.
 
-The last group is the reason. Three Harbour rules can only be answered by
-the built package: the `Requires` rpm generates from the binary's symbol
-versions, the shared libraries the final link keeps, and whether `main()`
-survives the strip. A dependency bump can change the first two without
-touching a line of packaging -- a crate whose build script starts linking
-a system library that is not on the allowed list (libudev, libsystemd); one
+Two reasons. Three Harbour rules can only be answered by the built
+package: the `Requires` rpm generates from the binary's symbol versions,
+the shared libraries the final link keeps, and whether `main()` survives
+the strip. A dependency bump can change the first two without touching a
+line of packaging -- a crate whose build script starts linking a system
+library that is not on the allowed list (libudev, libsystemd); one
 compiled against newer glibc headers needs a symbol version the phone
-lacks -- and the per-PR
-`cross` job, built with Ubuntu's toolchain, cannot see the phone's glibc.
-UI-only changes (`qml/`, `src/`) do not trigger it: every Harbour question
-about them is answerable from the sources, and the `harbour` job asks them.
+lacks -- and the per-PR `cross` job, built with Ubuntu's toolchain, cannot
+see the phone's glibc. And the validator runs `strings(1)` over every file
+in the package, so a string in the code is the package's: a home
+directory in a Rust `#[error("...")]` attribute or a C++ `#define` is an
+`ERROR 'Hardcoded path'`, whatever the source check makes of it. The
+paths once left out `crates/`, `src/` and `qml/`, so such a change merged
+with neither check looking at it (finding "Harbour source gate skips
+every '#' line"); P.6 now fails a tree whose `rpm.yml` leaves any of them
+out.
 
 ## What the source check covers
 
@@ -104,7 +111,7 @@ policy, stricter than Harbour.
 | 1.7.3 | `Q_DECL_EXPORT int main` in `src/main.cpp`, and `CONFIG += sailfishapp`, whose `-rdynamic` puts it in `.dynsym` |
 | 1.8.1 -- 1.8.7 | no `Vendor:`; no `Provides:`, `Obsoletes:`, `Conflicts:`, `Recommends:`, `Suggests:`, `Supplements:`, `Enhances:`; every `Requires:` unversioned and allowed; no scriptlets or triggers of any kind; XmlListModel required if imported; no `libsailfishapp-launcher` |
 | 1.8.8 | the spec filters `libdbus-1.so.3(LIBDBUS_1_3)(64bit)` from the generated Requires, and nothing else (below) |
-| 2.1 | no `/home/nemo` or `/home/defaultuser` in anything compiled or shipped (C++, QML, the Rust crates and `third_party/`, comments aside) |
+| 2.1 | no `/home/nemo` or `/home/defaultuser` in anything compiled or shipped: C++, QML, JavaScript, the Rust crates and `third_party/` with only real comments (`//`, `/* */`) dropped -- a `#[...]` attribute, a `#define` and a line starting with `*` are code -- and every other file under `src/`, `qml/` and a crate's `src/` read whole, since `include_str!` or a Qt resource puts it in the binary |
 | 2.5 | the app's data path follows `OrganizationName/ApplicationName` |
 | 2.6 | nothing writes to a path the package installs |
 | 2.7 | every platform QML module imported has its package required (`Nemo.Notifications`, `Nemo.KeepAlive`) |
@@ -113,18 +120,23 @@ policy, stricter than Harbour.
 | P.3 | every SDK version the packaging can build against is 5.2 or later |
 | P.4 | `OrganizationName=sukkula`, `ApplicationName=sukkula` |
 | P.5 | platform QML modules are exactly spec §2's: Sailfish.Silica, Sailfish.Share, Sailfish.Pickers, Nemo.KeepAlive, Nemo.Notifications |
+| P.6 | `rpm.yml` runs Jolla's validator on every pull request that changes the package: its `pull_request` trigger has no `paths:` filter, or one (a block list, no `paths-ignore`) that names the crates, `third_party/`, `src/`, `qml/`, icons, translations, the spec, the manifests and the lockfile |
 
 ## What only the built package shows
 
 `rpm.yml` runs two things on every RPM, and fails the job on either:
 
 - **`ci/check-elf.sh`** on `/usr/bin/harbour-sukkula` out of the package:
-  stripped; `main()` a defined dynamic symbol; `__libc_start_main@GLIBC_2.34`
-  linked; no glibc symbol version newer than the target sysroot's own; every
-  `NEEDED` library on the allowed list; RELRO, BIND_NOW, PIE, no text
-  relocations, a non-executable stack, no RPATH. The same script judges the
-  probe `scripts/cross-build-rust.sh` links against the engine on every
-  pull request.
+  stripped; `main()` a defined dynamic symbol, and nothing else of ours
+  exported (`--only-main`: every other defined dynamic symbol has to be one
+  the C runtime or the linker script puts in every executable -- never a
+  Bridge method, a `sukkula_*` entry point or a Rust symbol);
+  `__libc_start_main@GLIBC_2.34` linked; no glibc symbol version newer than
+  the target sysroot's own; every `NEEDED` library on the allowed list;
+  RELRO, BIND_NOW, PIE, no text relocations, a non-executable stack, no
+  RPATH. The same script judges the probe `scripts/cross-build-rust.sh`
+  links against the engine on every pull request, with the shell's export
+  flags, so a Rust symbol reaching `.dynsym` fails there first.
 - **`ci/harbour-validate-rpm.sh`**: Jolla's validator itself.
 
 ## Sailjail permissions, and why each
@@ -175,14 +187,20 @@ The `silica-qt5` booster in mapplauncherd `dlopen()`s the binary and looks
 does not export it. The C++ entry point is `Q_DECL_EXPORT int main(...)`,
 and `CONFIG += sailfishapp` links with `-rdynamic` under
 `-fvisibility=hidden`, which puts `main` -- and only the exported symbols --
-into `.dynsym`.
+into `.dynsym`. `-rdynamic` alone would also export every global symbol of
+the Rust static library, so `src/hardening.pri` links with
+`--dynamic-list=src/dynamic.list` (main alone) and `--exclude-libs,ALL`.
+`ci/check-elf.sh --only-main` holds the packaged binary to that: before
+it, only a host test (`tests/run-cpp-tests.sh`), linked with a stand-in of
+the SDK's `sailfishapp.prf`, checked that nothing else was exported (finding
+"check-elf.sh does not check the 'only main exported' rule").
 
 Nothing strips the binary by default: piirit found that the SDK's rpmbuild
 does not (every package it built carried "file is not stripped!"), and
 qmake's install is told not to. The spec's install section runs
 `strip --strip-all` itself, which drops `.symtab` and keeps `.dynsym`, so
-`main` survives; `ci/check-elf.sh --stripped --main-export` proves both on
-the packaged binary.
+`main` survives; `ci/check-elf.sh --stripped --main-export --only-main`
+proves all three on the packaged binary.
 
 ## libdbus-1's versioned Requires
 
@@ -201,11 +219,31 @@ not Qt).
 
 `ci/harbour/waivers.conf` is where a rule this package knowingly breaks
 would be recorded, one line each with its reason:
-`<check id> <subject glob> <message glob>  # why`. The source check matches
-its findings on the ID and the subject; the RPM check matches the
-validator's subject *and* message, so a waiver excuses one known finding
-and never every finding about a path. A waiver that stops matching anything
-fails the source check, so an entry cannot outlive what it excuses.
+
+```
+<checker>  <id>  <subject glob>  <message glob>  # why
+```
+
+The checker says whose finding it is. `source` is `ci/harbour-check.sh`,
+and the id is one of its check IDs above; `rpm` is Jolla's validator
+through `ci/harbour-validate-rpm.sh`, and the id is its severity, `ERROR`
+or `WARNING` (the validator names no check). Each check reads only its own
+lines and waives a finding only when the id, the subject glob *and* the
+message glob all match, so a waiver excuses one known finding and never
+every finding about a path; a message glob of nothing but `*` and `?` is
+refused, and so is a line with no reason. Each check fails on a waiver of
+its own that matched nothing, so an entry cannot outlive what it excuses,
+and both fail on a malformed line of either kind. `ci/harbour-waivers.sh`
+is the one parser.
+
+That is a fix (finding "Waiver scope differs between the two Harbour
+checks"): the file used to have no checker column, the RPM check ignored
+the id, and the source check read the same line by id and subject alone.
+A waiver written for the source check, with the message `*` as its
+selftest wrote them, then waived every validator finding about its path --
+"Binary must export main()" and "Hardcoded path" included -- and a waiver
+for a validator-only finding could not be written at all, because the
+source check called it stale.
 
 **It is empty, and is meant to stay empty.** Sukkula has no known Harbour
 blocker; the spec puts anything the validator rejects out of scope. A

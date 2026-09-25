@@ -8,9 +8,10 @@
 # clippy.toml and the versions of tokio, rustix and dbus Cargo.lock ships,
 # calls each API one of these bans exists for, and every call has to come
 # back as a disallowed method by the path it is banned under; and the
-# calls the bans must leave alone -- the explicit-address D-Bus
-# constructors the engine uses, a read-only open, the effective uid --
-# must come back clean.
+# calls the bans must leave alone -- a read-only open, the effective uid,
+# and a D-Bus open in a function that lifts the ban for itself, the way
+# bluetooth::bus::Bus::connect does behind its address check -- must come
+# back clean.
 #
 # The cases are the holes finding "clippy.toml's S3 'one writer' ban
 # misses tokio OpenOptions::default and Unix socket binds; rustix twins of
@@ -126,18 +127,34 @@ fn dbus_8() -> Result<dbus::ffidisp::Connection, dbus::Error> { dbus::ffidisp::C
 fn dbus_9() -> Result<dbus::ffidisp::Connection, dbus::Error> { dbus::ffidisp::Connection::new_system() }
 // BAN dbus::ffidisp::Connection::get_private
 fn dbus_10() -> Result<dbus::ffidisp::Connection, dbus::Error> { dbus::ffidisp::Connection::get_private(dbus::ffidisp::BusType::System) }
+// The address-taking ones: libdbus runs `autolaunch:` and `unixexec:`
+// addresses as readily as it connects to `unix:` ones, so only the one
+// function that checks the address may call them.
+// BAN dbus::channel::Channel::open_private
+fn dbus_11(a: &str) -> Result<dbus::channel::Channel, dbus::Error> { dbus::channel::Channel::open_private(a) }
+// BAN dbus::blocking::Connection::new_address
+fn dbus_12(a: &str) -> Result<dbus::blocking::Connection, dbus::Error> { dbus::blocking::Connection::new_address(a) }
+// BAN dbus::blocking::LocalConnection::new_address
+fn dbus_13(a: &str) -> Result<dbus::blocking::LocalConnection, dbus::Error> { dbus::blocking::LocalConnection::new_address(a) }
+// BAN dbus::blocking::SyncConnection::new_address
+fn dbus_14(a: &str) -> Result<dbus::blocking::SyncConnection, dbus::Error> { dbus::blocking::SyncConnection::new_address(a) }
+// BAN dbus::ffidisp::Connection::open_private
+fn dbus_15(a: &str) -> Result<dbus::ffidisp::Connection, dbus::Error> { dbus::ffidisp::Connection::open_private(a) }
 EOF
 
-# What the bans must not touch: how the engine opens D-Bus, reads a file
-# and asks who it runs as.
+# What the bans must not touch: a D-Bus open where the ban is lifted
+# behind the address check, as Bus::connect lifts it, a read, and asking
+# who the process runs as.
 cat > "$crate/src/allowed.rs" <<'EOF'
 use std::path::Path;
 
-fn explicit_channel(address: &str) -> Result<dbus::channel::Channel, dbus::Error> {
-    dbus::channel::Channel::open_private(address)
-}
-fn explicit_blocking(address: &str) -> Result<dbus::blocking::Connection, dbus::Error> {
-    dbus::blocking::Connection::new_address(address)
+fn connect(address: &str) -> Result<dbus::channel::Channel, dbus::Error> {
+    if !address.starts_with("unix:") {
+        return Err(dbus::Error::new_failed("not a unix: address"));
+    }
+    #[allow(clippy::disallowed_methods)]
+    let channel = dbus::channel::Channel::open_private(address)?;
+    Ok(channel)
 }
 fn read(p: &Path) -> std::io::Result<std::fs::File> {
     std::fs::File::open(p)
@@ -184,7 +201,7 @@ if grep -q '^src/allowed.rs' "$out"; then
     grep '^src/allowed.rs' "$out" >&2
     status=1
 else
-    echo "clippy-bans: ok   the explicit-address D-Bus constructors, a read-only open, geteuid: untouched"
+    echo "clippy-bans: ok   a D-Bus open where its ban is lifted, a read-only open, geteuid: untouched"
 fi
 
 # Nothing in clippy.toml that this crate can see may be unresolvable.

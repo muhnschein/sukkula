@@ -67,9 +67,9 @@ jobs:
       # rewrite it.
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       # The bans in clippy.toml fire on what they were added for, in a
-      # crate of its own that breaks each one (and the D-Bus constructors
-      # the engine does use stay allowed). Offline, after the line above
-      # fetched the dependencies.
+      # crate of its own that breaks each one (and a ban lifted at its one
+      # call site, as Bus::connect lifts the D-Bus one, stays lifted).
+      # Offline, after the line above fetched the dependencies.
       - run: ./ci/clippy-bans-selftest.sh
       - run: cargo test --workspace --locked
       # The vendored Quick Share library's own tests. third_party/ is not a
