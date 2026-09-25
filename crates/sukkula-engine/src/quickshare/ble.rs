@@ -151,6 +151,10 @@ pub(super) fn spawn(address: Option<String>, token: CancellationToken) -> JoinHa
 /// Why it could not advertise, or stopped.
 pub fn advertise(address: &str, token: &CancellationToken) -> Result<(), NudgeError> {
     check_address(address)?;
+    // S8: the ban on libdbus's connection constructors is lifted here alone,
+    // behind the check just above: the address is explicit and `unix:`
+    // only, so libdbus neither autolaunches nor runs a `unixexec:` program.
+    #[allow(clippy::disallowed_methods)]
     let channel = Channel::open_private(address).map_err(|_| NudgeError::Unreachable)?;
     let mut nudge = Nudge {
         channel,

@@ -2,10 +2,15 @@
 //! reference client on the same host"), offline, against the in-process
 //! mailbox and relay.
 //!
-//! Ignored by default, since CI has no Python client. To run:
+//! Ignored by a plain `cargo test`, which has no Python client. CI's
+//! `wormhole-interop` job installs the pinned, hash-checked client from
+//! `ci/wormhole-interop-requirements.txt` and runs these with
+//! `--include-ignored` (`make wormhole-interop` does the same locally). By
+//! hand:
 //!
 //! ```sh
-//! python3 -m venv /tmp/mw && /tmp/mw/bin/pip install magic-wormhole
+//! python3 -m venv /tmp/mw && /tmp/mw/bin/pip install --require-hashes \
+//!   -r ci/wormhole-interop-requirements.txt
 //! SUKKULA_PY_WORMHOLE=/tmp/mw/bin/wormhole \
 //!   cargo test -p sukkula-engine --test wormhole_interop -- --ignored
 //! ```

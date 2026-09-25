@@ -449,6 +449,84 @@ impl Conversation {
     }
 }
 
+/// Parses a server message, refusing any object that names a key twice.
+///
+/// `serde_json::Value` keeps the last of two equal keys, while the
+/// library's derived types refuse the message outright. Left alone, the
+/// guard would judge `{"phase":"0","phase":"pake"}` as a "pake" the library
+/// never took, and let the library's real "pake" through later as a repeat
+/// -- the W2 path. A message the two could read differently is refused
+/// before either reads it.
+fn strict_json(text: &str) -> Option<Value> {
+    serde_json::from_str::<Strict>(text).ok().map(|s| s.0)
+}
+
+/// A JSON value with no duplicate keys at any depth.
+struct Strict(Value);
+
+impl<'de> serde::Deserialize<'de> for Strict {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        d.deserialize_any(StrictVisitor).map(Strict)
+    }
+}
+
+struct StrictVisitor;
+
+impl<'de> serde::de::Visitor<'de> for StrictVisitor {
+    type Value = Value;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("JSON without duplicate keys")
+    }
+
+    fn visit_bool<E>(self, b: bool) -> Result<Value, E> {
+        Ok(Value::Bool(b))
+    }
+
+    fn visit_i64<E>(self, n: i64) -> Result<Value, E> {
+        Ok(Value::from(n))
+    }
+
+    fn visit_u64<E>(self, n: u64) -> Result<Value, E> {
+        Ok(Value::from(n))
+    }
+
+    fn visit_f64<E>(self, n: f64) -> Result<Value, E> {
+        Ok(serde_json::Number::from_f64(n).map_or(Value::Null, Value::Number))
+    }
+
+    fn visit_str<E>(self, s: &str) -> Result<Value, E> {
+        Ok(Value::String(s.to_owned()))
+    }
+
+    fn visit_string<E>(self, s: String) -> Result<Value, E> {
+        Ok(Value::String(s))
+    }
+
+    fn visit_unit<E>(self) -> Result<Value, E> {
+        Ok(Value::Null)
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Value, A::Error> {
+        let mut out = Vec::new();
+        while let Some(Strict(v)) = seq.next_element()? {
+            out.push(v);
+        }
+        Ok(Value::Array(out))
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
+        let mut out = serde_json::Map::new();
+        while let Some(key) = map.next_key::<String>()? {
+            let Strict(v) = map.next_value()?;
+            if out.insert(key, v).is_some() {
+                return Err(serde::de::Error::custom("a key given twice"));
+            }
+        }
+        Ok(Value::Object(out))
+    }
+}
+
 /// Checks one message from the server before the library sees it.
 ///
 /// # Errors
@@ -462,8 +540,8 @@ pub(crate) fn check_server_message(text: &str, seen: &mut Conversation) -> Resul
     if seen.messages > MAX_SERVER_MESSAGES || seen.bytes > MAX_SERVER_BYTES {
         return Err(bad_server("the mailbox server sent too much"));
     }
-    let v: Value = serde_json::from_str(text)
-        .map_err(|_| bad_server("the mailbox server sent malformed JSON"))?;
+    let v =
+        strict_json(text).ok_or_else(|| bad_server("the mailbox server sent malformed JSON"))?;
     match v.get("type").and_then(Value::as_str) {
         Some("welcome") => check_welcome(&v),
         Some("message") => check_peer_message(&v, seen),
@@ -691,6 +769,31 @@ mod tests {
         ] {
             check_server_message(&m, &mut c).unwrap();
         }
+    }
+
+    #[test]
+    fn a_message_naming_a_key_twice_is_refused_before_anyone_reads_it() {
+        // Found by the wormhole_mailbox fuzz target: serde_json::Value keeps
+        // the last "phase", the library's types refuse the message, and the
+        // two would disagree about which phase has been taken.
+        let malformed = "the mailbox server sent malformed JSON";
+        for raw in [
+            r#"{"type":"message","side":"x","phase":"0123456789","phase":"pake","body":"7b7d","id":"1"}"#,
+            r#"{"type":"message","type":"welcome","side":"x","phase":"pake","body":"7b7d"}"#,
+            r#"{"type":"welcome","welcome":{"motd":"a","motd":"b"}}"#,
+            r#"{"type":"message","side":"x","phase":"pake","body":"7b7d","extra":[{"k":1,"k":2}]}"#,
+        ] {
+            let e = check_server_message(raw, &mut bound()).unwrap_err();
+            assert_eq!(e.message, malformed, "{raw}");
+        }
+        // The same messages with each key once still pass.
+        let mut c = bound();
+        check_server_message(
+            r#"{"type":"message","side":"x","phase":"pake","body":"7b7d","id":"1"}"#,
+            &mut c,
+        )
+        .unwrap();
+        check_server_message(r#"{"type":"welcome","welcome":{"motd":"a"}}"#, &mut bound()).unwrap();
     }
 
     #[test]

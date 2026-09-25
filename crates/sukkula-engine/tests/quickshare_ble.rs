@@ -107,7 +107,15 @@ impl Drop for Daemon {
     }
 }
 
+// S8 bans libdbus's connection constructors outside the reviewed call
+// sites; the fakes connect to the test's own daemon, at the explicit
+// `unix:` address it printed, checked just below.
+#[allow(clippy::disallowed_methods)]
 fn connect(address: &str, name: &str) -> Channel {
+    assert!(
+        address.starts_with("unix:") && !address.contains(';'),
+        "not one explicit unix: address: {address}"
+    );
     let mut ch = Channel::open_private(address).unwrap();
     ch.register().unwrap();
     if !name.is_empty() {

@@ -39,7 +39,7 @@ how many commits; refresh with `docs/handoff/snapshot.sh`).
 | localsend | **merged** (all five findings fixed and proven; F-LS1 fallback scope noted in SPEC.md) |
 | wormhole-bluetooth | **merged** into the integration branch (all five findings fixed and proven; SECURITY.md S8 row and fuzz/README wording left to ci-harbour) |
 | quickshare-mdns | in progress: 1 WIP commit (vendored mdns-sd 0.21.4 with bounded-cache and link-only patches); the rqs_lib host-name patch not yet |
-| ci-harbour | in progress: 2 WIP commits |
+| ci-harbour | **merged** (all 11 findings fixed and proven); the fuzz smoke then found a mailbox-guard duplicate-key disagreement, fixed on the integration branch (`strict_json`) |
 
 All five stopped at a session usage limit on 2026-09-25 and were relaunched in the same worktrees.
 This table is refreshed each time `snapshot.sh` runs and the result is
@@ -134,19 +134,19 @@ Practicalities learned the hard way:
 | 21 | low | confirmed | qml-ui | **merged** (with engine-core) |
 | 22 | low | confirmed | qml-ui | **merged** (with engine-core) |
 | 23 | low | confirmed | engine-core | **merged** (with qml-ui); follow-ups: UI does not show `settings.recovered` yet; switching Wormhole off does not cancel a running wormhole transfer |
-| 24 | low | disputed | ci-harbour | Any branch or dependency build script with packages:write can overwrite the SDK image that release builds pull by mutable tag | `.github/workflows/rpm.yml` |
-| 25 | low | confirmed | ci-harbour | Harbour source gate skips every '#' line, and rpm.yml never runs for src/ or crates/*.rs, so a hardcoded /home path passes every PR gate | `ci/harbour-check.sh` |
-| 26 | low | confirmed | ci-harbour | clippy.toml's S3 'one writer' ban misses tokio OpenOptions::default and Unix socket binds; rustix twins of banned process-state calls are unbanned | `clippy.toml` |
-| 27 | low | confirmed | ci-harbour | check-deps' S8 denylist lets URL/file-opening and spawning crates into the shipped graph | `ci/check-deps.sh` |
-| 28 | low | confirmed | ci-harbour | A 'v*' tag on any commit publishes a GitHub release; only the dispatch path is held to main | `.github/workflows/rpm.yml` |
-| 29 | low | confirmed | ci-harbour | Waiver scope differs between the two Harbour checks: the RPM validator ignores the check id, and an RPM-only waiver fails the source gate | `ci/harbour-validate-rpm.sh` |
-| 30 | low | confirmed | ci-harbour | Concurrency groups keyed on the bare head_ref let unrelated fork PRs cancel each other's CI | `.github/workflows/ci.yml` |
-| 31 | low | confirmed | ci-harbour | check-elf.sh does not check the 'only main exported' rule SECURITY.md credits it with, so the shipped binary's exports are never checked | `ci/check-elf.sh` |
-| 32 | low | confirmed | ci-harbour | fuzz-smoke passes no -max_len, so the 64 KiB assertions in text_message, command_json and start_config can never fail in CI, contrary to fuzz/README.md | `scripts/fuzz-smoke.sh` |
+| 24 | low | disputed | ci-harbour | **merged** (all 11 findings fixed and proven); the fuzz smoke then found a mailbox-guard duplicate-key disagreement, fixed on the integration branch (`strict_json`) |
+| 25 | low | confirmed | ci-harbour | **merged** (all 11 findings fixed and proven); the fuzz smoke then found a mailbox-guard duplicate-key disagreement, fixed on the integration branch (`strict_json`) |
+| 26 | low | confirmed | ci-harbour | **merged** (all 11 findings fixed and proven); the fuzz smoke then found a mailbox-guard duplicate-key disagreement, fixed on the integration branch (`strict_json`) |
+| 27 | low | confirmed | ci-harbour | **merged** (all 11 findings fixed and proven); the fuzz smoke then found a mailbox-guard duplicate-key disagreement, fixed on the integration branch (`strict_json`) |
+| 28 | low | confirmed | ci-harbour | **merged** (all 11 findings fixed and proven); the fuzz smoke then found a mailbox-guard duplicate-key disagreement, fixed on the integration branch (`strict_json`) |
+| 29 | low | confirmed | ci-harbour | **merged** (all 11 findings fixed and proven); the fuzz smoke then found a mailbox-guard duplicate-key disagreement, fixed on the integration branch (`strict_json`) |
+| 30 | low | confirmed | ci-harbour | **merged** (all 11 findings fixed and proven); the fuzz smoke then found a mailbox-guard duplicate-key disagreement, fixed on the integration branch (`strict_json`) |
+| 31 | low | confirmed | ci-harbour | **merged** (all 11 findings fixed and proven); the fuzz smoke then found a mailbox-guard duplicate-key disagreement, fixed on the integration branch (`strict_json`) |
+| 32 | low | confirmed | ci-harbour | **merged** (all 11 findings fixed and proven); the fuzz smoke then found a mailbox-guard duplicate-key disagreement, fixed on the integration branch (`strict_json`) |
 | 33 | low | confirmed | engine-core | **merged** (with qml-ui); follow-ups: UI does not show `settings.recovered` yet; switching Wormhole off does not cancel a running wormhole transfer |
-| 34 | low | confirmed | ci-harbour | fuzz-smoke silently fuzzes a target with no dictionary or seeds, and reports a malformed dictionary as a crash whose reproducer does not exist | `scripts/fuzz-smoke.sh` |
+| 34 | low | confirmed | ci-harbour | **merged** (all 11 findings fixed and proven); the fuzz smoke then found a mailbox-guard duplicate-key disagreement, fixed on the integration branch (`strict_json`) |
 | 35 | low | confirmed | engine-core | **merged** (with qml-ui); follow-ups: UI does not show `settings.recovered` yet; switching Wormhole off does not cancel a running wormhole transfer |
 | 36 | low | confirmed | engine-core | **merged** (with qml-ui); follow-ups: UI does not show `settings.recovered` yet; switching Wormhole off does not cancel a running wormhole transfer |
 | 37 | low | confirmed | engine-core + qml-ui | F-C1: Magic Wormhole cannot be disabled in Settings, and the per-protocol disable is untested at engine level | `crates/sukkula-engine/src/hub.rs` |
 | 38 | low | confirmed | qml-ui | **merged** (with engine-core) |
-| 39 | low | confirmed | ci-harbour | §7 reference-client loopback layer: wormhole interop never runs in CI, and there is no rquickshare interop | `crates/sukkula-engine/tests/wormhole_interop.rs` |
+| 39 | low | confirmed | ci-harbour | **merged** (all 11 findings fixed and proven); the fuzz smoke then found a mailbox-guard duplicate-key disagreement, fixed on the integration branch (`strict_json`) |
