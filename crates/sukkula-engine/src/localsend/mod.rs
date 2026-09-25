@@ -100,7 +100,7 @@ pub struct Options {
     pub announce_interval: Duration,
 }
 
-/// The shortest [`Options::announce_interval`].
+/// The shortest [`Options`] `announce_interval`.
 pub const MIN_ANNOUNCE_INTERVAL: Duration = Duration::from_secs(1);
 
 impl Default for Options {
