@@ -6,9 +6,12 @@
 //! digest when there is one, and is only then placed in the target directory
 //! under a name nobody else holds -- `photo.jpg`, else `photo (1).jpg`, and so
 //! on. Placing never overwrites and never follows a link: it is `linkat(2)`,
-//! which fails on any existing entry, or, where the file system cannot link
-//! (`EXDEV` across mounts, `EPERM` on FAT), a copy from the staging file's own
-//! descriptor into a file opened `O_CREAT|O_EXCL|O_NOFOLLOW`.
+//! which fails on any existing entry. Where the staging file cannot be linked
+//! there (`EXDEV` across mounts, `EPERM` on FAT), it is copied, from its own
+//! descriptor, into a new staging file on the target's file system, and only
+//! the whole copy is linked, or renamed with `RENAME_NOREPLACE`, into place:
+//! a kill mid-copy leaves a staging file, never a truncated one under a real
+//! name.
 //!
 //! Both directories are held open by descriptor from [`Inbox::begin`] to the
 //! end of the file (the private `dirfd` module), and every operation is relative to
@@ -20,7 +23,13 @@
 //! staging file, so a failure anywhere -- a peer hanging up, a cancel, a
 //! digest mismatch, a panic in the adapter, the task being aborted -- leaves
 //! nothing behind. A commit cancelled half-way through the copy fallback
-//! removes the half-copied destination too.
+//! removes the half-made copy too.
+//!
+//! A kill runs no destructor. What one leaves -- a staging file, a copy in
+//! progress, the second link of a placed file -- is a `*.part` file in a
+//! `.partial` directory, which the next [`Inbox::open`] removes; a file under
+//! its real name is always whole. `tests/chaos.rs` kills a receiver
+//! mid-write and mid-commit, many times, and checks it.
 //!
 //! The staging directory is a hidden directory *inside* the target directory
 //! by default ([`Inbox::open`]): Sailjail's bind mounts make a link or rename
@@ -31,7 +40,7 @@ use std::io::{self, SeekFrom};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::path::{Path, PathBuf};
 
-use rustix::fs::{AtFlags, FileType, Mode, OFlags};
+use rustix::fs::{AtFlags, FileType, Mode, OFlags, RenameFlags};
 use rustix::io::Errno;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -154,6 +163,14 @@ impl Inbox {
         let inbox = Inbox { target, staging };
         let dirs = inbox.open_dirs()?;
         sweep_stale(&dirs.staging);
+        if matches!(inbox.staging, Staging::At(_))
+            && let Ok(Some(copies)) =
+                dirfd::open_existing_at(&dirs.target, STAGING_DIR, Share::Nothing)
+        {
+            // The copy fallback's `.partial` on the target's file system,
+            // which is not the staging directory here.
+            sweep_stale(&copies);
+        }
         Ok(inbox)
     }
 
@@ -204,9 +221,7 @@ impl Inbox {
             return Err(InboxError::TooLarge);
         }
         let dirs = self.open_dirs()?;
-        let mut random = [0u8; 16];
-        getrandom::fill(&mut random).map_err(|e| io::Error::other(e.to_string()))?;
-        let staging_name = format!("{}{PART_SUFFIX}", hex::encode(&random));
+        let staging_name = part_name()?;
         // Read-write: the copy fallback reads the data back through this
         // same descriptor rather than reopening a name.
         let fd = create_exclusive(&dirs.staging, &staging_name, OFlags::RDWR)?;
@@ -222,6 +237,7 @@ impl Inbox {
             written: 0,
             hasher: Sha256::new(),
             expected: sha256,
+            copied: None,
             failed: false,
             done: false,
         })
@@ -247,8 +263,8 @@ impl Inbox {
     }
 }
 
-/// Removes regular `*.part` files from the staging directory: what a
-/// previous run left when it was killed mid-file.
+/// Removes regular `*.part` files from a `.partial` directory: what a
+/// previous run left when it was killed mid-file or mid-commit.
 // S3: deletes only regular `*.part` entries of the staging directory.
 #[allow(clippy::disallowed_methods)]
 fn sweep_stale(staging: &OwnedFd) {
@@ -290,6 +306,8 @@ pub struct Incoming {
     written: u64,
     hasher: Sha256,
     expected: Option<[u8; 32]>,
+    /// The copy fallback's whole copy, not yet placed.
+    copied: Option<Copied>,
     /// A write failed, was cancelled half-way, or overflowed: what is on disk
     /// no longer matches the count, so nothing more is written and the file
     /// is never placed.
@@ -428,14 +446,13 @@ impl Incoming {
         if dirfd::file_id(&staged) != self.id {
             return Err(tampered_io());
         }
-        match rustix::fs::linkat(
+        // No AT_SYMLINK_FOLLOW: a symlink swapped in since the check above
+        // is linked as a symlink, and caught below.
+        match link(
             &self.dirs.staging,
             self.staging_name.as_str(),
             &self.dirs.target,
             dest,
-            // No AT_SYMLINK_FOLLOW: a symlink swapped in since the check
-            // above is linked as a symlink, and caught below.
-            AtFlags::empty(),
         ) {
             Ok(()) => {
                 if entry_id(self.dirs.target.as_fd(), dest) == Some(self.id) {
@@ -447,19 +464,79 @@ impl Incoming {
                     Err(tampered_io())
                 }
             }
-            Err(e) if copy_instead(e) => self.copy_to(dest).await,
+            Err(e) if copy_instead(e) => self.place_copy(dest).await,
             Err(e) => Err(e.into()),
         }
     }
 
-    /// The fallback where the file system cannot link: a copy, from the
-    /// staging file's own descriptor, into a new exclusive file.
-    async fn copy_to(&mut self, dest: &str) -> io::Result<()> {
-        let out = create_exclusive(&self.dirs.target, dest, OFlags::WRONLY)?;
+    /// The fallback where the staging file cannot be linked into the target
+    /// -- across mounts (`EXDEV`), or on a file system without links
+    /// (`EPERM` on FAT). The file is copied once, and only the whole copy is
+    /// linked, or renamed without replacing, to `dest`. It never exists
+    /// under `dest` half-written, so a kill mid-copy, which runs no
+    /// destructor, leaves only a `.part` file that the next
+    /// [`Inbox::open`] sweeps ("No kill-during-write (chaos) test ... a
+    /// final-named partial from the copy fallback").
+    // S3: linkat(2) without AT_SYMLINK_FOLLOW, or renameat2 with
+    // RENAME_NOREPLACE: never over an existing name.
+    #[allow(clippy::disallowed_methods)]
+    async fn place_copy(&mut self, dest: &str) -> io::Result<()> {
+        if self.copied.is_none() {
+            self.copied = Some(self.copy().await?);
+        }
+        let copied = self.copied.as_ref().ok_or_else(spoiled_io)?;
+        if entry_id(copied.dir.as_fd(), &copied.name) != Some(copied.id) {
+            return Err(tampered_io());
+        }
+        let linked = match link(&copied.dir, copied.name.as_str(), &self.dirs.target, dest) {
+            Ok(()) => true,
+            Err(e) if copy_instead(e) => {
+                // No links on this file system: a rename that, like the
+                // link, fails on any existing entry. Where the kernel or
+                // the file system cannot promise that, the file is not
+                // placed at all.
+                rustix::fs::renameat_with(
+                    &copied.dir,
+                    copied.name.as_str(),
+                    &self.dirs.target,
+                    dest,
+                    RenameFlags::NOREPLACE,
+                )?;
+                false
+            }
+            Err(e) => return Err(e.into()),
+        };
+        if entry_id(self.dirs.target.as_fd(), dest) != Some(copied.id) {
+            // The copy's entry was replaced between the check and the
+            // placing. What was placed is not ours; take it away.
+            let _ = rustix::fs::unlinkat(&self.dirs.target, dest, AtFlags::empty());
+            return Err(tampered_io());
+        }
+        if linked {
+            let _ = rustix::fs::unlinkat(&copied.dir, copied.name.as_str(), AtFlags::empty());
+        }
+        self.copied = None;
+        Ok(())
+    }
+
+    /// Copies the staged file, from its own descriptor, into a new staging
+    /// file in the target's `.partial` -- the target's file system, where it
+    /// can be placed -- and makes the copy durable.
+    async fn copy(&mut self) -> io::Result<Copied> {
+        let dir =
+            dirfd::open_at(&self.dirs.target, STAGING_DIR, Share::Nothing).map_err(
+                |e| match e {
+                    DirError::NotPlain => io::Error::other("the target's .partial is not usable"),
+                    DirError::Io(e) => e,
+                },
+            )?;
+        let name = part_name()?;
+        let out = create_exclusive(&dir, &name, OFlags::WRONLY)?;
+        let id = dirfd::file_id(&rustix::fs::fstat(&out)?);
         let guard = Placing {
-            dir: self.dirs.target.as_fd(),
-            name: dest,
-            id: dirfd::file_id(&rustix::fs::fstat(&out)?),
+            dir: dir.as_fd(),
+            name: &name,
+            id,
             armed: true,
         };
         let mut out = tokio::fs::File::from_std(std::fs::File::from(out));
@@ -473,14 +550,32 @@ impl Incoming {
         out.flush().await?;
         out.sync_all().await?;
         guard.disarm();
-        Ok(())
+        Ok(Copied { dir, name, id })
     }
+}
+
+/// The copy fallback's copy of a staged file: whole, durable, in the
+/// target's `.partial`, waiting for a free name.
+#[derive(Debug)]
+struct Copied {
+    dir: OwnedFd,
+    name: String,
+    id: FileId,
 }
 
 impl Drop for Incoming {
     // S3: a file not committed is deleted from staging.
     #[allow(clippy::disallowed_methods)]
     fn drop(&mut self) {
+        if let Some(c) = self.copied.take() {
+            // A copy not placed: gone with the file, if it is still ours.
+            drop(Placing {
+                dir: c.dir.as_fd(),
+                name: &c.name,
+                id: c.id,
+                armed: true,
+            });
+        }
         if !self.done {
             self.file.take();
             let _ = rustix::fs::unlinkat(
@@ -492,9 +587,9 @@ impl Drop for Incoming {
     }
 }
 
-/// A destination being copied into. Dropped armed -- the copy failed, or
-/// the commit was cancelled mid-copy -- it removes the destination, but only
-/// if the entry is still the file it created.
+/// A copy being made. Dropped armed -- the copy failed, or the commit was
+/// cancelled mid-copy -- it removes the copy, but only if the entry is still
+/// the file it created.
 struct Placing<'a> {
     dir: BorrowedFd<'a>,
     name: &'a str,
@@ -509,7 +604,7 @@ impl Placing<'_> {
 }
 
 impl Drop for Placing<'_> {
-    // S3: removes a half-copied destination, only if it is still ours.
+    // S3: removes a copy not placed, only if it is still ours.
     #[allow(clippy::disallowed_methods)]
     fn drop(&mut self) {
         if self.armed && entry_id(self.dir, self.name) == Some(self.id) {
@@ -525,6 +620,20 @@ fn entry_id(dir: BorrowedFd<'_>, name: &str) -> Option<FileId> {
         .map(|st| dirfd::file_id(&st))
 }
 
+/// `linkat(2)` of `old` in `old_dir` to `new` in `new_dir`, never following
+/// a symlink. Tests can play a file system without hard links (FAT's
+/// `EPERM`), so the rename that stands in for the link there runs on every
+/// host.
+// S3: linkat(2) without AT_SYMLINK_FOLLOW; fails on any existing entry.
+#[allow(clippy::disallowed_methods)]
+fn link(old_dir: &OwnedFd, old: &str, new_dir: &OwnedFd, new: &str) -> rustix::io::Result<()> {
+    #[cfg(test)]
+    if tests::linkless() {
+        return Err(Errno::PERM);
+    }
+    rustix::fs::linkat(old_dir, old, new_dir, new, AtFlags::empty())
+}
+
 /// Whether a failed `linkat` means "this file system cannot link here" --
 /// across mounts, or no hard links at all -- rather than a real error.
 fn copy_instead(e: Errno) -> bool {
@@ -532,6 +641,14 @@ fn copy_instead(e: Errno) -> bool {
         e,
         Errno::XDEV | Errno::PERM | Errno::OPNOTSUPP | Errno::NOSYS | Errno::MLINK
     )
+}
+
+/// A new staging file's name: random, so nobody can guess it, with
+/// [`PART_SUFFIX`], so a sweep finds it.
+fn part_name() -> io::Result<String> {
+    let mut random = [0u8; 16];
+    getrandom::fill(&mut random).map_err(|e| io::Error::other(e.to_string()))?;
+    Ok(format!("{}{PART_SUFFIX}", hex::encode(&random)))
 }
 
 /// Creates `name` in `dir` with `O_CREAT|O_EXCL|O_NOFOLLOW`, mode `0600`.
@@ -585,6 +702,31 @@ mod tests {
             .collect();
         v.sort();
         v
+    }
+
+    thread_local! {
+        static LINKLESS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// Whether this test plays a file system without hard links.
+    pub(super) fn linkless() -> bool {
+        LINKLESS.with(std::cell::Cell::get)
+    }
+
+    /// Plays a file system without hard links on this thread until dropped.
+    struct Linkless;
+
+    impl Linkless {
+        fn start() -> Linkless {
+            LINKLESS.with(|l| l.set(true));
+            Linkless
+        }
+    }
+
+    impl Drop for Linkless {
+        fn drop(&mut self) {
+            LINKLESS.with(|l| l.set(false));
+        }
     }
 
     /// The only staging file's name.
@@ -1010,6 +1152,87 @@ mod tests {
         assert_eq!(meta.permissions().mode() & 0o777, 0o600);
         assert_eq!(std::fs::read(dir.path().join("big.bin")).unwrap(), b"taken");
         assert_eq!(std::fs::read_dir(&staging).unwrap().count(), 0);
+        // The copy was made in the target's own `.partial` and is gone.
+        assert_eq!(staged_files(dir.path()), 0);
+    }
+
+    /// FAT has no hard links (`EPERM`): the file is copied beside the target
+    /// and renamed into place with `RENAME_NOREPLACE`, which, like the link,
+    /// never replaces anything.
+    #[tokio::test(flavor = "current_thread")]
+    async fn without_hard_links_the_copy_is_renamed_into_place_never_over_anything() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = Inbox::open(dir.path()).unwrap();
+        std::fs::write(dir.path().join("a.txt"), b"mine").unwrap();
+        std::os::unix::fs::symlink(dir.path().join("nowhere"), dir.path().join("a (1).txt"))
+            .unwrap();
+        let _fat = Linkless::start();
+        let mut f = inbox.begin(&sanitize("a.txt"), 3, None).await.unwrap();
+        f.write(b"new").await.unwrap();
+        let saved = f.commit().await.unwrap();
+        assert_eq!(saved.name.as_str(), "a (2).txt");
+        assert_eq!(std::fs::read(&saved.path).unwrap(), b"new");
+        let meta = std::fs::symlink_metadata(&saved.path).unwrap();
+        assert!(meta.file_type().is_file());
+        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        assert_eq!(meta.nlink(), 1);
+        assert_eq!(std::fs::read(dir.path().join("a.txt")).unwrap(), b"mine");
+        assert!(
+            std::fs::symlink_metadata(dir.path().join("a (1).txt"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(!dir.path().join("nowhere").exists());
+        assert_eq!(staged_files(dir.path()), 0, "staging file or copy left");
+        // And a failure after the copy takes the copy with it.
+        let name = sanitize("x");
+        for n in 0..MAX_NAME_ATTEMPTS {
+            std::fs::write(dir.path().join(name.numbered(n).as_str()), b"").unwrap();
+        }
+        let mut f = inbox.begin(&name, 1, None).await.unwrap();
+        f.write(b"1").await.unwrap();
+        assert!(matches!(f.commit().await, Err(InboxError::NoFreeName)));
+        assert_eq!(staged_files(dir.path()), 0);
+    }
+
+    /// A commit of 32 MiB across mounts, driven until the copy has started
+    /// (a file appears in the target's `.partial`) or it finished first.
+    /// Returns the pending commit, if it was caught mid-copy.
+    async fn caught_mid_copy(
+        dir: &Path,
+        staging: &Path,
+    ) -> Option<std::pin::Pin<Box<impl Future<Output = Result<Saved, InboxError>>>>> {
+        let inbox = Inbox::open_with_staging(dir, staging).unwrap();
+        // 32 chunks of 1 MiB.
+        let size: usize = 33_554_432;
+        let chunk = vec![0x5Au8; 1_048_576];
+        let mut f = inbox
+            .begin(&sanitize("big.bin"), u64::try_from(size).unwrap(), None)
+            .await
+            .unwrap();
+        for _ in 0..32 {
+            f.write(&chunk).await.unwrap();
+        }
+        let copies = dir.join(STAGING_DIR);
+        let copying = || std::fs::read_dir(&copies).is_ok_and(|mut d| d.next().is_some());
+        let mut commit = Box::pin(f.commit());
+        let mut cx = Context::from_waker(Waker::noop());
+        for _ in 0..100_000 {
+            match commit.as_mut().poll(&mut cx) {
+                Poll::Ready(r) => {
+                    // Finished before we could catch it: then it is whole.
+                    assert_eq!(
+                        std::fs::metadata(r.unwrap().path).unwrap().len(),
+                        u64::try_from(size).unwrap()
+                    );
+                    return None;
+                }
+                Poll::Pending if copying() => return Some(commit),
+                Poll::Pending => tokio::task::yield_now().await,
+            }
+        }
+        None
     }
 
     #[tokio::test]
@@ -1020,46 +1243,79 @@ mod tests {
             return;
         };
         let staging = shm.path().join("staging");
-        let inbox = Inbox::open_with_staging(dir.path(), &staging).unwrap();
-        let size: usize = 32 * 1024 * 1024;
-        let chunk = vec![0x5Au8; 1024 * 1024];
-        let mut f = inbox
-            .begin(&sanitize("big.bin"), u64::try_from(size).unwrap(), None)
-            .await
-            .unwrap();
-        for _ in 0..size / chunk.len() {
-            f.write(&chunk).await.unwrap();
-        }
         let dest = dir.path().join("big.bin");
-        let mut commit = Box::pin(f.commit());
-        let mut cx = Context::from_waker(Waker::noop());
-        // Drive the commit until the copy has started, then drop it.
-        let mut cancelled = false;
-        for _ in 0..100_000 {
-            match commit.as_mut().poll(&mut cx) {
-                Poll::Ready(r) => {
-                    // Finished before we could catch it: then it is whole.
-                    r.unwrap();
-                    break;
-                }
-                Poll::Pending if dest.exists() => {
-                    cancelled = true;
-                    break;
-                }
-                Poll::Pending => tokio::task::yield_now().await,
-            }
-        }
-        drop(commit);
-        // Let a copy step already handed to a blocking thread finish.
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        if cancelled {
-            assert!(!dest.exists(), "a half-copied file was left in place");
-        } else if dest.exists() {
-            assert_eq!(
-                std::fs::metadata(&dest).unwrap().len(),
-                u64::try_from(size).unwrap()
-            );
+        if let Some(commit) = caught_mid_copy(dir.path(), &staging).await {
+            assert!(!dest.exists(), "a half-copied file under its real name");
+            drop(commit);
+            // Let a copy step already handed to a blocking thread finish.
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            assert!(!dest.exists());
+            assert_eq!(staged_files(dir.path()), 0, "the copy was left behind");
         }
         assert_eq!(std::fs::read_dir(&staging).unwrap().count(), 0);
+    }
+
+    /// A kill runs no destructor. Forgetting the commit mid-copy leaves the
+    /// disk as a SIGKILL would (`tests/chaos.rs` does it for real): nothing
+    /// under the file's name, and only what the next open sweeps.
+    #[tokio::test]
+    #[allow(clippy::mem_forget)] // The point: no destructor runs.
+    async fn a_commit_killed_mid_copy_leaves_no_file_under_its_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let Some(shm) = other_mount(dir.path()) else {
+            eprintln!("skipped: no second file system for staging");
+            return;
+        };
+        let staging = shm.path().join("staging");
+        let dest = dir.path().join("big.bin");
+        let Some(commit) = caught_mid_copy(dir.path(), &staging).await else {
+            eprintln!("skipped: the copy finished before it could be caught");
+            return;
+        };
+        std::mem::forget(commit);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!dest.exists(), "a partial file under its real name");
+        assert!(placed(dir.path()).is_empty());
+        assert_eq!(staged_files(dir.path()), 1, "the copy in progress");
+        assert_eq!(std::fs::read_dir(&staging).unwrap().count(), 1);
+        // The next start sweeps both.
+        drop(Inbox::open_with_staging(dir.path(), &staging).unwrap());
+        assert_eq!(staged_files(dir.path()), 0);
+        assert_eq!(std::fs::read_dir(&staging).unwrap().count(), 0);
+        assert!(placed(dir.path()).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_directory_owned_by_someone_else_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target");
+        let inbox = Inbox::open(&target).unwrap();
+        {
+            let _given_away = dirfd::theirs::disown(&target.join(STAGING_DIR));
+            assert!(matches!(
+                Inbox::open(&target),
+                Err(InboxError::NotADirectory(p)) if p == target.join(STAGING_DIR)
+            ));
+            assert!(matches!(
+                inbox.begin(&sanitize("a"), 1, None).await,
+                Err(InboxError::NotADirectory(_))
+            ));
+        }
+        {
+            let _given_away = dirfd::theirs::disown(&target);
+            assert!(matches!(
+                Inbox::open(&target),
+                Err(InboxError::NotADirectory(p)) if p == target
+            ));
+            assert!(matches!(
+                inbox.begin(&sanitize("a"), 1, None).await,
+                Err(InboxError::NotADirectory(_))
+            ));
+        }
+        // Ours again: fine, and nothing was written meanwhile.
+        let mut f = inbox.begin(&sanitize("a"), 1, None).await.unwrap();
+        f.write(b"x").await.unwrap();
+        f.commit().await.unwrap();
+        assert_eq!(placed(&target), vec!["a".to_owned()]);
     }
 }

@@ -9,6 +9,13 @@
 //! Every operation opens the directory by descriptor (the private `dirfd` module) and
 //! works relative to it, and every read checks the file it actually opened,
 //! not the name it asked for.
+//!
+//! A write killed before its rename -- the low-memory killer does not wait
+//! -- leaves its temporary file behind; [`Store::open`] removes those, so
+//! kills do not pile them up ("No kill-during-write (chaos) test").
+//! `tests/chaos.rs` kills a writer mid-write, many times, and checks both
+//! halves: the file is the old or the new version, whole, and nothing else
+//! survives the next open.
 
 use std::io::{self, Read, Write};
 use std::os::fd::OwnedFd;
@@ -26,6 +33,13 @@ use crate::inbox::InboxError;
 
 /// Longest store file name.
 const MAX_STORE_NAME: usize = 64;
+
+/// Random bytes in a temporary file's name.
+const TMP_RANDOM_BYTES: usize = 8;
+
+/// Most directory entries looked at for leftover temporary files when a
+/// store opens.
+const MAX_TMP_SWEEP: usize = 10_000;
 
 /// Why a store operation failed.
 #[derive(Debug, Error)]
@@ -67,7 +81,12 @@ pub struct Store {
 
 impl Store {
     /// Opens `dir`, creating it `0700` if needed, and tightening it to
-    /// `0700` if it is looser (S9).
+    /// `0700` if it is looser (S9). Removes the temporary files of writes
+    /// that a kill interrupted; nothing else in it is touched.
+    ///
+    /// One engine per data directory: a write in progress elsewhere would
+    /// lose its temporary file, as a receive would lose its staging file to
+    /// the inbox's own sweep.
     ///
     /// # Errors
     ///
@@ -76,7 +95,8 @@ impl Store {
         let store = Store {
             dir: dir.to_path_buf(),
         };
-        store.open_dir()?;
+        let fd = store.open_dir()?;
+        sweep_temporaries(&fd);
         Ok(store)
     }
 
@@ -115,11 +135,9 @@ impl Store {
     pub fn write(&self, name: &str, bytes: &[u8]) -> Result<(), StoreError> {
         check_name(name)?;
         let dir = self.open_dir()?;
-        let mut random = [0u8; 8];
+        let mut random = [0u8; TMP_RANDOM_BYTES];
         getrandom::fill(&mut random).map_err(|e| io::Error::other(e.to_string()))?;
-        // A leading dot: no store name has one, so a temporary file can
-        // never be mistaken for, or collide with, a real one.
-        let tmp = format!(".{name}.{}.tmp", hex::encode(&random));
+        let tmp = temporary_name(name, &random);
         let result = replace(&dir, &tmp, name, bytes);
         if result.is_err() {
             let _ = rustix::fs::unlinkat(&dir, tmp.as_str(), AtFlags::empty());
@@ -182,9 +200,7 @@ impl Store {
             Err(e) => return Err(StoreError::Io(e.into())),
         };
         let st = rustix::fs::fstat(&fd).map_err(io::Error::from)?;
-        if FileType::from_raw_mode(st.st_mode) != FileType::RegularFile
-            || st.st_uid != rustix::process::geteuid().as_raw()
-        {
+        if FileType::from_raw_mode(st.st_mode) != FileType::RegularFile || !dirfd::ours(&st) {
             return Err(StoreError::NotRegular(name.to_owned()));
         }
         if secret && st.st_mode & 0o077 != 0 {
@@ -237,6 +253,60 @@ fn replace(dir: &OwnedFd, tmp: &str, name: &str, bytes: &[u8]) -> io::Result<()>
     // The rename is durable once the directory is.
     rustix::fs::fsync(dir)?;
     Ok(())
+}
+
+/// Removes the regular files named as [`Store::write`] names its temporary
+/// files (`.{name}.{16 hex}.tmp`): what a write left when it was killed
+/// before its rename. A crash never leaves anything else, and nothing else
+/// is touched -- not other hidden names, not directories, not symlinks.
+// S3: deletes only the store's own temporary files, in its own directory.
+#[allow(clippy::disallowed_methods)]
+fn sweep_temporaries(dir: &OwnedFd) {
+    let Ok(entries) = rustix::fs::Dir::read_from(dir) else {
+        return;
+    };
+    for entry in entries.take(MAX_TMP_SWEEP).flatten() {
+        let Ok(name) = entry.file_name().to_str() else {
+            continue;
+        };
+        if !is_temporary(name) {
+            continue;
+        }
+        let regular = match entry.file_type() {
+            FileType::RegularFile => true,
+            // Some file systems do not fill in `d_type`.
+            FileType::Unknown => rustix::fs::statat(dir, name, AtFlags::SYMLINK_NOFOLLOW)
+                .is_ok_and(|st| FileType::from_raw_mode(st.st_mode) == FileType::RegularFile),
+            _ => false,
+        };
+        if regular {
+            let _ = rustix::fs::unlinkat(dir, name, AtFlags::empty());
+        }
+    }
+}
+
+/// The temporary file [`Store::write`] writes `name` to first. A leading
+/// dot: no store name has one, so a temporary file can never be mistaken
+/// for, or collide with, a real one.
+fn temporary_name(name: &str, random: &[u8; TMP_RANDOM_BYTES]) -> String {
+    format!(".{name}.{}.tmp", hex::encode(random))
+}
+
+/// Whether `name` is a temporary file of [`Store::write`]'s: a dot, a store
+/// name, a dot, [`TMP_RANDOM_BYTES`] as lowercase hex, `.tmp`.
+fn is_temporary(name: &str) -> bool {
+    let Some((store_name, random)) = name
+        .strip_prefix('.')
+        .and_then(|rest| rest.strip_suffix(".tmp"))
+        .and_then(|rest| rest.rsplit_once('.'))
+    else {
+        return false;
+    };
+    random.len() == TMP_RANDOM_BYTES.saturating_mul(2)
+        && random
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        && check_name(store_name).is_ok()
 }
 
 /// A store name is one plain lowercase component: no separators, no leading
@@ -384,19 +454,10 @@ mod tests {
 
     #[test]
     fn a_file_owned_by_someone_else_is_refused() {
-        if !rustix::process::geteuid().is_root() {
-            eprintln!("skipped: not root, cannot chown");
-            return;
-        }
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path()).unwrap();
         store.write("key.pem", b"planted").unwrap();
-        rustix::fs::chown(
-            dir.path().join("key.pem"),
-            Some(rustix::fs::Uid::from_raw(4242)),
-            None,
-        )
-        .unwrap();
+        let _given_away = dirfd::theirs::disown(&dir.path().join("key.pem"));
         assert!(matches!(
             store.read_secret("key.pem", 100),
             Err(StoreError::NotRegular(_))
@@ -405,6 +466,104 @@ mod tests {
             store.read("key.pem", 100),
             Err(StoreError::NotRegular(_))
         ));
+        assert!(matches!(
+            store.read_json::<serde_json::Value>("key.pem", 100),
+            Err(StoreError::NotRegular(_))
+        ));
+    }
+
+    #[test]
+    fn a_store_directory_owned_by_someone_else_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        let store = Store::open(&data).unwrap();
+        store.write("settings.json", b"{}").unwrap();
+        let _given_away = dirfd::theirs::disown(&data);
+        assert!(matches!(Store::open(&data), Err(StoreError::Directory(_))));
+        assert!(matches!(
+            store.read("settings.json", 100),
+            Err(StoreError::Directory(_))
+        ));
+        assert!(matches!(
+            store.write("settings.json", b"[]"),
+            Err(StoreError::Directory(_))
+        ));
+        assert_eq!(std::fs::read(data.join("settings.json")).unwrap(), b"{}");
+    }
+
+    #[test]
+    fn leftover_temporaries_are_swept_and_nothing_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        let store = Store::open(&data).unwrap();
+        store.write("settings.json", b"{}").unwrap();
+        // What a write killed before its rename leaves: swept.
+        let torn = [
+            ".settings.json.0123456789abcdef.tmp",
+            ".key.pem.fedcba9876543210.tmp",
+        ];
+        for name in torn {
+            std::fs::write(data.join(name), b"half").unwrap();
+        }
+        // Anything else: kept, whatever it looks like.
+        let kept = [
+            "settings.json",
+            ".settings.json.tmp",
+            ".settings.json.0123456789ABCDEF.tmp",
+            ".settings.json.0123456789abcde.tmp",
+            ".Bad Name.0123456789abcdef.tmp",
+            "settings.json.0123456789abcdef.tmp",
+            ".settings.json.0123456789abcdef.tmp~",
+        ];
+        for name in &kept[1..] {
+            std::fs::write(data.join(name), b"x").unwrap();
+        }
+        std::fs::create_dir(data.join(".cert.pem.1111111111111111.tmp")).unwrap();
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, b"untouched").unwrap();
+        std::os::unix::fs::symlink(&victim, data.join(".key.pem.2222222222222222.tmp")).unwrap();
+
+        let again = Store::open(&data).unwrap();
+        for name in torn {
+            assert!(!data.join(name).exists(), "{name} survived");
+        }
+        for name in kept {
+            assert!(data.join(name).exists(), "{name} was removed");
+        }
+        assert!(data.join(".cert.pem.1111111111111111.tmp").is_dir());
+        assert!(
+            std::fs::symlink_metadata(data.join(".key.pem.2222222222222222.tmp"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(std::fs::read(&victim).unwrap(), b"untouched");
+        assert_eq!(again.read("settings.json", 10).unwrap().unwrap(), b"{}");
+    }
+
+    #[test]
+    fn temporary_names_are_recognised_exactly() {
+        let longest = "z".repeat(MAX_STORE_NAME);
+        for random in [[0u8; TMP_RANDOM_BYTES], [0xff; TMP_RANDOM_BYTES]] {
+            for name in ["settings.json", "key.pem", "a", longest.as_str()] {
+                assert!(is_temporary(&temporary_name(name, &random)), "{name}");
+            }
+        }
+        for name in [
+            ".tmp",
+            "..tmp",
+            "..0000000000000000.tmp",
+            ".x.0000000000000000",
+            "x.0000000000000000.tmp",
+            ".x.00000000000000000.tmp",
+            ".x.000000000000000.tmp",
+            ".x.000000000000000g.tmp",
+            ".x.000000000000000A.tmp",
+            ".x/y.0000000000000000.tmp",
+            "..x.0000000000000000.tmp",
+        ] {
+            assert!(!is_temporary(name), "{name}");
+        }
     }
 
     #[test]
