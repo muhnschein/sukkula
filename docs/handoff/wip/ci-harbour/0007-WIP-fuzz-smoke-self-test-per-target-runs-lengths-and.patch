@@ -1,7 +1,7 @@
 From 2c4b2c71ecd2a2082ac05a78fed120a43788bc97 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Fri, 25 Sep 2026 09:40:24 +0000
-Subject: [PATCH 7/8] WIP: fuzz-smoke self-test, per-target runs; lengths and
+Subject: [PATCH 7/9] WIP: fuzz-smoke self-test, per-target runs; lengths and
  verdicts in one place
 
 scripts/fuzz-smoke.sh --self-test proves, with no nightly or

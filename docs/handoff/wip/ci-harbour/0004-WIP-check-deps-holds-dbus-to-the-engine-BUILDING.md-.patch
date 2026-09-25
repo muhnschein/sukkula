@@ -1,7 +1,7 @@
 From 94ee798d895463fc27682c48b5c280bc3e6e39d7 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Fri, 25 Sep 2026 09:27:00 +0000
-Subject: [PATCH 4/8] WIP: check-deps holds dbus to the engine; BUILDING.md for
+Subject: [PATCH 4/9] WIP: check-deps holds dbus to the engine; BUILDING.md for
  the SDK image, releases and interop
 
 Only sukkula-engine may use the dbus crate and only dbus may use

@@ -1,7 +1,7 @@
 From 1d7030e7fabd8cced694c9ec1c1e5a38be6614b0 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Fri, 25 Sep 2026 09:30:10 +0000
-Subject: [PATCH 5/8] WIP: leave the Quick Share D-Bus call sites to their
+Subject: [PATCH 5/9] WIP: leave the Quick Share D-Bus call sites to their
  owner
 
 The integrator has the quickshare-mdns agent lift the open_private ban

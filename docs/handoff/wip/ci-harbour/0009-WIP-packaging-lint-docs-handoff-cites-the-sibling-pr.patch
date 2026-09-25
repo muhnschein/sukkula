@@ -1,0 +1,37 @@
+From e97980d411ebb48b9f38514e7af490a8301e084f Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 25 Sep 2026 09:51:48 +0000
+Subject: [PATCH 9/9] WIP: packaging-lint: docs/handoff cites the sibling
+ projects' docs, not ours
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01ENZSCiAud5Vs29ugEacpyR
+---
+ ci/packaging-lint.sh | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/ci/packaging-lint.sh b/ci/packaging-lint.sh
+index 90bcb8b..36801ca 100755
+--- a/ci/packaging-lint.sh
++++ b/ci/packaging-lint.sh
+@@ -211,6 +211,8 @@ fi
+ 
+ # Every docs/<name>.md a comment, a script or a document points at has to
+ # exist; a reference to a file that is not there sends a reader nowhere.
++# Not docs/handoff/: the agents' working notes, which cite the sibling
++# projects' own docs/ by the same relative names.
+ ran=$((ran + 1))
+ missing=$(grep -rhoE 'docs/[A-Za-z0-9_-]+\.md' "$root" \
+         --include='*.rs' --include='*.qml' --include='*.js' --include='*.sh' \
+@@ -218,7 +220,7 @@ missing=$(grep -rhoE 'docs/[A-Za-z0-9_-]+\.md' "$root" \
+         --include='*.conf' --include='*.cpp' --include='*.h' --include='*.pro' \
+         --include='Makefile' --include='.gitignore' \
+         --exclude-dir=.git --exclude-dir=target --exclude-dir=vendor \
+-        --exclude-dir=third_party --exclude-dir=fixtures |
++        --exclude-dir=third_party --exclude-dir=fixtures --exclude-dir=handoff |
+     sort -u | while read -r ref; do
+         [ -f "$root/$ref" ] || echo "  $ref"
+     done)
+-- 
+2.43.0
+

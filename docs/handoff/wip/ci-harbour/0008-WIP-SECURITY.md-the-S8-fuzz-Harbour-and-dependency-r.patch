@@ -1,7 +1,7 @@
 From bf11c2ba8b4bd3350dacf7c7e50d0021c0147927 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Fri, 25 Sep 2026 09:46:00 +0000
-Subject: [PATCH 8/8] WIP: SECURITY.md: the S8, fuzz, Harbour and dependency
+Subject: [PATCH 8/9] WIP: SECURITY.md: the S8, fuzz, Harbour and dependency
  rows for the gate fixes
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
