@@ -29,6 +29,10 @@ moc_*.cpp
 /fuzz/artifacts/
 /fuzz/coverage/
 
+# SonarQube scanner working directory (see sonar-project.properties). The
+# coverage report it reads is written under target/, which is ignored above.
+/.scannerwork/
+
 # Editor / OS cruft
 .vscode/
 .idea/
