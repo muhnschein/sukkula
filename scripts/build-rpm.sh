@@ -219,7 +219,7 @@ check() {
     # and the library, which exports the C ABI and nothing else.
     # shellcheck disable=SC2086 # $ceiling is one option and its value, or nothing
     "$ROOT/ci/check-elf.sh" --main-export --only-main --stripped --libc-start-main 2.34 $ceiling \
-        --rpath "/usr/share/$NAME/lib" "$unpack/usr/bin/$NAME" || status=1
+        --rpath "/usr/share/$NAME/lib" --tls-reserve 4096 "$unpack/usr/bin/$NAME" || status=1
     # shellcheck disable=SC2086
     "$ROOT/ci/check-elf.sh" --library --stripped $ceiling \
         --exports-only "sukkula_start sukkula_command sukkula_stop sukkula_version" \

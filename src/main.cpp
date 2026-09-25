@@ -24,12 +24,12 @@
 // there, since the link strips everything else.
 Q_DECL_EXPORT int main(int argc, char *argv[])
 {
-    // Before anything can start the GL stack, which writes into bionic's
-    // TLS slots: a link that put the engine's thread-locals there would
+    // Before anything can start the GL stack, which puts its thread-locals
+    // at the thread pointer: a link that left anything of ours there would
     // fail later and far from here (src/tls_reserve.c).
     if (!sukkula_tls_reserved()) {
-        std::fputs("harbour-sukkula: the executable's thread-locals overlap bionic's TLS "
-                   "slots (src/tls_reserve.c); refusing to start\n",
+        std::fputs("harbour-sukkula: the executable's thread-locals are not the reserve at "
+                   "tp+16 (src/tls_reserve.c); refusing to start\n",
                    stderr);
         return EXIT_FAILURE;
     }

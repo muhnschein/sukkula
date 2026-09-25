@@ -602,34 +602,56 @@ the package would fail validation. Everything else on the list is allowed.
 The release profile keeps `panic = "unwind"`: `catch_unwind` at the
 boundary depends on it.
 
-Link `src/tls_reserve.c` first into the binary. On the phone, the words
-from `tp+16` to `tp+63` of the GUI thread also belong to Android: EGL and
-GL run under libhybris and write bionic's TLS slots there. glibc puts the
-first TLS block of the process at `tp+16`. That block is the executable's,
-if it has thread-locals, and otherwise the first library's. The first RPM
-put tokio's runtime context there, and the engine panicked entering its
-runtime ("RefCell already borrowed").
+Link `src/tls_reserve.c` into the binary. On the phone, the words at the
+thread pointer also belong to Android. EGL and GL run under libhybris, and
+Android code keeps its per-thread data straight off the thread pointer:
 
-The reserve is a 48-byte `.tdata` array, the executable's only
-thread-local, so the executable's block is exactly those words and every
-library's comes after it. The executable's TLS segment has to be aligned
-to at most 16 bytes, so the block starts at exactly `tp+16`. Aligning it to
-64, as bionic's own executables do, would leave a 48-byte gap, and glibc
-would give that gap to some library's thread-locals.
+- bionic's TLS slots, `tp+16` to `tp+63`;
+- every Android library's thread-locals, the Mali driver's among them.
+  libhybris's linker gives each such module a static TLS offset counted
+  from 0 and adds it to the thread pointer as it is. Nothing initialises
+  that memory, so Android code reads whatever is there as its own
+  starting state.
+
+glibc puts the first TLS block of the process at `tp+16`. That block is the
+executable's, if it has thread-locals, and otherwise the first library's.
+The first two RPMs failed there:
+
+- the first put tokio's runtime context there, and the engine panicked
+  entering its runtime ("RefCell already borrowed");
+- the second put a 48-byte marker there, which Android code read as its
+  own state, and the process died inside the GL stack.
+
+The reserve is a 4096-byte array of zeros, `.tbss`, and it is the
+executable's only thread-local. Zero is the starting state bionic would
+give Android code. The size is far more than the slots and the GL stack's
+thread-locals need. The executable's TLS segment has to be aligned to at
+most 16 bytes, so the block starts at exactly `tp+16`, and every library's
+block comes after the reserve. Aligning it to 64, as bionic's own
+executables do, would leave a 48-byte gap, and glibc would give that gap
+to some library's thread-locals.
+
+Before the engine starts, `src/bridge.cpp` checks that the reserve's last
+256 bytes are still zero, and refuses to start the engine otherwise:
+anything the GL stack wrote there may have run past the reserve. Running
+with `SUKKULA_TLS_REPORT=1` in the environment prints how much of the
+reserve the GUI thread has seen written.
 
 The rules are checked in these places:
 
-- `ci/check-elf.sh`, on the packaged binary: the array's marker must be the
-  first bytes of its TLS image, and its RPATH must be exactly
+- `ci/check-elf.sh`, on the packaged binary: its TLS segment must be
+  exactly the reserve (`--tls-reserve 4096`: 4096 bytes, none of them
+  initialised, aligned to at most 16), and its RPATH must be exactly
   `/usr/share/harbour-sukkula/lib`. On the packaged library: exactly the
   four exports, and TLS descriptors only.
-- `tests/run-cpp-tests.sh`: the same order for the host builds of
+- `tests/run-cpp-tests.sh`: the same segment for the host build of
   `harbour-sukkula.pro`.
-- `main()` refuses to start if the array is not at `tp+16`.
-- `ci/tls-slots-test.sh` runs the aarch64 engine under qemu with the slots
-  written, once executed and once `dlopen()`ed by a stand-in booster.
-  Negative controls show both hazards are still real: without the
-  reserve, and with the archive linked into the binary.
+- `main()` refuses to start if the reserve is not at `tp+16`.
+- `ci/hybris-tls-test.sh` runs the aarch64 engine under qemu as the phone
+  would. It first checks that the kilobyte from `tp+16` reads as zero,
+  then writes it, and runs the engine once executed and once `dlopen()`ed
+  by a stand-in booster. Negative controls show both hazards are still
+  real: without the reserve, and with the archive linked into the binary.
 
 ## Testing
 
@@ -641,7 +663,7 @@ The rules are checked in these places:
 | Every example on this page | `crates/sukkula-engine/tests/hub_docs.rs` |
 | The hub: delivery, bounds, replies after panics, races, hostile commands | `crates/sukkula-engine/src/hub.rs`, `crates/sukkula-engine/tests/hub.rs` |
 | The same, from C, under AddressSanitizer, UBSan and LeakSanitizer | `ci/ffi-harness/run.sh` |
-| The aarch64 engine, from its library, starts on a thread whose bionic TLS slots were written first and leaves them alone, both executed and `dlopen()`ed by a stand-in booster. Without `src/tls_reserve.c`, or with the archive linked into the binary, it fails. | `ci/tls-slots-test.sh` |
+| The aarch64 engine, from its library, starts on a thread where the GL stack has taken the words from the thread pointer on, and leaves them alone, both executed and `dlopen()`ed by a stand-in booster. Without `src/tls_reserve.c`, or with the archive linked into the binary, it fails. | `ci/hybris-tls-test.sh` |
 
 The C harness runs from any directory with
 

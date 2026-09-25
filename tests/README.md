@@ -102,9 +102,9 @@ tst_consent.qml` runs single QML tests without the other stages.
    main page, and (real engine) the data and download directories appear
    where Sailjail grants them.
 3. **The binary**: `main` is the only dynamic export, BIND_NOW, GNU_RELRO,
-   PIE, no `.symtab`, the one RPATH as DT_RPATH, the reserve for bionic's
-   TLS slots first in its TLS image (`src/tls_reserve.c`), and every NEEDED
-   library on Harbour's list.
+   PIE, no `.symtab`, the one RPATH as DT_RPATH, and every NEEDED library on
+   Harbour's list; for the `harbour-sukkula.pro` build also a TLS segment
+   that is exactly `src/tls_reserve.c`'s 4096 zero bytes.
 4. **`harbour-sukkula.pro` itself**, built out of tree with a stand-in of
    the SDK's sailfishapp feature (`tests/cpp/sailfishapp/features`, which
    passes `-rdynamic` and sets the RPATH as the real one does) against an

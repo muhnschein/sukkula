@@ -1,52 +1,87 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
  *
- * Bionic's thread-pointer slots, kept clear of the engine's thread-locals.
+ * The words at the thread pointer that the phone's graphics stack takes,
+ * kept clear of every library's thread-locals.
  *
- * The phone's graphics stack is Android's, run in this glibc process by
- * libhybris, and Android code reaches its per-thread slots straight off the
- * thread pointer: on arm64, TLS_SLOT_APP to TLS_SLOT_ART_THREAD_SELF are
- * the words at tp+16 to tp+63 (bionic's tls_defines.h), and EGL and GL
- * write TLS_SLOT_OPENGL and TLS_SLOT_OPENGL_API there on the GUI thread.
- * Bionic keeps them free by requiring every executable to align its TLS
- * segment to 64. glibc does not: following the ELF ABI, it puts the
- * executable's TLS block right after its 16-byte TCB, at tp+16. The Rust
- * engine is linked into this executable, so that is where its
- * thread-locals were -- tokio's runtime context first, whose RefCell
- * borrow flag the GL driver overwrote before QML started the engine, which
- * then panicked entering its runtime ("RefCell already borrowed"; the test
- * is ci/tls-slots-test.sh).
+ * The phone's EGL and GL are Android's, run in this glibc process by
+ * libhybris, and Android code keeps its per-thread data at fixed offsets
+ * from the thread pointer:
  *
- * So the first 48 bytes of the executable's TLS segment are this array,
- * which nothing reads: what Android writes into the slots lands here. It
- * is first because this is the first object on the link line
- * (harbour-sukkula.pro lists it first, and the C runtime's objects carry no
- * thread-locals), it is .tdata, which comes before every .tbss, and the
- * segment is aligned to no more than 16 bytes, so the block starts at
- * tp+16 exactly. Aligning the segment to 64 instead would also move the
- * engine past the slots, but glibc gives the 48-byte gap that leaves to the
- * first library whose thread-locals fit, and that library would be
- * overwritten instead.
+ * - bionic's TLS slots, TLS_SLOT_APP to TLS_SLOT_ART_THREAD_SELF, the
+ *   words at tp+16 to tp+63 on arm64 (bionic's tls_defines.h), where EGL
+ *   and GL keep TLS_SLOT_OPENGL and TLS_SLOT_OPENGL_API;
+ * - the thread-locals of every Android library, the Mali driver's among
+ *   them. libhybris's linker gives each such module a static TLS offset
+ *   counted from 0 and adds it to the thread pointer as it is
+ *   (hybris/common/q: linker_tls.cpp, and linker.cpp's TPREL and TLSDESC
+ *   relocations), so they start at tp+0 and run as far as those modules
+ *   need. Nothing initialises that memory for them either: Android code
+ *   reads whatever is there as its own starting state.
  *
- * ci/check-elf.sh reads the marker back as the first bytes of the packaged
- * binary's TLS image; sukkula_tls_reserved() checks the address itself at
- * start-up.
+ * glibc puts the first TLS block of the process at tp+16. That block is
+ * the executable's if the executable has thread-locals, and otherwise the
+ * first library's. The first RPM had the engine linked into the
+ * executable, and the GL stack overwrote tokio's runtime context there
+ * ("RefCell already borrowed"). The second had a 48-byte marker there
+ * instead, which Android code read back as its own state, and the process
+ * died inside the GL stack.
+ *
+ * So the executable's only thread-local is this array. It is all zero,
+ * which is the starting state bionic would give Android code, and one
+ * page long, far more than the slots and the GL stack's thread-locals
+ * take. It is .tbss and the executable's only TLS, and the segment is
+ * aligned to 16, so the block starts at tp+16 exactly: glibc puts nothing
+ * of the process's own before tp+16+4096.
+ *
+ * Checked by ci/check-elf.sh --tls-reserve 4096, which reads the packaged
+ * binary's TLS segment back; at start-up by sukkula_tls_reserved(); before
+ * the engine starts by sukkula_tls_reserve_used() (src/bridge.cpp); and
+ * under qemu by ci/hybris-tls-test.sh.
  */
 #include "tls_reserve.h"
 
-/* 47 characters and the NUL: tp+16 to tp+63. */
-static __thread char bionic_slots[48] __attribute__((used, aligned(16)))
-    = "sukkula: bionic TLS slots 2..7, tp+16 to tp+63.";
+#include <link.h>
+#include <sys/auxv.h>
 
-_Static_assert(sizeof bionic_slots == 64 - 16, "tp+16 to tp+63");
+static __thread char reserve[SUKKULA_TLS_RESERVE] __attribute__((used, aligned(16)));
+
+_Static_assert(sizeof reserve >= 64 - 16, "at least bionic's slots, tp+16 to tp+63");
+
+/* The booster dlopen()s this binary. Then the executable's thread-locals
+ * are not at the thread pointer, whose words are the booster's and none of
+ * this file's business. */
+static int is_main_program(void)
+{
+    extern const char __ehdr_start[] __attribute__((visibility("hidden")));
+    const ElfW(Ehdr) *ehdr = (const ElfW(Ehdr) *)(const void *)__ehdr_start;
+    return getauxval(AT_PHDR) == (unsigned long)(__ehdr_start + ehdr->e_phoff);
+}
 
 int sukkula_tls_reserved(void)
 {
+    if (!is_main_program())
+        return 1;
 #if defined(__aarch64__)
     char *tp;
     __asm__("mrs %0, tpidr_el0" : "=r"(tp));
-    return bionic_slots == tp + 16;
+    return reserve == tp + 16;
 #else
-    /* The slots are arm64's; the host build only compiles this. */
+    /* libhybris and bionic's slots are the phone's; the host build only
+     * compiles this. */
     return 1;
 #endif
+}
+
+size_t sukkula_tls_reserve_used(void)
+{
+    /* Volatile: nothing here writes the array, and the compiler would
+     * otherwise read it as the zeros it starts as. */
+    const volatile char *bytes = reserve;
+    size_t used = sizeof reserve;
+
+    if (!is_main_program())
+        return 0;
+    while (used > 0 && bytes[used - 1] == 0)
+        used--;
+    return used;
 }

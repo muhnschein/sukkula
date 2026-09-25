@@ -136,7 +136,7 @@ ifdef SYSROOT
 else
 	./scripts/cross-build-rust.sh --host
 endif
-	./ci/tls-slots-test.sh
+	./ci/hybris-tls-test.sh
 
 ## qml: qmllint over qml/, and the UI's QML tests offscreen
 qml:

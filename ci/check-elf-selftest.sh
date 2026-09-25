@@ -55,19 +55,25 @@ int sukkula_version(void);
 __attribute__((visibility("default"))) int main(void) { return sukkula_version() - 1; }
 EOF
 printf '{\n    main;\n};\n' > "$work/dynamic.list"
-# Thread-locals of the executable's own (src/tls_reserve.c): the engine's
-# stand-in, one initialised and one not, behind the real reserve; the same
-# linked ahead of it; the same without it; and the reserve beside a
-# thread-local aligned to 64, which moves the whole block off tp+16.
+# Thread-locals of the executable's own (src/tls_reserve.c): the shell,
+# whose only one is the reserve; the reserve beside a zeroed thread-local
+# and beside an initialised one, as an engine linked into the binary has;
+# thread-locals and no reserve; and the reserve beside a thread-local
+# aligned to 64, which moves the whole block off tp+16.
 cp "$root/src/tls_reserve.c" "$root/src/tls_reserve.h" "$work/"
-cat > "$work/engine-tls.c" <<'EOF'
+cat > "$work/shell-tls.c" <<'EOF'
 #include "tls_reserve.h"
-__thread long engine_state = 1;
-__thread long engine_scratch[4];
 __attribute__((visibility("default"))) int main(void) {
-    engine_scratch[0] = engine_state;
-    return !sukkula_tls_reserved();
+    return !sukkula_tls_reserved() || sukkula_tls_reserve_used() != 0;
 }
+EOF
+cat > "$work/zeroed-tls.c" <<'EOF'
+__thread long engine_scratch[4];
+long read_scratch(void) { return engine_scratch[0]; }
+EOF
+cat > "$work/initialised-tls.c" <<'EOF'
+__thread long engine_state = 1;
+long read_state(void) { return engine_state; }
 EOF
 cat > "$work/engine-tls-only.c" <<'EOF'
 __thread long engine_state = 1;
@@ -91,7 +97,7 @@ cat > "$work/uses-engine.c" <<'EOF'
 #include "tls_reserve.h"
 long sukkula_version(void);
 __attribute__((visibility("default"))) int main(void) {
-    return !sukkula_tls_reserved() || sukkula_version() != 1;
+    return !sukkula_tls_reserved() || sukkula_version() != 1 || sukkula_tls_reserve_used() != 0;
 }
 EOF
 
@@ -146,7 +152,7 @@ build exports-rust exports-rust.c "${good[@]}"
 build archive-leaks uses-archive.c "${good[@]}" "$work/libarchived.a"
 build archive-kept-in uses-archive.c "${good[@]}" -Wl,--dynamic-list="$work/dynamic.list" \
     -Wl,--exclude-libs,ALL "$work/libarchived.a"
-for obj in tls_reserve engine-tls aligned-tls; do
+for obj in tls_reserve shell-tls zeroed-tls initialised-tls aligned-tls; do
     "$cc" -O2 -c -fPIC -fvisibility=hidden -I"$work" -o "$work/$obj.o" "$work/$obj.c"
 done
 # link <name> <objects...>: the objects in this order, then strip.
@@ -156,10 +162,11 @@ link() {
     "$cc" -O2 -o "$work/$name" "$@" "${good[@]}" 2>/dev/null &&
         "$strip" --strip-all "$work/$name"
 }
-link tls-reserved "$work/tls_reserve.o" "$work/engine-tls.o"
-link tls-second "$work/engine-tls.o" "$work/tls_reserve.o"
+link tls-reserved "$work/tls_reserve.o" "$work/shell-tls.o"
+link tls-zeroed "$work/tls_reserve.o" "$work/shell-tls.o" "$work/zeroed-tls.o"
+link tls-initialised "$work/tls_reserve.o" "$work/shell-tls.o" "$work/initialised-tls.o"
 build tls-unreserved engine-tls-only.c "${good[@]}"
-link tls-aligned "$work/tls_reserve.o" "$work/engine-tls.o" "$work/aligned-tls.o"
+link tls-aligned "$work/tls_reserve.o" "$work/shell-tls.o" "$work/aligned-tls.o"
 # lib <name> <soname> <flags...>: the engine's library, linked and stripped
 # as scripts/cross-build-rust.sh links it, but for the flags given.
 lib() {
@@ -200,16 +207,20 @@ expect fail "a sukkula_* entry point exported beside main()" exports-ffi
 expect fail "a Rust symbol exported beside main()" exports-rust
 expect fail "an archive's symbols exported by -rdynamic" archive-leaks
 expect pass "the archive kept out, as src/hardening.pri links" archive-kept-in
-expect pass "thread-locals behind the reserve for bionic's TLS slots" tls-reserved
-expect fail "thread-locals linked ahead of that reserve" tls-second
-expect fail "thread-locals and no reserve" tls-unreserved
-expect fail "a TLS segment aligned past tp+16" tls-aligned
-engine_rpath=(--rpath /usr/share/harbour-sukkula/lib)
+reserve=(--tls-reserve 4096)
+expect pass "the reserve at tp+16 as the only thread-local" tls-reserved "${reserve[@]}"
+expect fail "the reserve beside a zeroed thread-local" tls-zeroed "${reserve[@]}"
+expect fail "the reserve beside an initialised thread-local" tls-initialised "${reserve[@]}"
+expect fail "thread-locals and no reserve" tls-unreserved "${reserve[@]}"
+expect fail "thread-locals and no reserve asked for" tls-unreserved
+expect fail "no thread-locals where the reserve is asked for" good "${reserve[@]}"
+expect fail "a TLS segment aligned past tp+16" tls-aligned "${reserve[@]}"
+engine_rpath=(--rpath /usr/share/harbour-sukkula/lib --tls-reserve 4096)
 expect pass "the shell against the engine's library, RPATH as DT_RPATH" shell-rpath "${engine_rpath[@]}"
 expect fail "the same with a RUNPATH, which the validator does not read" shell-runpath "${engine_rpath[@]}"
 expect fail "an RPATH beyond the engine's directory" shell-two-rpaths "${engine_rpath[@]}"
 expect fail "the engine's library needed, and no RPATH to find it" shell-no-rpath "${engine_rpath[@]}"
-expect fail "the engine's library needed, and no RPATH asked for" shell-rpath
+expect fail "the engine's library needed, and no RPATH asked for" shell-rpath --tls-reserve 4096
 exe_full=$full
 full=$lib_full
 only_abi=(--exports-only sukkula_version)

@@ -136,9 +136,9 @@ policy, stricter than Harbour.
   RELRO, BIND_NOW, PIE, no text relocations, a non-executable stack; the
   one RPATH `/usr/share/harbour-sukkula/lib` that the SDK's `sailfishapp`
   feature sets, as DT_RPATH -- the validator reads only that, and fails a
-  package that ships a library without it -- and no RUNPATH; and the
-  reserve for bionic's TLS slots first in its TLS image
-  (`src/tls_reserve.c`).
+  package that ships a library without it -- and no RUNPATH; and a TLS
+  segment that is exactly the 4096 zero bytes at `tp+16` the phone's
+  graphics stack takes (`src/tls_reserve.c`).
 - **`ci/check-elf.sh --library`** on the engine's
   `/usr/share/harbour-sukkula/lib/libsukkula_ffi.so`: stripped; exactly the
   four `sukkula_*` functions exported (`crates/sukkula-ffi/exports.map`),

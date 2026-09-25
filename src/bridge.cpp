@@ -12,6 +12,10 @@
 
 #include <sukkula.h>
 
+#include <cstdio>
+
+#include "tls_reserve.h"
+
 Bridge::Bridge(QObject *parent)
     : QObject(parent)
 {
@@ -66,6 +70,28 @@ bool Bridge::start()
             Q_ARG(QString,
                   QStringLiteral("{\"type\":\"fatal\",\"error\":{\"code\":\"storage\","
                                  "\"message\":\"no usable home directory\"}}")));
+        QMutexLocker lock(&m_lock);
+        m_undelivered++;
+        return false;
+    }
+    // By now the GL stack runs, and libhybris has put its thread-locals at
+    // the thread pointer, inside src/tls_reserve.c's array. Written up to
+    // the array's last bytes, they may run on into the engine's own, which
+    // would then start on corrupt state: refuse it, the way a failed
+    // start is shown. This thread's copy is all it can see; the render
+    // thread has its own. SUKKULA_TLS_REPORT prints how much was used.
+    const size_t used = sukkula_tls_reserve_used();
+    if (qEnvironmentVariableIsSet("SUKKULA_TLS_REPORT")) {
+        std::fprintf(stderr, "harbour-sukkula: %zu of the %d bytes at tp+16 written on the GUI thread\n",
+                     used, SUKKULA_TLS_RESERVE);
+    }
+    if (used > SUKKULA_TLS_RESERVE - SUKKULA_TLS_RESERVE_MARGIN) {
+        QMetaObject::invokeMethod(
+            this, "deliver", Qt::QueuedConnection,
+            Q_ARG(QString,
+                  QStringLiteral("{\"type\":\"fatal\",\"error\":{\"code\":\"internal\","
+                                 "\"message\":\"the graphics stack's thread-locals outgrew "
+                                 "their reserve\"}}")));
         QMutexLocker lock(&m_lock);
         m_undelivered++;
         return false;

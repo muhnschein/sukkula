@@ -72,7 +72,7 @@ engines=stub
 # What Harbour reads from a binary (1.6.1, 1.7): main() the only dynamic
 # export, PIE, full RELRO, stripped, and only allowed libraries recorded;
 # and the RPATH sailfishapp.prf sets, as DT_RPATH (src/hardening.pri).
-elf_checks() { # binary label rpath
+elf_checks() { # binary label rpath [reserve]
     before=$status
     # The C runtime's and the linker's own symbols, which -rdynamic (the
     # SDK's sailfishapp feature passes it) exports from every binary, are
@@ -93,13 +93,15 @@ elf_checks() { # binary label rpath
     if readelf -SW "$1" | grep -q ' \.symtab '; then
         fail "$2: not stripped"
     fi
-    # Thread-locals start with the reserve for bionic's TLS slots, which is
-    # the order qmake links the objects in (src/tls_reserve.c;
-    # ci/check-elf.sh holds the phone's binary to the rest of the rule).
-    tls=$(readelf -lW "$1" | awk '$1 == "TLS" { print $2 }')
-    if [ -n "$tls" ] && [ "$(dd if="$1" bs=1 skip=$((tls)) count=47 2>/dev/null)" \
-        != "sukkula: bionic TLS slots 2..7, tp+16 to tp+63." ]; then
-        fail "$2: its thread-locals do not start with src/tls_reserve.c's array"
+    # With the engine a library of its own, the executable's only
+    # thread-local is src/tls_reserve.c's array: 4096 zero bytes
+    # (ci/check-elf.sh holds the phone's binary to the rest of the rule).
+    # The host app links the engine's archive in, so only the project's own
+    # build is asked (a fourth argument).
+    if [ "${4:-}" = reserve ]; then
+        tls=$(readelf -lW "$1" | awk '$1 == "TLS" { print $5, $6 }')
+        [ "$tls" = "0x000000 0x001000" ] ||
+            fail "$2: its thread-locals are not src/tls_reserve.c's array alone (FileSiz MemSiz: '$tls')"
     fi
     needed=$(readelf -d "$1" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' | sort)
     for lib in $needed; do
@@ -230,7 +232,7 @@ if (cd "$dir" && QMAKEFEATURES="$root/tests/cpp/sailfishapp/features" \
     done
     # Linked as the SDK links it, -rdynamic included: still main() alone.
     elf_checks "$dir/root/usr/bin/harbour-sukkula" "harbour-sukkula.pro build" \
-        /usr/share/harbour-sukkula/lib
+        /usr/share/harbour-sukkula/lib reserve
 else
     fail "harbour-sukkula.pro did not build or install on the host"
 fi

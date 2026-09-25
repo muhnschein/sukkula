@@ -25,6 +25,12 @@
 #                         which work when it is dlopen()ed -- never the
 #                         static TLS models (STATIC_TLS, TPREL relocations)
 #   --exports-only "A B"  the symbols it exports are exactly these
+#   --tls-reserve N       its thread-locals are exactly src/tls_reserve.c's
+#                         array: a TLS segment of N zero bytes (.tbss, no
+#                         initialisation image) aligned to at most 16, so
+#                         it starts at tp+16 and takes the words the phone's
+#                         graphics stack uses. Without this option an
+#                         executable may have no thread-locals at all
 #   --readelf PATH        the readelf to use (default: readelf; GNU readelf
 #                         reads any architecture's ELF)
 #
@@ -33,8 +39,7 @@
 # engine's own library; the link carries the hardening an SDK build of C++
 # would -- RELRO, BIND_NOW, PIE for an executable, no text relocations, a
 # non-executable stack, only the RPATH asked for -- and an executable's
-# thread-locals, if it has any, start with the reserve for bionic's TLS
-# slots.
+# thread-locals are the reserve at tp+16 or nothing.
 #
 # Run on the engine's library and on the probe scripts/cross-build-rust.sh
 # links against it, and on both out of the built RPM (rpm.yml):
@@ -56,6 +61,7 @@ rpath=""
 library=0
 exports_only=""
 exports_only_set=0
+tls_reserve=""
 readelf=readelf
 elf=""
 while [[ $# -gt 0 ]]; do
@@ -68,6 +74,7 @@ while [[ $# -gt 0 ]]; do
         --rpath) rpath=${2:?}; shift 2 ;;
         --library) library=1; shift ;;
         --exports-only) exports_only=${2:?}; exports_only_set=1; shift 2 ;;
+        --tls-reserve) tls_reserve=${2:?}; shift 2 ;;
         --readelf) readelf=${2:?}; shift 2 ;;
         -*) echo "check-elf: unknown option $1" >&2; exit 2 ;;
         *) elf=$1; shift ;;
@@ -279,16 +286,16 @@ else
     ok "no RPATH or RUNPATH"
 fi
 
-# Bionic's TLS slots (src/tls_reserve.c). The phone's GL stack writes the
-# words at tp+16 to tp+63 of the GUI thread, which is where glibc puts an
-# executable's thread-locals; so an executable that has any must start its
-# TLS segment with the array that takes those 48 bytes. Read back here as
-# the first bytes of the TLS initialisation image, which must be that
-# array's marker, in a segment aligned to at most 16 bytes: a larger
-# alignment starts the block past tp+16, and glibc gives the gap to some
-# library's thread-locals instead.
-TLS_RESERVE_MARKER='sukkula: bionic TLS slots 2..7, tp+16 to tp+63.'
-tls=$(awk '$1 == "TLS" { print $2, $5, $NF }' <<< "$segments")
+# The words at the thread pointer (src/tls_reserve.c). The phone's GL
+# stack keeps bionic's TLS slots and its own thread-locals there, from tp+0
+# on, and glibc puts the process's first TLS block at tp+16. So an
+# executable's thread-locals must be the reserve alone: N bytes, all zero
+# (.tbss, which Android code reads as the starting state bionic would give
+# it), in a segment aligned to at most 16 bytes -- a larger alignment
+# starts the block past tp+16 and leaves the gap to some library. An
+# executable with no thread-locals leaves tp+16 to the first library, so
+# the shell passes --tls-reserve.
+tls=$(awk '$1 == "TLS" { print $5, $6, $NF }' <<< "$segments")
 if [[ "$library" = 1 ]]; then
     # A library's thread-locals, when the executable that needs it is
     # dlopen()ed by the booster: a TLS descriptor or __tls_get_addr finds
@@ -303,18 +310,22 @@ if [[ "$library" = 1 ]]; then
     else
         ok "thread-locals reached through TLS descriptors, wherever glibc puts them"
     fi
+elif [[ -z "$tls" && -z "$tls_reserve" ]]; then
+    ok "no thread-locals of its own"
 elif [[ -z "$tls" ]]; then
-    ok "no thread-locals of its own (bionic's TLS slots stay clear)"
+    bad "no thread-locals, so the first library's are at tp+16, where the GL stack writes: link src/tls_reserve.c"
+elif [[ -z "$tls_reserve" ]]; then
+    bad "thread-locals of its own at tp+16, where the GL stack writes (src/tls_reserve.c; --tls-reserve)"
 else
-    read -r tls_offset tls_filesz tls_align <<< "$tls"
-    want=$(printf '%s\0' "$TLS_RESERVE_MARKER" | od -An -v -tx1 | tr -d ' \n')
-    image=$(od -An -v -tx1 -j "$((tls_offset))" -N 48 "$elf" 2>/dev/null | tr -d ' \n')
+    read -r tls_filesz tls_memsz tls_align <<< "$tls"
     if (( tls_align > 16 )); then
-        bad "its TLS segment is aligned to $((tls_align)) bytes: the block starts past tp+16 and leaves bionic's slots to a library's thread-locals (src/tls_reserve.c)"
-    elif (( tls_filesz < 48 )) || [[ "$image" != "$want" ]]; then
-        bad "its TLS segment does not start with src/tls_reserve.c's array: its own thread-locals sit in bionic's TLS slots, tp+16 to tp+63, which the GL stack overwrites"
+        bad "its TLS segment is aligned to $((tls_align)) bytes: the block starts past tp+16 and leaves the gap to a library's thread-locals (src/tls_reserve.c)"
+    elif (( tls_filesz != 0 )); then
+        bad "its TLS segment has $((tls_filesz)) initialised bytes: the reserve is all zero, and nothing else of the executable may be a thread-local (src/tls_reserve.c)"
+    elif (( tls_memsz != tls_reserve )); then
+        bad "its TLS segment is $((tls_memsz)) bytes, not the reserve's $tls_reserve: something else of the executable is a thread-local (src/tls_reserve.c)"
     else
-        ok "TLS segment starts with the reserve for bionic's slots (tp+16 to tp+63)"
+        ok "its only thread-locals are the reserve: $tls_reserve zero bytes at tp+16"
     fi
 fi
 

@@ -301,9 +301,9 @@ echo "== $SO ($(du -h "$SO" | cut -f1)), as the package ships it =="
 # src/hardening.pri), and the export flags -- the -rdynamic the SDK's
 # sailfishapp feature adds, and src/hardening.pri's dynamic list and
 # --exclude-libs,ALL, which hold the exports to main() anyway. And with
-# src/tls_reserve.c first, as the shell has it: its thread-local is the
-# only one in the executable and takes bionic's TLS slots, which
-# check-elf.sh reads back.
+# src/tls_reserve.c, as the shell has it: its array is the executable's
+# only thread-local and takes the words at the thread pointer that the
+# GL stack uses, which check-elf.sh reads back.
 cat > "$BINDIR/probe.c" <<'EOF'
 /* Every entry point of include/sukkula.h, so the whole engine is needed. */
 #include <stddef.h>
@@ -328,7 +328,7 @@ probe="target/$TRIPLE/release/sukkula-link-probe"
 echo
 echo "== the probe, linked as the shell will be =="
 "$ROOT/ci/check-elf.sh" --readelf "$READELF" --glibc-ceiling "$CEILING" \
-    --libc-start-main 2.34 --main-export --only-main --rpath "$LIBDIR" "$probe" ||
+    --libc-start-main 2.34 --main-export --only-main --rpath "$LIBDIR" --tls-reserve 4096 "$probe" ||
     fail "the probe needs more than the phone provides, or leaks exports; see above"
 
 echo

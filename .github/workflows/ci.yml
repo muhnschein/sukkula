@@ -289,7 +289,7 @@ jobs:
       # is proved here, on binaries built wrong one way each.
       - run: ./ci/check-elf-selftest.sh
       - run: ./scripts/cross-build-rust.sh --host
-      - run: ./ci/tls-slots-test.sh
+      - run: ./ci/hybris-tls-test.sh
 
   # The QML: every file parses (qmllint), and the UI's own tests load the
   # real pages against the Silica stand-ins in qml-stubs/, offscreen.

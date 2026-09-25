@@ -51,19 +51,24 @@ On GitHub, in pull request #2 (the first runs of `ci.yml` and `rpm.yml`):
   `ci/check-elf.sh` then refused the RPATH the SDK's `sailfishapp` feature
   adds; `src/hardening.pri` now keeps it out of the link.
 
-On the Jolla Phone 2026, with the first RPM from pull request #2:
+On the Jolla Phone 2026, from pull request #2:
 
-- it installed and the UI came up, but the engine failed internally. The
-  GL stack (Android's, under libhybris) had written bionic's TLS slots,
-  `tp+16` to `tp+63`, over the engine's thread-locals, and tokio panicked
-  entering its runtime. Started from the app grid, the booster's
-  `dlopen()` would have broken them another way.
-
-  Two fixes followed. `src/tls_reserve.c` takes the slots, and the engine
-  is now a private library, `libsukkula_ffi.so` (spec v0.3; docs/FFI.md,
-  Linking). `ci/tls-slots-test.sh` reproduces both failures under
-  qemu-aarch64 and shows each fix. The fixed RPM has not been on the phone
-  yet.
+- **The first RPM** installed and its UI came up, but the engine failed
+  internally: tokio panicked entering its runtime. The GL stack (Android's,
+  under libhybris) keeps its thread-locals at the thread pointer, where
+  glibc had put the engine's.
+- **The second** had the engine as a private library,
+  `libsukkula_ffi.so` (spec v0.3), which is needed because the app grid's
+  booster `dlopen()`s the binary. It also put a 48-byte marker at `tp+16`.
+  That RPM died in the GL stack on every start (grid, `sailjail`, Share
+  menu, plain). libhybris places the Android libraries' thread-locals from
+  `tp+0` on and never initialises them, so Android code read the marker
+  as its own state.
+- **The third** replaces the marker with a 4096-byte reserve of zeros
+  (`docs/FFI.md`, Linking). `ci/hybris-tls-test.sh` reproduces each
+  failure under qemu-aarch64 and shows each fix. It has not been on the
+  phone yet; `SUKKULA_TLS_REPORT=1` prints how much of the reserve the GL
+  stack used there.
 
 `sukkula-core` line coverage was 98 % when last measured.
 

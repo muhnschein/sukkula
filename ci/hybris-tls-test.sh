@@ -1,27 +1,32 @@
 #!/bin/bash
 # The engine's thread-locals against the phone, under qemu-aarch64: the
-# GL stack writing bionic's TLS slots, and the silica-qt5 booster
-# dlopen()ing the binary (src/tls_reserve.c; docs/FFI.md, Linking).
+# graphics stack's own thread-locals at the thread pointer, and the
+# silica-qt5 booster dlopen()ing the binary (src/tls_reserve.c;
+# docs/FFI.md, Linking).
 #
-#     ci/tls-slots-test.sh
+#     ci/hybris-tls-test.sh
 #
-# On the Jolla Phone 2026 the engine failed to start from the first RPM.
-# EGL and GL (Android's, run under libhybris) write TLS_SLOT_OPENGL and
-# TLS_SLOT_OPENGL_API, the words at tp+24 and tp+32, on the GUI thread
-# before QML starts the engine. glibc had put the engine's thread-locals
-# at tp+16, tokio's runtime context first, so entering the runtime
-# panicked: "RefCell already borrowed". Launched from the app grid it
-# would have failed another way: the booster dlopen()s the binary, which
-# gets no fixed offset from the thread pointer for thread-locals of its
-# own, so the engine's, linked into it, landed on the booster's.
+# The phone's EGL and GL are Android's, run by libhybris, and they keep
+# per-thread data straight off the thread pointer: bionic's TLS slots at
+# tp+16 to tp+63, and every Android library's thread-locals, which
+# libhybris places from tp+0 on and never initialises. glibc puts the
+# process's first TLS block at tp+16. The first RPM had the engine linked
+# into the executable there, and entering tokio's runtime panicked ("RefCell
+# already borrowed"). The second had a 48-byte marker there, which Android
+# code read as its own state, and the process died inside the GL stack.
+# Launched from the app grid the first RPM would also have failed:
+# the booster dlopen()s the binary, which then gets no fixed offset from
+# the thread pointer for thread-locals of its own, so the engine's landed
+# on the booster's.
 #
-# Each case below starts and stops the engine through the C ABI, after
-# writing every slot from TLS_SLOT_APP to TLS_SLOT_ART_THREAD_SELF
-# (tp+16 to tp+63) itself:
+# Each case plays the GL stack on the GUI thread: it checks that the
+# kilobyte from tp+16 reads as zero, the starting state Android code
+# expects, and writes it; then it starts and stops the engine through the
+# C ABI:
 #
-#   exec'd, as the package links it -- src/tls_reserve.c first, the engine
-#       in libsukkula_ffi.so: it starts, the reserve is in place, and the
-#       slots still hold what was written;
+#   exec'd, as the package links it -- src/tls_reserve.c the executable's
+#       only thread-local, the engine in libsukkula_ffi.so: it starts, the
+#       kilobyte still holds what was written, and the reserve counts it;
 #   dlopen()ed the same way by a stand-in booster with thread-locals of
 #       its own: the same, and the booster's are untouched.
 #
@@ -29,7 +34,8 @@
 # hazard; were the engine ever laid out where the writes miss it, the test
 # would pass whatever the fix did, and it says so instead:
 #
-#   exec'd without the reserve: the engine must fail as the phone did;
+#   exec'd without the reserve: the engine's library is then at tp+16, and
+#       the start must fail as the phone's did;
 #   dlopen()ed with the engine's archive linked into the binary, as the
 #       first RPM had it: the engine or the booster must come to harm.
 #
@@ -52,7 +58,7 @@ nm=${NM_AARCH64:-aarch64-linux-gnu-nm}
 qemu=${QEMU_AARCH64:-qemu-aarch64}
 sysroot=${AARCH64_SYSROOT:-/usr/aarch64-linux-gnu}
 
-fail() { echo "tls-slots-test: FAIL $*" >&2; exit 1; }
+fail() { echo "hybris-tls-test: FAIL $*" >&2; exit 1; }
 for f in "$archive" "$so"; do
     [[ -f "$f" ]] || fail "no $f; run scripts/cross-build-rust.sh first"
 done
@@ -84,8 +90,10 @@ cat > "$work/app.c" <<'EOF'
 #include "tls_reserve.h"
 #endif
 
-/* Stand-ins for the hook tables EGL and GL keep in the slots. */
-static char gl_state[8];
+/* How much the stand-in GL stack takes from tp+16: its thread-locals and
+ * bionic's slots. tp+0 to tp+15 is glibc's own TCB, which this process
+ * needs intact to run at all. */
+#define GL_BYTES 1024
 
 static void on_event(const char *event_json, void *userdata)
 {
@@ -95,8 +103,8 @@ static void on_event(const char *event_json, void *userdata)
 
 __attribute__((visibility("default"))) int main(int argc, char **argv)
 {
-    void **tp;
-    int slot, failed = 0;
+    unsigned char *tp;
+    int i, failed = 0;
 
     if (argc != 2)
         return 2;
@@ -107,9 +115,23 @@ __attribute__((visibility("default"))) int main(int argc, char **argv)
     }
 #endif
     __asm__ volatile("mrs %0, tpidr_el0" : "=r"(tp));
-    /* TLS_SLOT_APP (2) to TLS_SLOT_ART_THREAD_SELF (7). */
-    for (slot = 2; slot < 8; slot++)
-        tp[slot] = &gl_state[slot];
+    for (i = 0; i < GL_BYTES; i++) {
+        if (tp[16 + i] != 0) {
+            fprintf(stderr, "tp+%d is not zero: Android code would read it as its own state\n", 16 + i);
+            failed = 1;
+            break;
+        }
+    }
+    for (i = 0; i < GL_BYTES; i++)
+        tp[16 + i] = (unsigned char)(0xa5 ^ i);
+#ifdef WITH_RESERVE
+    if (sukkula_tls_reserved() && sukkula_tls_reserve_used() != 0 &&
+        sukkula_tls_reserve_used() != GL_BYTES) {
+        fprintf(stderr, "the reserve counts %zu bytes written, not %d\n", sukkula_tls_reserve_used(),
+                GL_BYTES);
+        failed = 1;
+    }
+#endif
 
     SukkulaEngine *engine = sukkula_start(argv[1], on_event, NULL);
     if (engine == NULL) {
@@ -118,25 +140,27 @@ __attribute__((visibility("default"))) int main(int argc, char **argv)
     } else {
         sukkula_stop(engine);
     }
-    for (slot = 2; slot < 8; slot++) {
-        if (tp[slot] != &gl_state[slot]) {
-            fprintf(stderr, "slot %d was overwritten\n", slot);
+    for (i = 0; i < GL_BYTES; i++) {
+        if (tp[16 + i] != (unsigned char)(0xa5 ^ i)) {
+            fprintf(stderr, "the GL stack's tp+%d was overwritten\n", 16 + i);
             failed = 1;
+            break;
         }
     }
     return failed;
 }
 EOF
 
-# The booster: thread-locals of its own behind a reserve (the app writes
-# the slots in this process too), dlopen() of the app as mapplauncherd's
-# Booster::loadMain() does it, then main() with the invoker's arguments.
+# The booster: the reserve first, as a Sailfish booster's words at the
+# thread pointer are the GL stack's too, then thread-locals of its own;
+# dlopen() of the app as mapplauncherd's Booster::loadMain() does it, then
+# main() with the invoker's arguments.
 cat > "$work/booster.c" <<'EOF'
 #include <dlfcn.h>
 #include <stdio.h>
 
 #define N 256
-static __thread unsigned long booster_state[N] = {1};
+static __thread unsigned long booster_state[N];
 
 int main(int argc, char **argv)
 {
@@ -170,7 +194,7 @@ EOF
 
 inc=(-I"$root/crates/sukkula-ffi/include" -I"$root/src")
 # The app linked as harbour-sukkula.pro links the shell: PIE, main()
-# exported, the reserve first, the engine's library found by its RPATH
+# exported, the reserve, the engine's library found by its RPATH
 # (LD_LIBRARY_PATH here, where nothing is installed).
 app() {
     local out=$1
@@ -240,23 +264,23 @@ must_fail() { # what log program args...
         cat "$log" >&2
         fail "$what: the test no longer reaches the hazard it exists for"
     fi
-    echo "tls-slots-test:   ok   $(grep -m1 -E 'panicked|did not start|overwritten|dlopen' "$log" || echo "exit status")"
+    echo "hybris-tls-test:   ok   $(grep -m1 -E 'panicked|not zero|did not start|overwritten|dlopen' "$log" || echo "exit status")"
 }
 
 echo "== exec'd, as the package links it"
-must_pass "the engine did not survive written TLS slots" "$work/packaged.log" "$work/packaged"
-echo "tls-slots-test:   ok   started, stopped, and the slots kept what was written"
+must_pass "the engine did not survive the GL stack's thread-locals" "$work/packaged.log" "$work/packaged"
+echo "hybris-tls-test:   ok   zero for the GL stack, started, stopped, and its kilobyte kept"
 
 echo "== exec'd without src/tls_reserve.c (negative control)"
-must_fail "the engine survived written slots with no reserve" "$work/unreserved.log" "$work/unreserved"
+must_fail "the engine survived the GL stack with no reserve" "$work/unreserved.log" "$work/unreserved"
 
 echo "== dlopen()ed by a booster, as the package links it"
 must_pass "the engine did not survive being dlopen()ed" "$work/booster.log" \
     "$work/booster" "$work/packaged.dlopen"
-echo "tls-slots-test:   ok   started and stopped, and the booster's thread-locals are untouched"
+echo "hybris-tls-test:   ok   started and stopped, and the booster's thread-locals are untouched"
 
 echo "== dlopen()ed with the engine linked into the binary (negative control)"
 must_fail "the archive-linked engine survived being dlopen()ed" "$work/archive.log" \
     "$work/booster" "$work/archive-linked.dlopen"
 
-echo "tls-slots-test: ok"
+echo "hybris-tls-test: ok"
