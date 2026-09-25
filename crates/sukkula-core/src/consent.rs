@@ -404,6 +404,11 @@ mod tests {
     /// offer ended as timed out. That window is nanoseconds wide, so this is
     /// a guard against the rule breaking wholesale rather than a reliable
     /// reproduction; the fix is by construction (see `ask`).
+    ///
+    /// Tokio's timer ticks once a millisecond, so a deadline shorter than a
+    /// tick is really one to two ticks: the answers run from well before a
+    /// 2 ms deadline to well after its latest tick, or a quiet machine
+    /// delivers every one and the timed-out side is never reached.
     #[test]
     fn an_answer_reported_delivered_is_the_answer_the_adapter_gets() {
         let rt = tokio::runtime::Builder::new_multi_thread()
@@ -412,8 +417,7 @@ mod tests {
             .build()
             .unwrap();
         rt.block_on(async {
-            let broker =
-                ConsentBroker::with_limits(Arc::new(|_| {}), Duration::from_micros(300), 1);
+            let broker = ConsentBroker::with_limits(Arc::new(|_| {}), Duration::from_millis(2), 1);
             let mut delivered = 0;
             let mut missed = 0;
             for round in 0..400u64 {
@@ -425,8 +429,9 @@ mod tests {
                 let b = broker.clone();
                 let id = round + 1;
                 let answered = tokio::task::spawn_blocking(move || {
-                    // Somewhere around the deadline.
-                    std::thread::sleep(Duration::from_micros(100 + (round % 7) * 50));
+                    // From 0 to 4 ms, in 0.5 ms steps: each side of the
+                    // deadline, and the two ticks it can fire on.
+                    std::thread::sleep(Duration::from_micros((round % 9) * 500));
                     b.answer(id, Decision::Accept)
                 })
                 .await
