@@ -13,6 +13,7 @@ The daemon caches what the link sends it, and nothing bounded that:
 - Expiry follows PTR records only: SRV, TXT and NSEC records of
   instances no PTR points to, and addresses of hosts no SRV names, stay
   for good, and so do the names in `resolved`.
+- A resolve's retries go on after its instance is gone, a query each.
 - The run loop reads a socket until it is empty, so a steady stream of
   packets keeps it from its commands, shutdown included.
 
@@ -29,9 +30,13 @@ keep out a device with fewer instances. 2048 records in all. A received
 TTL is kept for at most 4500 s (RFC 6762 §10's figure). Cached records
 have no timers: the run loop sleeps no longer than the earliest deadline
 it finds among them, and the heap of other timers is capped at 4096
-(past that the loop wakes every second). Once a second at most, records
-nothing leads to are swept. At most 256 datagrams are read per socket
-per wake-up.
+(past that the loop wakes every second). An instance replaced to make
+room takes its SRV, TXT and NSEC records with it, and its host's
+addresses if nothing else names the host, and its resolve retries stop;
+once a second at most, and at once when the cache is short of room,
+records nothing leads to are swept -- a flood of churned instances
+otherwise filled the 2048 with leftovers between sweeps, and kept new
+records out. At most 256 datagrams are read per socket per wake-up.
 
 Upstream's own unit tests pass as before (third_party/mdns-sd.patches/
 test.sh); the three that need IPv6 loopback or a second interface fail
