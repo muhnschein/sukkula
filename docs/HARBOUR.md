@@ -134,7 +134,10 @@ policy, stricter than Harbour.
   `__libc_start_main@GLIBC_2.34` linked; no glibc symbol version newer than
   the target sysroot's own; every `NEEDED` library on the allowed list;
   RELRO, BIND_NOW, PIE, no text relocations, a non-executable stack, no
-  RPATH. The same script judges the probe `scripts/cross-build-rust.sh`
+  RPATH -- stricter than Harbour, which accepts the
+  `/usr/share/harbour-sukkula/lib` the SDK's `sailfishapp` feature adds
+  for bundled libraries; Sukkula bundles none, and `src/hardening.pri`
+  keeps it out of the link. The same script judges the probe `scripts/cross-build-rust.sh`
   links against the engine on every pull request, with the shell's export
   flags, so a Rust symbol reaching `.dynsym` fails there first.
 - **`ci/harbour-validate-rpm.sh`**: Jolla's validator itself.

@@ -38,6 +38,19 @@ On an x86_64 host, from a clean checkout:
 - `make vendor`.
 - `make wormhole-interop` against the pinned Python client (run during the fix round; it needs PyPI, so it is not part of `make check`).
 
+On GitHub, in pull request #2 (the first runs of `ci.yml` and `rpm.yml`):
+
+- every `ci.yml` job has run, the multicast-on-loopback tests passing.
+  What the runners found, all in tests and CI scripts, is fixed: rustc's
+  native-libs note parsed through ANSI colour, upstream mdns-sd's IPv6
+  test (which this sandbox has to skip) against patch 0001's reply limit,
+  and a consent race test whose deadline was shorter than tokio's timer
+  tick;
+- `rpm.yml`: the SDK image derived, the engine cross-built, the RPM built
+  by `mb2`, and Jolla's validator accepting it with no findings. Our own
+  `ci/check-elf.sh` then refused the RPATH the SDK's `sailfishapp` feature
+  adds; `src/hardening.pri` now keeps it out of the link.
+
 `sukkula-core` line coverage was 98 % when last measured.
 
 An adversarial review on 2026-09-25 covered 10 areas, with every finding
@@ -53,16 +66,14 @@ docs; the upstream ones are in `docs/UPSTREAM-QUICKSHARE.md`.
 
 ## Not verified here
 
-- **The SDK route:** `sdk-image.yml`, `rpm.yml`, the `mb2` build and
-  Jolla's validator on a real RPM. They need Docker and the Sailfish SDK
-  image; the first CI run is their first run.
+- **`sdk-image.yml`**, which runs from `main` only. Until it has run and
+  its digest is pinned, every `rpm.yml` run derives the SDK image itself
+  (about 7 minutes).
 - **Everything in `docs/MANUAL-TESTS.md`:**
   - the phone's firewall;
   - Sailjail;
   - real Android, LocalSend, wormhole and Bluetooth peers;
   - the Share-menu activation (`ExecDBus`).
-- **Tests that multicast on loopback** (Quick Share mDNS) pass here and in
-  upstream's own suite, but have not yet run on GitHub runners.
 
 ## Waiting on the owner
 

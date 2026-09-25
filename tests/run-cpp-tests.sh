@@ -82,6 +82,9 @@ elf_checks() { # binary label
     readelf -d "$1" | grep -q 'BIND_NOW' || fail "$2: no BIND_NOW (-z now)"
     readelf -lW "$1" | grep -q 'GNU_RELRO' || fail "$2: no GNU_RELRO segment"
     readelf -hW "$1" | grep -q 'DYN' || fail "$2: not a position-independent executable"
+    if readelf -d "$1" | grep -qE '\((RPATH|RUNPATH)\)'; then
+        fail "$2: carries an RPATH/RUNPATH"
+    fi
     if readelf -SW "$1" | grep -q ' \.symtab '; then
         fail "$2: not stripped"
     fi
