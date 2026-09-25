@@ -129,10 +129,16 @@ Script {
         function () {
             test.compare(engine.offers.count, 4)
             // Answering takes it off the queue at once.
-            engine.answer(7, true)
+            test.verify(engine.answer(7, true) > 0, "sent")
             test.compare(last().cmd, { type: "answer", offer: 7, accept: true })
             test.compare(engine.offers.count, 3)
             test.verify(engine.offer(7) === null, "gone")
+            // Only a waiting offer is answered: not twice, not one never
+            // seen.
+            var before = bridge.commands.length
+            test.compare(engine.answer(7, false), 0, "not twice")
+            test.compare(engine.answer(999, true), 0, "not an unknown one")
+            test.compare(bridge.commands.length, before, "nothing sent for either")
             var closed = []
             engine.offerClosed.connect(function (id, reason) { closed.push([id, reason]) })
             test.closed = closed
@@ -142,6 +148,10 @@ Script {
         function () {
             test.compare(test.closed, [[8, "timed_out"], [9, ""]])
             test.compare(engine.offers.count, 1)
+            // Nor one the engine closed, whatever a stale dialog asks.
+            var before = bridge.commands.length
+            test.compare(engine.answer(8, true), 0, "a closed offer is not answered")
+            test.compare(bridge.commands.length, before)
         },
         function () {
             // Transfers.
@@ -228,8 +238,22 @@ Script {
         function () {
             test.compare(engine.quickSharePeers.count, 0)
             test.compare(engine.localSendPeers.count, 100)
+            // Discovery is counted: two pages ask, and it stops -- and the
+            // peers go -- only when both have given it back.
+            engine.startDiscovery()
+            engine.startDiscovery()
+            test.compare(last().cmd, { type: "start_discovery" }, "each asking says so")
+            test.compare(engine.discoveryUsers, 2)
             engine.stopDiscovery()
+            test.compare(last().cmd, { type: "start_discovery" }, "one still wants it: no stop")
+            test.compare(engine.localSendPeers.count, 100, "and the peers stay")
+            engine.stopDiscovery()
+            test.compare(last().cmd, { type: "stop_discovery" }, "the last one out stops it")
             test.compare(engine.localSendPeers.count, 0, "stopping forgets the peers")
+            var before = bridge.commands.length
+            engine.stopDiscovery()
+            test.compare(bridge.commands.length, before, "a stop nobody asked for sends nothing")
+            test.compare(engine.discoveryUsers, 0, "and the count stays at zero")
             // Wormhole codes and their QR, checked for shape.
             bridge.emitEvent(Ev.wormholeCode(5, "7-guitarist-revenge"))
             bridge.emitEvent(Ev.wormholeCode(6, "8-a-b", { size: 21, rows: ["1"] }))

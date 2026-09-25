@@ -129,7 +129,7 @@ function settings(overrides) {
         device_name: "",
         localsend: { enabled: true, pin: null },
         quickshare: { enabled: true, visibility: "everyone", ble_nudge: true },
-        wormhole: { mailbox_url: null, relay_url: null },
+        wormhole: { enabled: true, mailbox_url: null, relay_url: null },
         bluetooth: { enabled: true },
         logging: false
     }

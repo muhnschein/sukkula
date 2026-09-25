@@ -16,6 +16,8 @@ Page {
     property QtObject engine
     property bool busy: false
     property bool alive: true
+    /// The code was taken: go back once this page is on top. See leave().
+    property bool leaving: false
 
     /// The code as the engine wants it: trimmed, lower case, spaces as
     /// dashes -- people read "7 guitarist revenge" aloud.
@@ -38,11 +40,43 @@ Page {
             if (ok) {
                 // The consent dialog comes up on its own once the sender's
                 // offer arrives.
-                pageStack.pop()
+                self.leaving = true
+                self.leave()
             } else {
                 banner.show(self.engine.errorText(error))
             }
         })
+    }
+
+    /// Back to the main page -- this page only, from the top only: the
+    /// reply can come while a consent dialog is over this page, and a bare
+    /// pop() took the dialog, declining its offer unanswered (as in
+    /// SendPage.leave()).
+    function leave() {
+        if (!page.leaving || page.alive !== true) {
+            return
+        }
+        if (pageStack.currentPage !== page || page.status !== PageStatus.Active) {
+            return
+        }
+        if (pageStack.busy) {
+            leaveLater.restart()
+            return
+        }
+        page.leaving = false
+        pageStack.pop(pageStack.previousPage(page))
+    }
+
+    onStatusChanged: {
+        if (page.status === PageStatus.Active) {
+            page.leave()
+        }
+    }
+
+    Timer {
+        id: leaveLater
+        interval: 100
+        onTriggered: page.leave()
     }
 
     SilicaFlickable {
@@ -94,6 +128,7 @@ Page {
                 //: Starts receiving with the typed code.
                 text: qsTr("Receive")
                 enabled: page.valid && !page.busy && page.engine.running
+                         && page.engine.protocolEnabled("wormhole")
                 onClicked: page.receive()
             }
 
