@@ -113,6 +113,9 @@ impl Drop for Daemon {
 }
 
 /// A registered connection, owning `name` if it is not empty.
+// S8 bans libdbus's connection constructors outside `bus::Bus::connect`;
+// the fakes connect to the test's own daemon, at an address it made.
+#[allow(clippy::disallowed_methods)]
 fn connect(address: &str, name: &str) -> Channel {
     let mut ch = Channel::open_private(address).unwrap();
     ch.register().unwrap();
@@ -333,7 +336,10 @@ enum Rec {
     SendFile(String),
     Cancel(String),
     RemoveSession(String),
-    /// The connection that created the session left the bus.
+    /// `org.freedesktop.DBus.Peer.Ping`, which libdbus answers in obexd.
+    Ping,
+    /// The connection that created the session left the bus, and obexd
+    /// heard of it: the session is torn down.
     ClientGone,
 }
 
@@ -434,13 +440,6 @@ impl Obexd {
 }
 
 impl Serve for Obexd {
-    fn setup(&mut self, ch: &Channel) {
-        add_match(
-            ch,
-            "type='signal',sender='org.freedesktop.DBus',member='NameOwnerChanged'",
-        );
-    }
-
     fn call(&mut self, ch: &Channel, m: &Message) {
         let member = m.member().map(|x| x.to_string()).unwrap_or_default();
         let path = m.path().map(|x| x.to_string()).unwrap_or_default();
@@ -452,11 +451,23 @@ impl Serve for Obexd {
                     .and_then(|v| v.0.as_str())
                     .unwrap_or("")
                     .to_owned();
+                self.client = m.sender().map(|s| s.to_string());
+                // As obexd does (client/session.c, gdbus watch.c): a watch
+                // on the caller leaving, added while handling the call,
+                // with a blocking AddMatch, and no check that the caller
+                // is still there. A caller that left before this is never
+                // heard of again.
+                add_match(
+                    ch,
+                    &format!(
+                        "type='signal',sender='org.freedesktop.DBus',member='NameOwnerChanged',arg0='{}'",
+                        self.client.as_deref().unwrap_or_default()
+                    ),
+                );
                 self.record(Rec::CreateSession {
                     destination: destination.to_owned(),
                     target,
                 });
-                self.client = m.sender().map(|s| s.to_string());
                 match self.script {
                     Script::NoAnswer => None,
                     Script::Unreachable => Some(error(m, "org.bluez.obex.Error.Failed")),
@@ -524,6 +535,10 @@ impl Serve for Obexd {
                 Some(t) if t.path == path => Some(m.method_return().append1(Self::props(t))),
                 _ => Some(error(m, "org.freedesktop.DBus.Error.UnknownObject")),
             },
+            "Ping" => {
+                self.record(Rec::Ping);
+                Some(m.method_return())
+            }
             _ => Some(error(m, "org.freedesktop.DBus.Error.UnknownMethod")),
         };
         if let Some(r) = reply {
@@ -565,6 +580,144 @@ impl Serve for Obexd {
             let path = t.path.clone();
             Self::changed(ch, &path, p);
         }
+    }
+}
+
+// ------------------------------------------------------- a gated proxy
+
+/// What a [`Gate`] holds back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Hold {
+    /// The bus's first words after authentication: the reply to `Hello`.
+    HelloReply,
+    /// The client's first words after that reply: its first call.
+    FirstCall,
+}
+
+/// A Unix-socket proxy between the adapter and a bus daemon that holds back
+/// one chunk of the conversation until released: how a test lands a cancel
+/// exactly between two steps of it. The daemon sees the proxy's
+/// credentials, which are the test's own.
+struct Gate {
+    address: String,
+    held: Arc<AtomicBool>,
+    open: Arc<AtomicBool>,
+    _dir: tempfile::TempDir,
+}
+
+impl Gate {
+    // S3 bans binding a Unix socket, which creates a file, in Sukkula;
+    // this is the test's own socket in its own temporary directory.
+    #[allow(clippy::disallowed_methods)]
+    fn start(bus_address: &str, hold: Hold) -> Gate {
+        use std::os::unix::net::{UnixListener, UnixStream};
+        let bus = bus_address.strip_prefix("unix:path=").unwrap().to_owned();
+        let dir = tempfile::Builder::new()
+            .prefix("skgt")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let path = dir.path().join("gate");
+        let listener = UnixListener::bind(&path).unwrap();
+        let held = Arc::new(AtomicBool::new(false));
+        let open = Arc::new(AtomicBool::new(false));
+        let (h, o) = (held.clone(), open.clone());
+        // One connection: the adapter's, for one send.
+        std::thread::spawn(move || {
+            let Ok((client, _)) = listener.accept() else {
+                return;
+            };
+            let upstream = UnixStream::connect(&bus).unwrap();
+            Gate::splice(client, upstream, hold, &h, &o);
+        });
+        Gate {
+            address: format!("unix:path={}", path.display()),
+            held,
+            open,
+            _dir: dir,
+        }
+    }
+
+    fn splice(
+        client: std::os::unix::net::UnixStream,
+        bus: std::os::unix::net::UnixStream,
+        hold: Hold,
+        held: &Arc<AtomicBool>,
+        open: &Arc<AtomicBool>,
+    ) {
+        use std::io::Read;
+        use std::net::Shutdown;
+        // The client has sent BEGIN; the bus has spoken since.
+        let begun = Arc::new(AtomicBool::new(false));
+        let answered = Arc::new(AtomicBool::new(false));
+        let wait = |held: &AtomicBool, open: &AtomicBool| {
+            held.store(true, Ordering::SeqCst);
+            let start = Instant::now();
+            while !open.load(Ordering::SeqCst) && start.elapsed() < Duration::from_secs(20) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        };
+        let (mut c_read, mut c_write) = (client.try_clone().unwrap(), client);
+        let (mut b_read, mut b_write) = (bus.try_clone().unwrap(), bus);
+        let (b1, a1, h1, o1) = (begun.clone(), answered.clone(), held.clone(), open.clone());
+        let up = std::thread::spawn(move || {
+            let mut buf = vec![0u8; 64 * 1024];
+            let mut seen = Vec::new();
+            let mut holding = hold == Hold::FirstCall;
+            loop {
+                let n = match c_read.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => n,
+                };
+                if holding && a1.load(Ordering::SeqCst) {
+                    holding = false;
+                    wait(&h1, &o1);
+                }
+                if !b1.load(Ordering::SeqCst) {
+                    seen.extend_from_slice(&buf[..n]);
+                    if seen.windows(7).any(|w| w == b"BEGIN\r\n") {
+                        b1.store(true, Ordering::SeqCst);
+                    }
+                }
+                if b_write.write_all(&buf[..n]).is_err() {
+                    break;
+                }
+            }
+            let _ = b_write.shutdown(Shutdown::Write);
+        });
+        let mut buf = vec![0u8; 64 * 1024];
+        let mut holding = hold == Hold::HelloReply;
+        loop {
+            let n = match b_read.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => n,
+            };
+            if begun.load(Ordering::SeqCst) {
+                if holding {
+                    holding = false;
+                    wait(held, open);
+                }
+                answered.store(true, Ordering::SeqCst);
+            }
+            if c_write.write_all(&buf[..n]).is_err() {
+                break;
+            }
+        }
+        let _ = c_write.shutdown(Shutdown::Write);
+        let _ = up.join();
+    }
+
+    /// Waits until the gate holds something back.
+    async fn held(&self) {
+        let start = Instant::now();
+        while !self.held.load(Ordering::SeqCst) {
+            assert!(start.elapsed() < Duration::from_secs(10), "nothing held");
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    }
+
+    /// Lets everything through from now on.
+    fn release(&self) {
+        self.open.store(true, Ordering::SeqCst);
     }
 }
 
@@ -1223,6 +1376,68 @@ async fn cancel_while_connecting() {
     assert_eq!(rig.outcome(id, LONG).await, Outcome::Cancelled);
     assert!(started.elapsed() < Duration::from_secs(2));
     rig.logged(|r| *r == Rec::ClientGone, LONG).await;
+}
+
+/// A rig whose session bus is reached through a [`Gate`].
+fn gated(script: Script, hold: Hold) -> (Rig, Gate) {
+    let mut gate = None;
+    let rig = Rig::with(bluez(phone(), true), Some(script), quick(), |mut c| {
+        let g = Gate::start(c.session_bus.as_deref().unwrap(), hold);
+        c.session_bus = Some(g.address.clone());
+        gate = Some(g);
+        c
+    });
+    (rig, gate.unwrap())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cancel_while_hello_is_answered_sends_no_create_session() {
+    let (rig, gate) = gated(Script::Complete { steps: 1 }, Hold::HelloReply);
+    let id = rig
+        .send(PHONE, vec![Outgoing::File(rig.file("x", 10))])
+        .await
+        .unwrap();
+    // The adapter is waiting for the reply to Hello. The cancel lands, and
+    // the reply follows at once, inside the same wait.
+    gate.held().await;
+    assert!(rig.ctx.transfers().cancel(id));
+    gate.release();
+    assert_eq!(rig.outcome(id, LONG).await, Outcome::Cancelled);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let log = rig.log();
+    assert!(
+        !log.iter()
+            .any(|r| matches!(r, Rec::CreateSession { .. } | Rec::SendFile(_))),
+        "a session was asked for after the cancel: {log:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_create_session_abandoned_before_obexd_saw_it_still_ends_the_session() {
+    let (rig, gate) = gated(Script::NoAnswer, Hold::FirstCall);
+    let id = rig
+        .send(PHONE, vec![Outgoing::File(rig.file("x", 10))])
+        .await
+        .unwrap();
+    // CreateSession is on its way, held before the bus: obexd has not seen
+    // it. The send is cancelled, and the adapter notices within a tick.
+    gate.held().await;
+    let started = Instant::now();
+    assert!(rig.ctx.transfers().cancel(id));
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    gate.release();
+    assert_eq!(rig.outcome(id, LONG).await, Outcome::Cancelled);
+    assert!(started.elapsed() < Duration::from_secs(2));
+    // obexd made the session and heard its owner leave: it is gone. Had
+    // the connection closed before obexd handled the call, obexd would
+    // never have heard, and the session would stay, removable by no one.
+    rig.logged(|r| *r == Rec::ClientGone, LONG).await;
+    let log = rig.log();
+    let created = log
+        .iter()
+        .position(|r| matches!(r, Rec::CreateSession { .. }));
+    let gone = log.iter().position(|r| *r == Rec::ClientGone);
+    assert!(created.is_some() && created < gone, "{log:?}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

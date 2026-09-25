@@ -10,7 +10,7 @@ use sukkula_core::config::WormholeSettings;
 use sukkula_core::offer::RawOffer;
 use sukkula_core::reach::ReachPolicy;
 
-use super::mailbox::{self, Budget};
+use super::mailbox::{self, Conversation};
 use super::session::{Endpoint, Servers, protocol};
 use super::wire::{self, Answer, PeerMsg};
 use super::{MAX_DIRECT_HINTS, MAX_PEER_MESSAGE_BYTES, MAX_RELAY_HINTS, code, transit};
@@ -145,12 +145,30 @@ pub fn code(raw: &str) -> Result<String, ErrorInfo> {
     code::parse(raw).map(|c| c.to_string())
 }
 
-/// What the mailbox guard has let through on one connection.
-#[derive(Debug, Default)]
-pub struct ServerBudget(Budget);
+/// The side [`ServerBudget::default`] has the library bind as: messages the
+/// server relays under it are echoes of the library's own.
+pub const LIBRARY_SIDE: &str = "5ec0ffee01";
 
-/// The mailbox guard's check of one server message, against the budget of
-/// the connection it arrived on.
+/// What the mailbox guard knows of one connection: its budget, the
+/// library's side, and the peer phases the library will have taken, in
+/// order.
+#[derive(Debug)]
+pub struct ServerBudget(Conversation);
+
+impl Default for ServerBudget {
+    /// A connection on which the library has bound as [`LIBRARY_SIDE`], as
+    /// it always has by the time a mailbox relays anything.
+    fn default() -> Self {
+        let mut c = Conversation::default();
+        c.note_library_message(&format!(
+            r#"{{"type":"bind","appid":"lothar.com/wormhole/text-or-file-xfer","side":"{LIBRARY_SIDE}"}}"#
+        ));
+        ServerBudget(c)
+    }
+}
+
+/// The mailbox guard's check of one server message, against what it knows
+/// of the connection it arrived on.
 ///
 /// # Errors
 ///

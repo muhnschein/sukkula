@@ -17,7 +17,10 @@
 //! tears the session (and its transfers) down when that owner leaves the
 //! bus. Each send has a private connection of its own for exactly this
 //! reason, so a `CreateSession` that is abandoned before it answers still
-//! leaves nothing behind.
+//! leaves nothing behind -- provided obexd has handled the call before the
+//! connection closes, which is what [`settle`] waits for; and no call is
+//! sent at all once the send is cancelled, so a cancel during `Hello` sends
+//! no `CreateSession`.
 //!
 //! **Everything obexd says is checked.** Replies must come from the name
 //! that answered `CreateSession`; the transfer must live under the
@@ -63,6 +66,8 @@ const OBEX_PATH: &str = "/org/bluez/obex";
 const CLIENT_IFACE: &str = "org.bluez.obex.Client1";
 const PUSH_IFACE: &str = "org.bluez.obex.ObjectPush1";
 const TRANSFER_IFACE: &str = "org.bluez.obex.Transfer1";
+/// Answered by libdbus inside obexd, in order with obexd's other calls.
+const PEER_IFACE: &str = "org.freedesktop.DBus.Peer";
 
 /// Largest OBEX packet (its length field is 16 bits). The first packet of
 /// a push can carry up to this much of the file before the receiver has
@@ -153,18 +158,29 @@ fn create_session(
     let call = bus::method_call(OBEX_NAME, OBEX_PATH, CLIENT_IFACE, "CreateSession")
         .map_err(|e| service_error(&e, cancel))?
         .append2(destination.as_str(), args);
-    let reply = bus
-        .call_plain(call, timeouts.connect, Some(cancel))
-        .map_err(|e| match e {
-            BusError::Remote(ref name) if name.starts_with("org.bluez.obex.Error.") => {
-                tracing::debug!(error = %e, "CreateSession refused");
-                ErrorInfo::new(ErrorCode::Network, "the device could not be reached")
+    // Not sent at all if the send was cancelled while `Hello` was answered.
+    let serial = bus
+        .send(call, Some(cancel))
+        .map_err(|e| service_error(&e, cancel))?;
+    let reply = match bus.wait_reply(serial, timeouts.connect, Some(cancel), &mut |_| {}) {
+        Ok(reply) => reply,
+        Err(e) => {
+            // Sent and given up on: obexd may be making a session for us.
+            if matches!(e, BusError::Cancelled | BusError::Timeout) {
+                settle(bus, timeouts);
             }
-            BusError::Timeout => {
-                ErrorInfo::new(ErrorCode::Network, "the device did not answer in time")
-            }
-            _ => service_error(&e, cancel),
-        })?;
+            return Err(match e {
+                BusError::Remote(ref name) if name.starts_with("org.bluez.obex.Error.") => {
+                    tracing::debug!(error = %e, "CreateSession refused");
+                    ErrorInfo::new(ErrorCode::Network, "the device could not be reached")
+                }
+                BusError::Timeout => {
+                    ErrorInfo::new(ErrorCode::Network, "the device did not answer in time")
+                }
+                _ => service_error(&e, cancel),
+            });
+        }
+    };
     let owner = reply
         .sender()
         .map(|s| s.to_string())
@@ -197,6 +213,30 @@ fn create_session(
         return Err(service_error(&e, cancel));
     }
     Ok(session)
+}
+
+/// Holds the connection open until obexd has handled a `CreateSession` we
+/// gave up waiting for, so that the session it makes (or is making) is
+/// torn down when we leave.
+///
+/// obexd watches a session's owner from the moment it handles
+/// `CreateSession`: it adds a match for the owner leaving the bus, with a
+/// blocking `AddMatch`, and it never checks whether the owner is still
+/// there. Were our connection to close before that, the bus could announce
+/// our leaving before obexd listens for it, and the session -- which only
+/// its owner may remove -- would stay, holding an OBEX connection to the
+/// device. A `Peer.Ping` to obexd sent after the `CreateSession` is
+/// answered only once obexd has dispatched everything before it, so once
+/// the answer is here the watch is in place and the close that follows
+/// ends the session. Any answer will do, an error included. Not
+/// cancellable (it runs because of a cancel) and bounded by
+/// [`Timeouts::cleanup`]; past that the close goes ahead anyway.
+fn settle(bus: &mut Bus, timeouts: &Timeouts) {
+    let ping = bus::method_call(OBEX_NAME, OBEX_PATH, PEER_IFACE, "Ping");
+    match ping.and_then(|p| bus.call_plain(p, timeouts.cleanup, None)) {
+        Ok(_) | Err(BusError::Remote(_)) => {}
+        Err(e) => tracing::debug!(error = %e, "obexd did not answer a ping before the close"),
+    }
 }
 
 fn remove_session(bus: &mut Bus, session: &Session, timeouts: &Timeouts) {
