@@ -2,10 +2,11 @@
 #
 # The rule, from vuo: `make check` runs exactly what CI's per-pull-request
 # gate runs (.github/workflows/ci.yml), job for job, from a clean checkout,
-# with no phone and no Sailfish SDK. Two jobs are left out because they need
-# the network rather than this tree -- `deny` (the RustSec advisory
-# database) and `vendor` (open-quickshare at the pinned commit) -- and are
-# targets of their own. The device RPM is `make rpm`, which needs Docker
+# with no phone and no Sailfish SDK. Three jobs are left out because they
+# need the network rather than this tree -- `deny` (the RustSec advisory
+# database), `vendor` (open-quickshare at the pinned commit) and
+# `wormhole-interop` (the Python client from PyPI) -- and are targets of
+# their own. The device RPM is `make rpm`, which needs Docker
 # and the SDK image; its Harbour validation is part of it.
 #
 # A missing tool fails, like CI's strict modes: a green `make check` that
@@ -33,17 +34,18 @@ export SUKKULA_NIGHTLY
 
 .PHONY: all check fmt fmt-check lint test rqs-lib-tests doc features deny deps \
         lockfile fuzz-lint fuzz-smoke ffi-asan cross qml cpp packaging vendor harbour \
-        rpm sdk-image clean help
+        wormhole-interop rpm sdk-image clean help
 
 all: check
 
 ## check: every per-pull-request CI job that needs no network: test,
 ## features, deps, fuzz-smoke, ffi-asan, cross, qml, cpp, packaging, harbour,
-## and the vendor check's selftest. Not deny or vendor (network), not rpm (SDK).
+## and the vendor check's selftest. Not deny, vendor or wormhole-interop
+## (network), not rpm (SDK).
 check: fmt-check lint test rqs-lib-tests doc features deps lockfile harbour packaging \
        qml cpp cross ffi-asan fuzz-smoke
 	./ci/vendor-check-selftest.sh
-	@echo "== make check passed (deny and vendor need the network: make deny vendor) =="
+	@echo "== make check passed (deny, vendor and wormhole-interop need the network) =="
 
 ## fmt: format the workspace
 fmt:
@@ -53,10 +55,12 @@ fmt-check:
 	@echo "== rustfmt =="
 	$(CARGO) fmt --all --check
 
-## lint: clippy over the workspace, tests included, warnings denied
+## lint: clippy over the workspace, tests included, warnings denied; then
+## the proof that clippy.toml's bans fire (ci/clippy-bans-selftest.sh)
 lint:
 	@echo "== clippy =="
 	$(CARGO) clippy --workspace --all-targets --locked -- -D warnings
+	./ci/clippy-bans-selftest.sh
 
 test:
 	@echo "== tests =="
@@ -98,10 +102,13 @@ deps:
 lockfile:
 	./ci/check-lockfile.sh
 
-## fuzz-lint: clippy over the fuzz crate (its own workspace), on the pinned
+## fuzz-lint: every target's seeds and dictionary (ci/check-dicts.sh, and its
+## self-test); clippy over the fuzz crate (its own workspace), on the pinned
 ## toolchain, so a target that stopped compiling fails before any fuzzing;
 ## then the harness's tests (the generated seeds still decode and reach)
 fuzz-lint:
+	./ci/check-dicts.sh --self-test
+	./ci/check-dicts.sh
 	@echo "== clippy, fuzz/ =="
 	$(CARGO) clippy --manifest-path fuzz/Cargo.toml --all-targets --locked -- -D warnings
 	$(CARGO) test --manifest-path fuzz/Cargo.toml --lib --locked
@@ -149,6 +156,20 @@ packaging:
 vendor:
 	./ci/vendor-check-selftest.sh
 	./ci/vendor-check.sh
+
+## wormhole-interop: Sukkula against the Python magic-wormhole client, pinned
+## by hash (ci/wormhole-interop-requirements.txt), both ways. Network (PyPI),
+## and Python 3.12 (PYTHON=...).
+PYTHON ?= python3.12
+wormhole-interop:
+	@t=$${CARGO_TARGET_DIR:-target}; case $$t in /*) ;; *) t="$(CURDIR)/$$t" ;; esac; \
+		v="$$t/wormhole-interop-venv"; rm -rf "$$v"; \
+		$(PYTHON) -m venv "$$v" && \
+		"$$v/bin/pip" install --quiet --require-hashes --only-binary=:all: \
+			-r ci/wormhole-interop-requirements.txt && \
+		SUKKULA_PY_WORMHOLE="$$v/bin/wormhole" $(CARGO) test -p sukkula-engine \
+			--no-default-features --features wormhole --locked \
+			--test wormhole_interop -- --include-ignored
 
 ## harbour: the source-level Harbour gate, then the proof that it bites
 harbour:

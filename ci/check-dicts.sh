@@ -43,6 +43,7 @@ esac
 
 # ParseOneDictionaryEntry, line for line; prints libFuzzer's own message
 # for a line it would refuse.
+# shellcheck disable=SC2016 # awk's program: its $ are awk's own
 PARSER='
 function is_space(ch) { return ch == " " || ch == "\t" || ch == "\r" || ch == "\v" || ch == "\f" }
 function is_hex(ch) { return index("0123456789abcdefABCDEF", ch) > 0 }
@@ -229,6 +230,9 @@ tree_case() {
     fi
     return 0
 }
+# The changes are single-quoted on purpose: eval runs them in the tree.
+# shellcheck disable=SC2016
+{
 tree_case pass "a crate whose every target has seeds and a dictionary" ':'
 tree_case fail "a target with no dictionary" 'rm fuzz/dicts/beta.dict'
 tree_case fail "a target with no seed directory" 'rm -r fuzz/seeds/beta'
@@ -238,6 +242,7 @@ tree_case fail "an empty dictionary" ': > fuzz/dicts/beta.dict'
 tree_case fail "a dictionary whose target is gone" 'printf "\"x\"\n" > fuzz/dicts/gamma.dict'
 tree_case fail "seeds whose target is gone" 'mkdir fuzz/seeds/gamma && : > fuzz/seeds/gamma/0'
 tree_case fail "a crate with no targets" 'sed -i "/^\[\[bin\]\]/,\$d" fuzz/Cargo.toml'
+}
 
 if [[ "$status" -eq 0 ]]; then
     echo "check-dicts: self-test ok ($cases cases)"

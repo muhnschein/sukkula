@@ -111,6 +111,58 @@ else
     echo "packaging-lint: the rpm workflow stamps a unique Release"
 fi
 
+# The workflow rules docs/BUILDING.md states, each once broken (the review
+# findings named), each a line a later edit could quietly undo:
+#
+#   - the SDK image is never pulled by its tag, which anyone who can push
+#     to the registry can repoint, and nothing that runs a pull request's
+#     code or a crate's build script can push one: rpm.yml holds no
+#     `packages: write`, the one workflow that does runs from main only,
+#     and scripts/build-rpm.sh pulls by digest ("Any branch or dependency
+#     build script with packages:write can overwrite the SDK image");
+#   - a `v*` tag releases only a commit main contains ("A 'v*' tag on any
+#     commit publishes a GitHub release");
+#   - a pull request's runs are grouped by its number, never by the bare
+#     head_ref two forks can share ("Concurrency groups keyed on the bare
+#     head_ref").
+ran=$((ran + 1))
+wf="$root/.github/workflows"
+policy_ok=1
+if grep -n 'group:.*head_ref' "$wf"/*.yml >&2; then
+    fail "a concurrency group keyed on head_ref: two forks' same-named branches cancel each other; key on github.event.pull_request.number"
+    policy_ok=0
+fi
+for f in "$wf"/*.yml; do
+    grep -q 'packages:[[:space:]]*write' "$f" || continue
+    case "$(basename "$f")" in
+        sdk-image.yml)
+            grep -q "^    if: github.ref == 'refs/heads/main'\$" "$f" || {
+                fail "sdk-image.yml holds packages: write but does not refuse to run from a branch other than main"
+                policy_ok=0; }
+            ;;
+        *)
+            fail "$(basename "$f") holds packages: write; only sdk-image.yml may publish the SDK image"
+            policy_ok=0
+            ;;
+    esac
+done
+if grep -n '^[^#]*docker pull' "$wf/rpm.yml" >&2; then
+    fail "rpm.yml pulls an image itself; the SDK image comes from scripts/build-rpm.sh pull, by digest"
+    policy_ok=0
+fi
+# shellcheck disable=SC2016 # the pattern is the script's literal text
+if grep -n '^[^#]*docker pull' "$root/scripts/build-rpm.sh" | grep -v '@\$digest' >&2; then
+    fail "scripts/build-rpm.sh pulls an image other than by its pinned digest"
+    policy_ok=0
+fi
+# shellcheck disable=SC2016 # the pattern is the workflow's literal text
+if ! grep -q 'merge-base --is-ancestor "\$GITHUB_SHA"' "$wf/rpm.yml"; then
+    fail "rpm.yml no longer proves a v* tag's commit is on main before releasing it"
+    policy_ok=0
+fi
+[ "$policy_ok" = 1 ] &&
+    echo "packaging-lint: workflows pull the SDK image by digest, release from main, group by pull request"
+
 # mb2 derives the package from the directory it runs in and then looks for
 # rpm/<that>.spec; scripts/build-rpm.sh mounts the tree at a path it
 # chooses, so that name and the spec's have to agree.
