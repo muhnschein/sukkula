@@ -1,0 +1,1434 @@
+From 78e4fadd010f72c3177a257acc89b0311a2d2463 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 25 Sep 2026 06:41:55 +0000
+Subject: [PATCH] UI: page-stack races around consent, discovery and Settings;
+ Wormhole switch
+
+Review findings kept[4], kept[5], kept[21], kept[22], kept[38] and the UI
+half of kept[37]:
+
+- Settings are saved when the page is left (its destruction), not on every
+  Deactivating: the consent dialog pushed over Settings no longer sends
+  set_settings, which restarted the receivers and withdrew the very offer
+  shown, and committed half-typed values (F-C2, F-LS4).
+- Discovery is counted in Engine.qml: a share that replaces an open Send
+  page no longer has the old page's late stop_discovery empty the peer
+  lists and stop discovery under the new page (F-LS1, F-QS1, F-C6).
+- A send's or a wormhole code's reply leaves only its own page, only from
+  the top of the stack, and otherwise once that page is Active again: it
+  no longer pops or replaces a consent dialog that came up meanwhile,
+  declining that offer unanswered (F-C2, S5).
+- The window lets the next consent dialog in only once the last one has
+  left the stack (its destruction), the dialog's closer keeps trying
+  until it can leave instead of giving up, a dismissed dialog accepts
+  nothing, and Engine.answer sends nothing for an offer that no longer
+  waits: a closed offer's dialog can no longer stay stranded under the
+  next one with a frozen countdown (F-C2, F-C3).
+- Magic Wormhole can be switched off in Settings (settings.wormhole.enabled,
+  default true, which the engine adds): it leaves the Send page and the
+  main page's "Receive with a code" (F-C1). Translated in en, fi, de, sv.
+- The Bluetooth nudge's Settings text now says what it does: while the
+  Send page looks for devices it makes Android phones nearby show up
+  (F-QS2). M-31 is rewritten to isolate the nudge (off, then on, with
+  Android's Quick Share closed, both results recorded); M-16 covers F-C1,
+  M-17 and M-6 check the page lifecycle on the phone.
+
+Tests: tst_stack.qml (new, the whole window) reproduces each race;
+tst_settings, tst_send and tst_engine cover the save-on-leave, the switch,
+the discovery count and the answer refusal. Eight new selftest faults,
+one per guard, are each caught.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01ENZSCiAud5Vs29ugEacpyR
+---
+ docs/MANUAL-TESTS.md               |   6 +-
+ docs/SECURITY.md                   |   1 +
+ qml/engine/Engine.qml              |  37 +++-
+ qml/harbour-sukkula.qml            |  16 +-
+ qml/pages/ConsentDialog.qml        |  29 ++-
+ qml/pages/MainPage.qml             |   5 +-
+ qml/pages/SendPage.qml             |  55 +++++-
+ qml/pages/SettingsPage.qml         |  38 ++--
+ qml/pages/WormholeReceivePage.qml  |  37 +++-
+ tests/README.md                    |  19 +-
+ tests/cpp/stub/sukkula_stub.c      |   2 +-
+ tests/qml/helpers/Events.js        |   2 +-
+ tests/qml/runner/runner.cpp        |   2 +-
+ tests/qml/selftest.py              |  69 ++++++-
+ tests/qml/tst_engine.qml           |  26 ++-
+ tests/qml/tst_send.qml             |  38 +++-
+ tests/qml/tst_settings.qml         |  43 ++++-
+ tests/qml/tst_stack.qml            | 298 +++++++++++++++++++++++++++++
+ translations/harbour-sukkula-de.ts |  22 ++-
+ translations/harbour-sukkula-fi.ts |  22 ++-
+ translations/harbour-sukkula-sv.ts |  22 ++-
+ translations/harbour-sukkula.ts    |  22 ++-
+ 22 files changed, 729 insertions(+), 82 deletions(-)
+ create mode 100644 tests/qml/tst_stack.qml
+
+diff --git a/docs/MANUAL-TESTS.md b/docs/MANUAL-TESTS.md
+index b3bee1d..b96bb7f 100644
+--- a/docs/MANUAL-TESTS.md
++++ b/docs/MANUAL-TESTS.md
+@@ -23,7 +23,7 @@ Every ID names the requirement it covers.
+ | M-3 | §2 lifecycle | Receive on, close the app from the cover. From the desktop, try to send. | Nothing answers on 53317; no Sukkula process remains (`ps`). |
+ | M-4 | §2 KeepAlive | Receive a 2 GB file with the screen off. | The transfer completes; with no transfer running the phone suspends as usual. |
+ | M-5 | §2 cover | Receive on, go to the home screen. | The cover says "Receiving" and shows progress during a transfer. |
+-| M-6 | F-C6 | Share a photo from Gallery and a link from the browser. | Sukkula is offered; "Send via…" opens with the item. |
++| M-6 | F-C6 | Share a photo from Gallery and a link from the browser. With "Send via…" open and a LocalSend or Quick Share peer listed, share a second photo from Gallery. | Sukkula is offered; "Send via…" opens with the item. After the second share one Send page shows the new photo, and the peers come back to its list (discovery kept running). |
+ | M-7 | F-C7 | Rename the device in Settings. | LocalSend and Quick Share peers show the new name; empty falls back to the model name. |
+ | M-8 | §2 sandbox | Share a photo from Gallery (it lives in `~/Pictures`), and pick a file in `~/Documents` with the file picker. | Record whether each can be sent. With only `Downloads` granted, Sukkula shows "Sukkula can read files in Downloads only" instead of failing silently; if the Share-menu photo is unreadable, raise it with the owner (it needs `UserDirs`, a spec change). |
+ | M-9 | S9 | Run `journalctl --user -f \| grep 'sukkula:'` over SSH. Receive a file over each protocol with debug logging off; turn it on in Settings and receive again, a text too; turn it off. | Off: no line at all unless something failed. On: `DEBUG` lines such as `offer accepted` and `transfer finished`, with counts and sizes only: no file name, text, device name, PIN, code or address in any line. Off again: `debug logging off`, then silence. Nothing of Sukkula's under `$HOME` looks like a log file. |
+@@ -38,6 +38,8 @@ Every ID names the requirement it covers.
+ | M-13 | F-C4 | Send a text containing a URL. | Shown as plain text with Copy; nothing opens; the URL is not a link. |
+ | M-14 | S2 | Rename the desktop's LocalSend alias to `Alice`, then U+202E RIGHT-TO-LEFT OVERRIDE, then `gpj.exe`. | Sukkula shows `Alicegpj.exe`, left to right. |
+ | M-15 | F-C5 | Cancel a large transfer from each side, in each direction. | Both sides stop; no partial file remains on the phone. |
++| M-16 | F-C1 | Receive on. In Settings, switch off LocalSend, Quick Share, Magic Wormhole and Bluetooth one at a time, leaving Settings after each; each time, try that protocol both ways: from the desktop `nc -vz <phone-ip> 53317` and a LocalSend send; the Pixel's share sheet; `wormhole send` on the laptop and "Receive with a code"; a Bluetooth send. Then switch them all on again. | A protocol switched off is not on the Send page, and nothing reaches the phone over it: 53317 refuses, the phone is not in the Pixel's list, "Receive with a code" is gone from the main page's menu. The others keep working. Switched on again, each works as before. |
++| M-17 | F-C2 | Receive on. Open Settings, change the device name and stay on the page; send a file from the desktop's LocalSend. Accept it, then leave Settings. | The dialog stays until it is answered (Settings being covered restarts nothing) and the file arrives; the new name is used once Settings is left (M-7). |
+ 
+ ## LocalSend
+ 
+@@ -54,7 +56,7 @@ Every ID names the requirement it covers.
+ | ID | Covers | Steps | Pass when |
+ | --- | --- | --- | --- |
+ | M-30 | F-QS1 | Share a file from the Pixel and from the Samsung to the phone, and from the phone to each. | All four arrive intact. |
+-| M-31 | F-QS2 | With the Android phone's Quick Share closed, turn Receive on, then open its share sheet. | The phone appears (the BLE nudge worked), or appears after a moment over mDNS. |
++| M-31 | F-QS2 | The nudge goes out only while Sukkula looks for devices to *send* to, so this is a sending test, run twice. Pixel: Quick Share visible to Everyone (Android keeps that for 10 minutes: set it again before (b) if it has lapsed), its Quick Share screen and share sheet closed, screen on and unlocked. Jolla: Receive off, debug logging on, M-9's `journalctl` running. (a) Settings: Bluetooth nudge **off**. Open Send…, choose Quick Share, watch the list for 60 s, go back. (b) Settings: Bluetooth nudge **on**. Open Send…, choose Quick Share, watch for 60 s. | Record for (a) and for (b) whether the Pixel appeared and after how many seconds. Pass: not in (a), within 30 s in (b), with a `BLE nudge on the air` line in the journal in (b) only. If the Pixel appears in (a), it is announcing itself without the nudge and the run proves nothing: close Quick Share on it, lock and unlock it, and repeat (a) until it stays away before running (b). If it never appears in (b), F-QS2 fails: record the journal's `quickshare:` lines (`no BLE nudge` says why). |
+ | M-32 | F-QS3 | Share from the Pixel. | The PIN in Sukkula's dialog matches the Pixel's screen. |
+ | M-33 | F-QS4 | Set visibility to Hidden. | Neither Android phone can see the phone. |
+ | M-34 | F-QS5 | Share a Wi-Fi network from the Pixel. | Refused; no network change on the phone. |
+diff --git a/docs/SECURITY.md b/docs/SECURITY.md
+index 56140da..44aab7f 100644
+--- a/docs/SECURITY.md
++++ b/docs/SECURITY.md
+@@ -170,6 +170,7 @@ code or test it names.
+ | S3: only the inbox writes; staged, capped, verified, never clobbering or following links | `clippy.toml` bans (std, tokio and rustix; lifted only in `sukkula_core::{inbox,store,dirfd}`, per function); `inbox.rs` and `store.rs` tests (symlinked targets and staging, EXDEV copy fallback on tmpfs, cancel mid-copy, spoiled writes); `properties.rs` `the_inbox_writes_what_was_declared_or_nothing`; every adapter's hostile suite asserts nothing outside the download directory and no partial file |
+ | S4/S6: sizes and counts range-checked before allocation | `offer.rs` tests; `properties.rs` `validate_never_passes_a_bad_offer`, `negative_or_oversized_anywhere_is_refused`; fuzz target `offer_validate`; `localsend_hostile::impossible_sizes_and_counts_never_reach_the_user`, `oversized_json_is_refused_before_it_is_read`; `wormhole_hostile::negative_and_oversized_offers_never_reach_the_user`, `a_lying_record_length_is_refused_before_anything_is_allocated` |
+ | S5: consent before any payload | `consent.rs` tests; `properties.rs` `consent_accounting_holds_under_any_schedule`; `localsend_hostile::uploads_without_consent_or_the_right_token_are_refused_unread`; `localsend_loopback::a_declined_offer_writes_nothing`; `wormhole::a_declined_offer_moves_no_data_and_leaves_no_file`; `ctx::tests::a_busy_engine_declines_without_asking` |
++| S5 in the UI: only the user's Accept says yes, and nothing answers for them | `tests/qml/tst_consent.qml` (Decline, leaving, the countdown and an engine-closed offer all end in no, the last one unanswered); `tst_stack.qml` (a reply to a send or a code never pops or replaces a consent dialog, one dialog in the stack at a time and never a closed one left under the next, a closed offer never answered, no settings save and receiver restart under a dialog); `tst_engine.qml` (`Engine.answer` sends nothing for an offer that is not waiting); each guarded by a planted fault in `tests/qml/selftest.py` |
+ | Every read has a timeout; slow peers are cut off | `localsend_hostile::slow_handshakes_heads_and_bodies_are_cut_off`, `a_stalled_upload_times_out_and_is_cleaned_up`, `a_receiver_that_stops_reading_times_out`; `wormhole_hostile::a_slow_loris_record_times_out`, `a_sender_that_stalls_after_the_yes_times_out`; `bluetooth::a_stalled_transfer_times_out`, `bluez_that_never_answers_times_out` |
+ | S7: only private LAN peers, rate-limited | `reach.rs` tests; `properties.rs` `reach_agrees_with_the_ranges`, `the_limiter_is_bounded_and_exact_below_capacity`; `ctx::tests::offers_are_limited_per_peer_and_in_total`; `localsend_hostile::unpermitted_addresses_are_dropped_before_the_handshake`, `offers_are_rate_limited_per_address` |
+ | F-LS2/F-LS3: HTTPS only, pinned | `localsend_hostile::plain_http_and_certificateless_clients_get_nothing`, `registrations_must_prove_their_fingerprint`; `localsend_loopback::a_changed_certificate_is_refused_before_anything_is_sent` |
+diff --git a/qml/engine/Engine.qml b/qml/engine/Engine.qml
+index 61c0a82..c7cd04a 100644
+--- a/qml/engine/Engine.qml
++++ b/qml/engine/Engine.qml
+@@ -48,7 +48,7 @@ QtObject {
+         device_name: "",
+         localsend: { enabled: true, pin: null },
+         quickshare: { enabled: true, visibility: "everyone", ble_nudge: true },
+-        wormhole: { mailbox_url: null, relay_url: null },
++        wormhole: { enabled: true, mailbox_url: null, relay_url: null },
+         bluetooth: { enabled: true },
+         logging: false
+     })
+@@ -77,6 +77,9 @@ QtObject {
+     property ListModel offers: ListModel {}
+     /// Paired Bluetooth devices that take Object Push. Roles: address, name.
+     property ListModel bluetoothDevices: ListModel {}
++    /// How many pages have asked for discovery and not yet given it back
++    /// (startDiscovery / stopDiscovery).
++    property int discoveryUsers: 0
+     /// Received texts (F-C4), newest first. Roles: transferId, from, text,
+     /// receivedAt.
+     property ListModel texts: ListModel {}
+@@ -183,19 +186,42 @@ QtObject {
+     function getSettings() {
+         return engine.command({ type: "get_settings" })
+     }
++    /// Asks for discovery (F-LS1, F-QS1); every call is given back by one
++    /// stopDiscovery(). Counted, because two pages can want it at once: a
++    /// share that arrives while a Send page is open replaces that page, and
++    /// the old page is destroyed only after the new one has asked. Without
++    /// the count the old page's stop came last, and the new page showed
++    /// "Looking for devices" over empty lists with discovery off.
++    /// start_discovery goes out every time: for what already runs it is a
++    /// no-op, and it starts a protocol switched on since.
+     function startDiscovery() {
++        engine.discoveryUsers = engine.discoveryUsers + 1
+         return engine.command({ type: "start_discovery" }, engine._quiet)
+     }
+-    /// Stops discovery and forgets the peers: nothing keeps them fresh.
++    /// Gives discovery back. The last one out stops it and forgets the
++    /// peers, since nothing keeps them fresh then; a stop nobody asked
++    /// for does nothing.
+     function stopDiscovery() {
++        if (engine.discoveryUsers <= 0) {
++            return 0
++        }
++        engine.discoveryUsers = engine.discoveryUsers - 1
++        if (engine.discoveryUsers > 0) {
++            return 0
++        }
+         engine.localSendPeers.clear()
+         engine.quickSharePeers.clear()
+         return engine.command({ type: "stop_discovery" }, engine._quiet)
+     }
+     /// Answers an offer (F-C2). It leaves the queue here at once, so the
+-    /// same offer is never shown twice; an offer that closed meanwhile
+-    /// answers "not_found", which is nobody's business.
++    /// same offer is never shown twice. Only an offer still waiting is
++    /// answered: one the engine closed (timed out, withdrawn) or that was
++    /// answered already gets nothing, whatever a stale dialog asks.
++    /// Returns the command id, or 0 when nothing was sent.
+     function answer(offerId, accept) {
++        if (engine.offer(offerId) === null) {
++            return 0
++        }
+         engine._removeOffer(offerId)
+         return engine.command({ type: "answer", offer: offerId, accept: accept === true },
+                               engine._quiet)
+@@ -271,6 +297,9 @@ QtObject {
+         if (protocol === "quick_share") {
+             return !(s.quickshare && s.quickshare.enabled === false)
+         }
++        if (protocol === "wormhole") {
++            return !(s.wormhole && s.wormhole.enabled === false)
++        }
+         if (protocol === "bluetooth") {
+             return !(s.bluetooth && s.bluetooth.enabled === false)
+         }
+diff --git a/qml/harbour-sukkula.qml b/qml/harbour-sukkula.qml
+index 825938e..8a8949f 100644
+--- a/qml/harbour-sukkula.qml
++++ b/qml/harbour-sukkula.qml
+@@ -46,7 +46,9 @@ ApplicationWindow {
+         enabled: sukkula.activeTransfers > 0
+     }
+ 
+-    /// The consent dialog on screen, or null.
++    /// The consent dialog in the stack, or null. Cleared only once the
++    /// dialog has left the stack (consentGone), so nothing -- the next
++    /// offer's dialog, a share -- is ever pushed over one.
+     property Item consentPage: null
+     /// What the Share menu handed over, waiting for the stack.
+     property var pendingShare: null
+@@ -76,7 +78,7 @@ ApplicationWindow {
+             appWindow.consentPage = pageStack.push(Qt.resolvedUrl("pages/ConsentDialog.qml"),
+                                                    { engine: sukkula, offer: offer })
+             if (appWindow.consentPage) {
+-                appWindow.consentPage.finished.connect(appWindow.consentFinished)
++                appWindow.consentPage.gone.connect(appWindow.consentGone)
+             }
+             return
+         }
+@@ -95,7 +97,15 @@ ApplicationWindow {
+         }
+     }
+ 
+-    function consentFinished() {
++    /// The dialog has left the stack: the next offer or share may come.
++    /// Not as soon as it is answered: an answered dialog -- one the engine
++    /// closed above all -- is still on the stack until its own way out
++    /// (ConsentDialog's closer, or Silica's pop) is done, and a dialog
++    /// pushed over it meanwhile left it stranded underneath, a stale offer
++    /// with a frozen countdown that came back once the new one was
++    /// answered. The next push waits for the timer: this runs inside the
++    /// dialog's destruction.
++    function consentGone() {
+         appWindow.consentPage = null
+         navigation.restart()
+     }
+diff --git a/qml/pages/ConsentDialog.qml b/qml/pages/ConsentDialog.qml
+index 8459258..d817244 100644
+--- a/qml/pages/ConsentDialog.qml
++++ b/qml/pages/ConsentDialog.qml
+@@ -35,7 +35,10 @@ Dialog {
+     /// The engine closed the offer (timed out, withdrawn): nothing to answer.
+     property bool closedByEngine: false
+ 
+-    signal finished()
++    /// The dialog has left the stack for good. The window shows the next
++    /// offer only then -- not when this one is answered, while it may
++    /// still be on the stack -- so a dialog is never pushed over another.
++    signal gone()
+ 
+     function secondsLeft() {
+         if (!dialog.offer) {
+@@ -44,6 +47,8 @@ Dialog {
+         return Math.max(0, Math.ceil((dialog.offer.expiresAt - Date.now()) / 1000))
+     }
+ 
++    /// The one answer this dialog gives. The engine answers only an offer
++    /// that still waits (Engine.answer), so a closed one gets nothing.
+     function answer(accept) {
+         if (dialog.answered) {
+             return
+@@ -52,19 +57,25 @@ Dialog {
+         if (!dialog.closedByEngine && dialog.offerId >= 0 && dialog.engine) {
+             dialog.engine.answer(dialog.offerId, accept)
+         }
+-        dialog.finished()
+     }
+ 
+-    /// Closes the dialog from code, answering no if nobody has.
++    /// Closes the dialog from code, answering no if nobody has. Until it
++    /// is off the stack its Accept does nothing, rather than look as if it
++    /// could still say yes to an offer that is over. (Only here: the
++    /// user's own Accept must not change canAccept under Silica's feet.)
+     function dismiss() {
+         dialog.answer(false)
++        dialog.canAccept = false
+         closer.start()
+     }
+ 
+     onAccepted: dialog.answer(true)
+     onRejected: dialog.answer(false)
+     // Popped some other way -- the stack cleared, the app closing: no.
+-    Component.onDestruction: dialog.answer(false)
++    Component.onDestruction: {
++        dialog.answer(false)
++        dialog.gone()
++    }
+ 
+     Connections {
+         target: dialog.engine
+@@ -93,7 +104,13 @@ Dialog {
+         }
+     }
+ 
+-    // A dialog can only leave the stack once it has finished arriving.
++    // A dialog can only leave the stack once it has finished arriving, and
++    // only from the top: what Silica's reject() does to a covered dialog
++    // is not ours to rely on. So this keeps trying until the dialog is on
++    // top and the stack still, and never gives up -- giving up once left a
++    // closed dialog in the stack, a stale offer with a frozen countdown
++    // under the next one. The window pushes nothing over a dialog, so the
++    // wait is for a transition to end.
+     Timer {
+         id: closer
+         interval: 100
+@@ -102,8 +119,8 @@ Dialog {
+             if (dialog.pageStack && dialog.pageStack.busy) {
+                 return
+             }
+-            stop()
+             if (dialog.status === PageStatus.Active || dialog.status === PageStatus.Activating) {
++                stop()
+                 dialog.reject()
+             }
+         }
+diff --git a/qml/pages/MainPage.qml b/qml/pages/MainPage.qml
+index f42b72b..a022e56 100644
+--- a/qml/pages/MainPage.qml
++++ b/qml/pages/MainPage.qml
+@@ -78,9 +78,12 @@ Page {
+                 }
+             }
+             MenuItem {
++                objectName: "receiveWithCode"
+                 //: Pulley menu: receive over Magic Wormhole by typing the sender's code.
+                 text: qsTr("Receive with a code")
+-                enabled: page.engine.running && page.engine.hasProtocol("wormhole")
++                // Gone with Magic Wormhole switched off in Settings (F-C1).
++                visible: page.engine.protocolEnabled("wormhole")
++                enabled: page.engine.running
+                 onClicked: pageStack.push(Qt.resolvedUrl("WormholeReceivePage.qml"),
+                                           { engine: page.engine })
+             }
+diff --git a/qml/pages/SendPage.qml b/qml/pages/SendPage.qml
+index ed7457a..6e80e93 100644
+--- a/qml/pages/SendPage.qml
++++ b/qml/pages/SendPage.qml
+@@ -34,6 +34,10 @@ Page {
+     property bool discovering: false
+     property bool alive: true
+     property bool listingDevices: false
++    /// Where to go once a send has started: {code: true, transfer} for the
++    /// wormhole code page, {code: false} for back to the transfers; null
++    /// while there is nowhere to go. See leave().
++    property var leaving: null
+ 
+     /// The protocols offered: in this build and switched on in Settings.
+     readonly property var available: page.availableProtocols(page.engine.protocols, page.engine.settings)
+@@ -123,16 +127,49 @@ Page {
+             self.sending = false
+             if (!ok) {
+                 banner.show(self.engine.errorText(error))
+-            } else if (wormhole) {
+-                pageStack.replace(Qt.resolvedUrl("WormholeCodePage.qml"),
+-                                  { engine: self.engine, transferId: transfer })
+-            } else {
+-                // Progress is on the main page, with the other transfers.
+-                pageStack.pop()
++                return
+             }
++            // The code page for a wormhole; otherwise back to the main
++            // page, where the progress is, with the other transfers.
++            self.leaving = wormhole ? { code: true, transfer: transfer } : { code: false }
++            self.leave()
+         })
+     }
+ 
++    /// Goes where `leaving` says -- from the top of the stack only. The
++    /// reply that asks for it can come while another page is over this
++    /// one: an offer's consent dialog comes up over whatever is showing
++    /// (F-C2), and a bare pop() or replace() then took the dialog instead,
++    /// declining that offer unanswered. So this page leaves only while it
++    /// is the current page and the stack is still, and otherwise once it
++    /// is on top again (onStatusChanged).
++    function leave() {
++        if (page.leaving === null || page.alive !== true) {
++            return
++        }
++        if (pageStack.currentPage !== page || page.status !== PageStatus.Active) {
++            return
++        }
++        if (pageStack.busy) {
++            leaveLater.restart()
++            return
++        }
++        var to = page.leaving
++        page.leaving = null
++        if (to.code) {
++            pageStack.replace(Qt.resolvedUrl("WormholeCodePage.qml"),
++                              { engine: page.engine, transferId: to.transfer })
++        } else {
++            pageStack.pop(pageStack.previousPage(page))
++        }
++    }
++
++    Timer {
++        id: leaveLater
++        interval: 100
++        onTriggered: page.leave()
++    }
++
+     function listDevices() {
+         page.listingDevices = true
+         var self = page
+@@ -163,11 +200,15 @@ Page {
+ 
+     onStatusChanged: {
+         // Discovery runs while the page exists, not only while it is on
+-        // top: the file picker comes and goes above it.
++        // top: the file picker comes and goes above it. Engine.qml counts
++        // who asked, so a Send page replacing this one keeps it running.
+         if (page.status === PageStatus.Active && !page.discovering && page.engine.running) {
+             page.discovering = true
+             page.engine.startDiscovery()
+         }
++        if (page.status === PageStatus.Active) {
++            page.leave()
++        }
+     }
+ 
+     Component.onCompleted: {
+diff --git a/qml/pages/SettingsPage.qml b/qml/pages/SettingsPage.qml
+index 01aa30c..a5d0a25 100644
+--- a/qml/pages/SettingsPage.qml
++++ b/qml/pages/SettingsPage.qml
+@@ -6,8 +6,8 @@ import "../components"
+ /*
+  * Settings, saved when the page is left: the device name (F-C7), each
+  * protocol on or off (F-C1), the LocalSend PIN (F-LS4), Quick Share
+- * visibility and the BLE nudge (F-QS4, F-QS2), the wormhole servers
+- * (F-MW4), and debug logging, off by default (S9).
++ * visibility and the BLE nudge (F-QS4, F-QS2), Magic Wormhole and its
++ * servers (F-MW4), and debug logging, off by default (S9).
+  *
+  * The fields are checked here the way sukkula-core checks them
+  * (config.rs), so a bad value is caught while it can still be fixed; the
+@@ -65,6 +65,7 @@ Page {
+         quickShareSwitch.checked = qs.enabled !== false
+         visibilityBox.currentIndex = qs.visibility === "hidden" ? 1 : 0
+         nudgeSwitch.checked = qs.ble_nudge !== false
++        wormholeSwitch.checked = mw.enabled !== false
+         mailboxField.text = typeof mw.mailbox_url === "string" ? mw.mailbox_url : ""
+         relayField.text = typeof mw.relay_url === "string" ? mw.relay_url : ""
+         bluetoothSwitch.checked = bt.enabled !== false
+@@ -87,6 +88,7 @@ Page {
+         s.quickshare.enabled = quickShareSwitch.checked
+         s.quickshare.visibility = visibilityBox.currentIndex === 1 ? "hidden" : "everyone"
+         s.quickshare.ble_nudge = nudgeSwitch.checked
++        s.wormhole.enabled = wormholeSwitch.checked
+         var mailbox = page.trimmed(mailboxField.text)
+         var relay = page.trimmed(relayField.text)
+         s.wormhole.mailbox_url = mailbox.length > 0 ? mailbox : null
+@@ -97,7 +99,7 @@ Page {
+     }
+ 
+     function save() {
+-        if (!page.loaded || !page.valid || !page.engine.settingsKnown) {
++        if (!page.loaded || !page.valid || !page.engine || !page.engine.settingsKnown) {
+             return
+         }
+         var next = page.collect()
+@@ -111,11 +113,15 @@ Page {
+ 
+     Component.onCompleted: page.load()
+ 
+-    onStatusChanged: {
+-        if (page.status === PageStatus.Deactivating) {
+-            page.save()
+-        }
+-    }
++    // Saved when the page is left for good, and only then. Not on
++    // `Deactivating`, which fires just the same when a page is pushed over
++    // this one -- and the consent dialog comes up over whatever is showing
++    // (F-C2). A save then restarted the receivers (set_settings does,
++    // while receiving), which withdrew the very offer the dialog showed,
++    // and made a half-typed PIN or server live. Destruction is the honest
++    // signal for leaving: a popped page is destroyed, and so is one that a
++    // share replaces (harbour-sukkula.qml, navigate()).
++    Component.onDestruction: page.save()
+ 
+     SilicaFlickable {
+         anchors.fill: parent
+@@ -254,17 +260,27 @@ Page {
+             }
+             TextSwitch {
+                 id: nudgeSwitch
++                objectName: "nudgeSwitch"
+                 visible: page.engine.hasProtocol("quick_share")
+-                //: Settings: advertise over Bluetooth LE so Android phones look for this one (F-QS2).
++                //: Settings: while sending, a Bluetooth LE signal makes nearby Android phones announce themselves on the Wi-Fi (F-QS2).
+                 text: qsTr("Bluetooth nudge")
+-                //: Settings: what the Bluetooth nudge does.
+-                description: qsTr("Announce over Bluetooth that this phone is receiving, so Android phones look for it.")
++                //: Settings: what the Bluetooth nudge does. It works only while the Send page looks for devices; it does not make this phone visible.
++                description: qsTr("While the Send page looks for devices, a Bluetooth signal prompts Android phones nearby to show up.")
+             }
+ 
+             SectionHeader {
+                 text: "Magic Wormhole"
+                 visible: page.engine.hasProtocol("wormhole")
+             }
++            TextSwitch {
++                id: wormholeSwitch
++                objectName: "wormholeSwitch"
++                visible: page.engine.hasProtocol("wormhole")
++                //: Settings: switch a protocol on or off.
++                text: qsTr("Use Magic Wormhole")
++                //: Settings: what the Magic Wormhole switch covers (F-C1): sending to a code and receiving with one.
++                description: qsTr("Send and receive with a code, through a server on the internet.")
++            }
+             TextField {
+                 id: mailboxField
+                 objectName: "mailboxField"
+diff --git a/qml/pages/WormholeReceivePage.qml b/qml/pages/WormholeReceivePage.qml
+index dc53cfa..cdc0b1e 100644
+--- a/qml/pages/WormholeReceivePage.qml
++++ b/qml/pages/WormholeReceivePage.qml
+@@ -16,6 +16,8 @@ Page {
+     property QtObject engine
+     property bool busy: false
+     property bool alive: true
++    /// The code was taken: go back once this page is on top. See leave().
++    property bool leaving: false
+ 
+     /// The code as the engine wants it: trimmed, lower case, spaces as
+     /// dashes -- people read "7 guitarist revenge" aloud.
+@@ -38,13 +40,45 @@ Page {
+             if (ok) {
+                 // The consent dialog comes up on its own once the sender's
+                 // offer arrives.
+-                pageStack.pop()
++                self.leaving = true
++                self.leave()
+             } else {
+                 banner.show(self.engine.errorText(error))
+             }
+         })
+     }
+ 
++    /// Back to the main page -- this page only, from the top only: the
++    /// reply can come while a consent dialog is over this page, and a bare
++    /// pop() took the dialog, declining its offer unanswered (as in
++    /// SendPage.leave()).
++    function leave() {
++        if (!page.leaving || page.alive !== true) {
++            return
++        }
++        if (pageStack.currentPage !== page || page.status !== PageStatus.Active) {
++            return
++        }
++        if (pageStack.busy) {
++            leaveLater.restart()
++            return
++        }
++        page.leaving = false
++        pageStack.pop(pageStack.previousPage(page))
++    }
++
++    onStatusChanged: {
++        if (page.status === PageStatus.Active) {
++            page.leave()
++        }
++    }
++
++    Timer {
++        id: leaveLater
++        interval: 100
++        onTriggered: page.leave()
++    }
++
+     SilicaFlickable {
+         anchors.fill: parent
+         contentHeight: column.height + Theme.paddingLarge
+@@ -94,6 +128,7 @@ Page {
+                 //: Starts receiving with the typed code.
+                 text: qsTr("Receive")
+                 enabled: page.valid && !page.busy && page.engine.running
++                         && page.engine.protocolEnabled("wormhole")
+                 onClicked: page.receive()
+             }
+ 
+diff --git a/tests/README.md b/tests/README.md
+index 689f15c..8c0b743 100644
+--- a/tests/README.md
++++ b/tests/README.md
+@@ -70,17 +70,20 @@ tst_consent.qml` runs single QML tests without the other stages.
+    | `tst_engine.qml` | Engine.qml against api.rs: command envelopes and ids, callbacks, bridge return codes, every event type, caps and bounds, garbage events |
+    | `tst_consent.qml` | the consent dialog: sanitised values verbatim as plain text, PIN, "and N more", total, countdown; Accept, Decline, leaving, timeout and engine-closed paths (F-C2, F-C3, F-QS3, S5) |
+    | `tst_main.qml` | main page, text page, cover: the Receive switch, protocol states, transfers, cancel, texts with Copy (F-C1, F-C4, F-C5) |
+-   | `tst_send.qml` | "Send via…" with every protocol, the file picker, the wormhole code page and QR (F-C6, F-MW1, F-BT1) |
+-   | `tst_settings.qml` | settings validation and saving, About, receive by code (F-C7, F-LS4, F-QS4, F-MW2, F-MW4, S9) |
++   | `tst_send.qml` | "Send via…" with every protocol, the file picker, the wormhole code page and QR, protocols switched off in Settings -- Magic Wormhole and "Receive with a code" too (F-C1, F-C6, F-MW1, F-BT1) |
++   | `tst_settings.qml` | settings validation, saving on leaving and not when covered, the Magic Wormhole switch, About, receive by code (F-C1, F-C7, F-LS4, F-QS2, F-QS4, F-MW2, F-MW4, S9) |
+    | `tst_app.qml` | the whole window: start-up, consent queueing over any page and around transitions, the Share menu, KeepAlive, notifications (§2, F-C6) |
++   | `tst_stack.qml` | the whole window while pages cover each other: a consent dialog over Settings saves nothing, a share replacing a Send page keeps discovery and its peers, send and code replies never pop a consent dialog, a closed offer's dialog never stays under the next one and is not answered (F-C2, F-C3, F-C6, F-LS1, F-QS1, S5) |
+ 4. **`tests/qml/selftest.py`** first requires every check to pass on an
+-   untouched copy of the tree, then plants 18 faults one at a time -- a
++   untouched copy of the tree, then plants 26 faults one at a time -- a
+    label without `PlainText`, the sender in a Silica header, a misspelt
+    `Text.Plaintext`, rich text, a clickable link, an Accept that does not
+    accept, a countdown that never declines, KeepAlive held forever, a peer
+    name in a notification, `let`, a disallowed import, a share method
+-   nothing answers, an extra Sailjail permission, an unbounded queue, ...
+-   -- and requires the check named for each to fail.
++   nothing answers, an extra Sailjail permission, an unbounded queue,
++   Settings saved whenever a page covers them, a reply that pops whatever
++   is on top, a closed offer answered, a Magic Wormhole that cannot be
++   switched off, ... -- and requires the check named for each to fail.
+ 
+ ## What `run-cpp-tests.sh` checks
+ 
+@@ -117,4 +120,8 @@ The stubs imitate Silica, Sailfish.Share and Nemo; they are not them.
+ app starts from the launcher and from the Share menu (cold and running),
+ Silica's own labels render as the stubs assume, the file picker lists
+ `~/Downloads` under Sailjail, KeepAlive and notifications behave, and the
+-consent dialog comes up over other pages.
++consent dialog comes up over other pages. The stub's page stack also
++assumes what Silica's does: a page it pops is destroyed, and the page
++below turns Active once a transition is over. Settings are saved on that
++destruction, the next consent dialog waits for it, and a Send page leaves
++only when Active again; M-6 and M-17 check them on the phone.
+diff --git a/tests/cpp/stub/sukkula_stub.c b/tests/cpp/stub/sukkula_stub.c
+index 68ce578..7b8cabc 100644
+--- a/tests/cpp/stub/sukkula_stub.c
++++ b/tests/cpp/stub/sukkula_stub.c
+@@ -59,7 +59,7 @@ static const char *const START_EVENTS[] = {
+     "{\"type\":\"settings\",\"settings\":{\"device_name\":\"\","
+     "\"localsend\":{\"enabled\":true,\"pin\":null},"
+     "\"quickshare\":{\"enabled\":true,\"visibility\":\"everyone\",\"ble_nudge\":true},"
+-    "\"wormhole\":{\"mailbox_url\":null,\"relay_url\":null},"
++    "\"wormhole\":{\"enabled\":true,\"mailbox_url\":null,\"relay_url\":null},"
+     "\"bluetooth\":{\"enabled\":true},\"logging\":false},"
+     "\"effective_device_name\":\"Stub Phone\"}",
+     "{\"type\":\"receiving\",\"on\":false,\"protocols\":["
+diff --git a/tests/qml/helpers/Events.js b/tests/qml/helpers/Events.js
+index 704f12b..bc946f2 100644
+--- a/tests/qml/helpers/Events.js
++++ b/tests/qml/helpers/Events.js
+@@ -129,7 +129,7 @@ function settings(overrides) {
+         device_name: "",
+         localsend: { enabled: true, pin: null },
+         quickshare: { enabled: true, visibility: "everyone", ble_nudge: true },
+-        wormhole: { mailbox_url: null, relay_url: null },
++        wormhole: { enabled: true, mailbox_url: null, relay_url: null },
+         bluetooth: { enabled: true },
+         logging: false
+     }
+diff --git a/tests/qml/runner/runner.cpp b/tests/qml/runner/runner.cpp
+index b8b89a5..40a40f5 100644
+--- a/tests/qml/runner/runner.cpp
++++ b/tests/qml/runner/runner.cpp
+@@ -150,7 +150,7 @@ public:
+         emitEvent(QStringLiteral("{\"type\":\"settings\",\"settings\":{\"device_name\":\"\","
+                                  "\"localsend\":{\"enabled\":true,\"pin\":null},"
+                                  "\"quickshare\":{\"enabled\":true,\"visibility\":\"everyone\",\"ble_nudge\":true},"
+-                                 "\"wormhole\":{\"mailbox_url\":null,\"relay_url\":null},"
++                                 "\"wormhole\":{\"enabled\":true,\"mailbox_url\":null,\"relay_url\":null},"
+                                  "\"bluetooth\":{\"enabled\":true},\"logging\":false},"
+                                  "\"effective_device_name\":\"Jolla Phone\"}"));
+         emitEvent(QStringLiteral("{\"type\":\"receiving\",\"on\":false,\"protocols\":["
+diff --git a/tests/qml/selftest.py b/tests/qml/selftest.py
+index cd985a5..5546913 100644
+--- a/tests/qml/selftest.py
++++ b/tests/qml/selftest.py
+@@ -48,7 +48,7 @@ MUTATIONS = [
+      ["static"]),
+     ("Accept that does not accept", "qml/pages/ConsentDialog.qml",
+      """    onAccepted: dialog.answer(true)""",
+-     """    onAccepted: dialog.finished()""",
++     """    onAccepted: {}""",
+      ["tst_consent.qml"]),
+     ("a countdown that never declines", "qml/pages/ConsentDialog.qml",
+      """            if (dialog.remaining <= 0) {
+@@ -59,8 +59,13 @@ MUTATIONS = [
+             }""",
+      ["tst_consent.qml"]),
+     ("leaving the dialog without an answer", "qml/pages/ConsentDialog.qml",
+-     """    Component.onDestruction: dialog.answer(false)""",
+-     """    Component.onDestruction: {}""",
++     """    Component.onDestruction: {
++        dialog.answer(false)
++        dialog.gone()
++    }""",
++     """    Component.onDestruction: {
++        dialog.gone()
++    }""",
+      ["tst_consent.qml"]),
+     ("KeepAlive held all the time", "qml/harbour-sukkula.qml",
+      """        enabled: sukkula.activeTransfers > 0""",
+@@ -111,6 +116,64 @@ import QtQuick.Controls 2.0""",
+      """qsTr("Built on")""",
+      """qsTr("Built upon")""",
+      ["static"]),
++    # The page stack's races (review kept[4], kept[5], kept[21], kept[22]).
++    ("Settings saved whenever a page covers them", "qml/pages/SettingsPage.qml",
++     """    Component.onDestruction: page.save()""",
++     """    onStatusChanged: {
++        if (page.status === PageStatus.Deactivating) {
++            page.save()
++        }
++    }""",
++     ["tst_settings.qml", "tst_stack.qml"]),
++    ("discovery stopped by any page that leaves", "qml/engine/Engine.qml",
++     """        if (engine.discoveryUsers > 0) {
++            return 0
++        }""",
++     """        if (false) {
++            return 0
++        }""",
++     ["tst_engine.qml", "tst_stack.qml"]),
++    ("a send's reply that pops whatever is on top", "qml/pages/SendPage.qml",
++     """        if (pageStack.currentPage !== page || page.status !== PageStatus.Active) {
++            return
++        }""",
++     """        if (false) {
++            return
++        }""",
++     ["tst_stack.qml"]),
++    ("a code's reply that pops whatever is on top", "qml/pages/WormholeReceivePage.qml",
++     """        if (pageStack.currentPage !== page || page.status !== PageStatus.Active) {
++            return
++        }""",
++     """        if (false) {
++            return
++        }""",
++     ["tst_stack.qml"]),
++    ("the next dialog let in while the last is still on the stack", "qml/pages/ConsentDialog.qml",
++     """            dialog.engine.answer(dialog.offerId, accept)
++        }
++    }""",
++     """            dialog.engine.answer(dialog.offerId, accept)
++        }
++        dialog.gone()
++    }""",
++     ["tst_stack.qml"]),
++    ("a closed offer answered", "qml/engine/Engine.qml",
++     """        if (engine.offer(offerId) === null) {
++            return 0
++        }""",
++     """        if (false) {
++            return 0
++        }""",
++     ["tst_engine.qml", "tst_stack.qml"]),
++    ("Magic Wormhole that cannot be switched off", "qml/engine/Engine.qml",
++     """            return !(s.wormhole && s.wormhole.enabled === false)""",
++     """            return true""",
++     ["tst_send.qml"]),
++    ("the Magic Wormhole switch never saved", "qml/pages/SettingsPage.qml",
++     """        s.wormhole.enabled = wormholeSwitch.checked""",
++     """        s.wormhole.enabled = true""",
++     ["tst_settings.qml"]),
+ ]
+ 
+ COPY = ["qml", "qml-stubs", "tests/qml", "translations", "harbour-sukkula.desktop", "src"]
+diff --git a/tests/qml/tst_engine.qml b/tests/qml/tst_engine.qml
+index 24a3c57..5b595fa 100644
+--- a/tests/qml/tst_engine.qml
++++ b/tests/qml/tst_engine.qml
+@@ -129,10 +129,16 @@ Script {
+         function () {
+             test.compare(engine.offers.count, 4)
+             // Answering takes it off the queue at once.
+-            engine.answer(7, true)
++            test.verify(engine.answer(7, true) > 0, "sent")
+             test.compare(last().cmd, { type: "answer", offer: 7, accept: true })
+             test.compare(engine.offers.count, 3)
+             test.verify(engine.offer(7) === null, "gone")
++            // Only a waiting offer is answered: not twice, not one never
++            // seen.
++            var before = bridge.commands.length
++            test.compare(engine.answer(7, false), 0, "not twice")
++            test.compare(engine.answer(999, true), 0, "not an unknown one")
++            test.compare(bridge.commands.length, before, "nothing sent for either")
+             var closed = []
+             engine.offerClosed.connect(function (id, reason) { closed.push([id, reason]) })
+             test.closed = closed
+@@ -142,6 +148,10 @@ Script {
+         function () {
+             test.compare(test.closed, [[8, "timed_out"], [9, ""]])
+             test.compare(engine.offers.count, 1)
++            // Nor one the engine closed, whatever a stale dialog asks.
++            var before = bridge.commands.length
++            test.compare(engine.answer(8, true), 0, "a closed offer is not answered")
++            test.compare(bridge.commands.length, before)
+         },
+         function () {
+             // Transfers.
+@@ -228,8 +238,22 @@ Script {
+         function () {
+             test.compare(engine.quickSharePeers.count, 0)
+             test.compare(engine.localSendPeers.count, 100)
++            // Discovery is counted: two pages ask, and it stops -- and the
++            // peers go -- only when both have given it back.
++            engine.startDiscovery()
++            engine.startDiscovery()
++            test.compare(last().cmd, { type: "start_discovery" }, "each asking says so")
++            test.compare(engine.discoveryUsers, 2)
+             engine.stopDiscovery()
++            test.compare(last().cmd, { type: "start_discovery" }, "one still wants it: no stop")
++            test.compare(engine.localSendPeers.count, 100, "and the peers stay")
++            engine.stopDiscovery()
++            test.compare(last().cmd, { type: "stop_discovery" }, "the last one out stops it")
+             test.compare(engine.localSendPeers.count, 0, "stopping forgets the peers")
++            var before = bridge.commands.length
++            engine.stopDiscovery()
++            test.compare(bridge.commands.length, before, "a stop nobody asked for sends nothing")
++            test.compare(engine.discoveryUsers, 0, "and the count stays at zero")
+             // Wormhole codes and their QR, checked for shape.
+             bridge.emitEvent(Ev.wormholeCode(5, "7-guitarist-revenge"))
+             bridge.emitEvent(Ev.wormholeCode(6, "8-a-b", { size: 21, rows: ["1"] }))
+diff --git a/tests/qml/tst_send.qml b/tests/qml/tst_send.qml
+index a345ff5..a2ca6a9 100644
+--- a/tests/qml/tst_send.qml
++++ b/tests/qml/tst_send.qml
+@@ -9,7 +9,9 @@ import "helpers/Events.js" as Ev
+  * "Send via…" (F-C6) with each protocol: discovery while the page is up,
+  * peers shown as plain text, the send command's exact shape, the file
+  * picker, Magic Wormhole's one-item rule and its code page with the QR
+- * (F-MW1), and Bluetooth's paired list (F-BT1).
++ * (F-MW1), Bluetooth's paired list (F-BT1), and each protocol switched
++ * off in Settings gone from the page -- Magic Wormhole too, with the main
++ * page's "Receive with a code" (F-C1).
+  */
+ Script {
+     id: test
+@@ -213,14 +215,44 @@ Script {
+             window.pageStack.pop()
+         },
+         function () {
+-            // Every protocol off: nothing to choose.
++            // F-C1: every protocol but Magic Wormhole off.
+             bridge.emitEvent(Ev.settings({ localsend: { enabled: false, pin: null },
+                                            quickshare: { enabled: false, visibility: "hidden", ble_nudge: false },
+                                            bluetooth: { enabled: false } }))
+             test.page = window.pageStack.push(Qt.resolvedUrl("../../qml/pages/SendPage.qml"), { engine: engine })
+         },
+         function () {
+-            test.compare(test.page.available, ["wormhole"], "wormhole has no switch")
++            test.compare(test.page.available, ["wormhole"], "only what is switched on")
++            test.compare(test.page.protocol, "wormhole")
++            // Magic Wormhole switched off under the open page: it goes too.
++            bridge.emitEvent(Ev.settings({ localsend: { enabled: false, pin: null },
++                                           quickshare: { enabled: false, visibility: "hidden", ble_nudge: false },
++                                           wormhole: { enabled: false, mailbox_url: null, relay_url: null },
++                                           bluetooth: { enabled: false } }))
++        },
++        function () {
++            test.compare(test.page.available, [], "Magic Wormhole has a switch as well (F-C1)")
++            test.compare(test.page.protocol, "")
++            test.verify(!probe.find(test.page, "wormholeSend").parent.visible, "no code to make")
++            test.verify(!probe.find(test.page, "protocolChoice").visible, "nothing to choose")
++            test.verify(probe.texts(test.page).indexOf("Every way of sending is switched off in Settings.") >= 0,
++                        "and it says why")
++            window.pageStack.pop()
++            return 50
++        },
++        function () {
++            // (Checked with the main page on top: a covered page's items
++            // are all invisible.)
++            test.verify(!probe.find(window, "receiveWithCode").visible, "no receiving with a code either")
++            // Magic Wormhole alone on.
++            bridge.emitEvent(Ev.settings({ localsend: { enabled: false, pin: null },
++                                           quickshare: { enabled: false, visibility: "hidden", ble_nudge: false },
++                                           bluetooth: { enabled: false } }))
++            return 50
++        },
++        function () {
++            test.verify(probe.find(window, "receiveWithCode").visible, "receiving with a code is back")
++            test.page = window.pageStack.push(Qt.resolvedUrl("../../qml/pages/SendPage.qml"), { engine: engine })
+             test.compare(test.page.protocol, "wormhole")
+             test.verify(!probe.find(test.page, "wormholeSend").enabled, "nothing chosen, nothing to send")
+             // A reply after the page has gone is dropped quietly.
+diff --git a/tests/qml/tst_settings.qml b/tests/qml/tst_settings.qml
+index fb53cac..eea0871 100644
+--- a/tests/qml/tst_settings.qml
++++ b/tests/qml/tst_settings.qml
+@@ -6,10 +6,11 @@ import "helpers"
+ import "helpers/Events.js" as Ev
+ 
+ /*
+- * Settings (F-C7, F-LS4, F-QS4, F-QS2, F-MW4, S9): loaded from the engine,
+- * checked as sukkula-core checks them, saved on the way out only when
+- * something changed, with every field the page does not know kept. Then
+- * the About page and receiving by wormhole code (F-MW2).
++ * Settings (F-C1, F-C7, F-LS4, F-QS4, F-QS2, F-MW4, S9): loaded from the
++ * engine, checked as sukkula-core checks them, saved when the page is left
++ * -- not when a page is pushed over it -- and only when something changed,
++ * with every field the page does not know kept. Then the About page and
++ * receiving by wormhole code (F-MW2).
+  */
+ Script {
+     id: test
+@@ -51,8 +52,15 @@ Script {
+             test.compare(test.field("pinField").text, "", "no PIN by default (F-LS4)")
+             test.compare(test.field("visibilityBox").currentIndex, 0, "Everyone by default")
+             test.compare(test.field("loggingSwitch").checked, false, "logging off by default (S9)")
++            test.compare(test.field("wormholeSwitch").checked, true, "Magic Wormhole on by default (F-C1)")
++            test.compare(test.field("nudgeSwitch").description,
++                         "While the Send page looks for devices, a Bluetooth signal prompts Android phones nearby to show up.",
++                         "the nudge said as what it is: a sending aid (F-QS2)")
+             // Leaving unchanged saves nothing.
+             window.pageStack.pop()
++            return 50
++        },
++        function () {
+             test.compare(test.commandsOfType("set_settings").length, 0)
+             test.page = window.pageStack.push(Qt.resolvedUrl("../../qml/pages/SettingsPage.qml"), { engine: engine })
+         },
+@@ -81,8 +89,23 @@ Script {
+             test.verify(test.page.valid, "all good again")
+             test.field("deviceNameField").text = "  Pekka  "
+             test.field("loggingSwitch").click()
++            test.field("wormholeSwitch").click()
+             test.field("visibilityBox").choose(1)
++            // A page over this one is not leaving it: nothing is saved --
++            // the consent dialog comes up over Settings the same way.
++            window.pageStack.push(Qt.resolvedUrl("../../qml/pages/AboutPage.qml"), { engine: engine })
++            return 50
++        },
++        function () {
++            test.compare(test.commandsOfType("set_settings").length, 0, "covered is not left")
++            window.pageStack.pop()
++            return 50
++        },
++        function () {
++            test.verify(window.pageStack.currentPage === test.page, "Settings again")
++            test.compare(test.commandsOfType("set_settings").length, 0, "uncovered is not left either")
+             window.pageStack.pop()
++            return 50
+         },
+         function () {
+             var saved = test.commandsOfType("set_settings")
+@@ -91,7 +114,7 @@ Script {
+                 device_name: "Pekka",
+                 localsend: { enabled: true, pin: "4711" },
+                 quickshare: { enabled: true, visibility: "hidden", ble_nudge: true },
+-                wormhole: { mailbox_url: "WSS://relay.example/v1", relay_url: null },
++                wormhole: { enabled: false, mailbox_url: "WSS://relay.example/v1", relay_url: null },
+                 bluetooth: { enabled: true },
+                 logging: true
+             })
+@@ -103,16 +126,22 @@ Script {
+             test.page = window.pageStack.push(Qt.resolvedUrl("../../qml/pages/SettingsPage.qml"), { engine: engine })
+             test.field("deviceNameField").text = "Other"
+             window.pageStack.pop()
++            return 50
++        },
++        function () {
+             var saved = test.commandsOfType("set_settings")
+             test.compare(saved[saved.length - 1].settings.future_field, { x: 1 })
+             test.compare(saved[saved.length - 1].settings.device_name, "Other")
+             // A refusal from the engine reaches the main page's banner.
+-            var cmds = bridge.parsedCommands()
+             bridge.autoReply = false
+             test.page = window.pageStack.push(Qt.resolvedUrl("../../qml/pages/SettingsPage.qml"), { engine: engine })
+             test.field("deviceNameField").text = "Third"
+             window.pageStack.pop()
+-            cmds = bridge.parsedCommands()
++            return 50
++        },
++        function () {
++            var cmds = bridge.parsedCommands()
++            test.compare(cmds[cmds.length - 1].cmd.type, "set_settings")
+             bridge.emitEvent(Ev.reply(cmds[cmds.length - 1].id, false, "bad_settings"))
+         },
+         function () {
+diff --git a/tests/qml/tst_stack.qml b/tests/qml/tst_stack.qml
+new file mode 100644
+index 0000000..ebf3783
+--- /dev/null
++++ b/tests/qml/tst_stack.qml
+@@ -0,0 +1,298 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++import QtQuick 2.6
++import "helpers"
++import "helpers/Events.js" as Ev
++
++/*
++ * The whole window while pages come and go over each other: what the page
++ * stack lets happen out of order, each of which once went wrong.
++ *
++ *  - A consent dialog pushed over Settings saves nothing (F-C2): a save
++ *    restarts the receivers, which withdrew the offer being shown, and
++ *    made a half-typed value live. Leaving Settings saves what it holds.
++ *  - A share that replaces an open Send page keeps discovery running and
++ *    the peers listed (F-LS1, F-QS1, F-C6).
++ *  - A reply to a send, or to a wormhole code, never pops or replaces a
++ *    consent dialog that came up over its page (F-C2, S5); the page goes
++ *    once it is on top again.
++ *  - An offer closed while its dialog cannot leave yet is never left in
++ *    the stack under the next offer's dialog (F-C2, F-C3), and whatever
++ *    closes is not answered.
++ */
++Script {
++    id: test
++
++    property Item win: app.item
++    property Item stack: app.item ? app.item.pageStack : null
++    property QtObject engine: null
++    property var pendingId: -1
++
++    Loader {
++        id: app
++        source: "../../qml/harbour-sukkula.qml"
++    }
++
++    function find(name) {
++        return probe.find(app, name)
++    }
++
++    function top() {
++        return test.stack.currentPage ? test.stack.currentPage.objectName : ""
++    }
++
++    /// The stack, bottom first, by objectName.
++    function names() {
++        var out = []
++        for (var i = 0; i < test.stack.pages.length; i++) {
++            out.push(test.stack.pages[i].objectName)
++        }
++        return out
++    }
++
++    function commands(type) {
++        var out = []
++        var cmds = bridge.parsedCommands()
++        for (var i = 0; i < cmds.length; i++) {
++            if (cmds[i].cmd.type === type) {
++                out.push(cmds[i])
++            }
++        }
++        return out
++    }
++
++    function lastId(type) {
++        var all = test.commands(type)
++        return all.length > 0 ? all[all.length - 1].id : -1
++    }
++
++    function answers() {
++        var out = []
++        var all = test.commands("answer")
++        for (var i = 0; i < all.length; i++) {
++            out.push([all[i].cmd.offer, all[i].cmd.accept])
++        }
++        return out
++    }
++
++    /// The discovery commands, in order.
++    function discovery() {
++        var out = []
++        var cmds = bridge.parsedCommands()
++        for (var i = 0; i < cmds.length; i++) {
++            var t = cmds[i].cmd.type
++            if (t === "start_discovery" || t === "stop_discovery") {
++                out.push(t)
++            }
++        }
++        return out
++    }
++
++    steps: [
++        function () {
++            test.compare(test.top(), "mainPage")
++            test.engine = test.find("mainPage").engine
++            test.verify(test.engine !== null, "the engine, through the main page")
++            // Settings, with something typed and a switch changed.
++            test.stack.push(Qt.resolvedUrl("../../qml/pages/SettingsPage.qml"), { engine: test.engine })
++            test.find("deviceNameField").text = "Pek"
++            test.find("loggingSwitch").click()
++            bridge.emitEvent(Ev.offer(1, {}))
++            return 100
++        },
++        function () {
++            test.compare(test.names(), ["mainPage", "settingsPage", "consentDialog"], "the dialog over Settings")
++            test.compare(test.commands("set_settings").length, 0,
++                         "a dialog over Settings saves nothing: that would restart the receivers")
++            test.stack.currentPage.reject()
++            return 400
++        },
++        function () {
++            test.compare(test.top(), "settingsPage", "back to Settings")
++            test.compare(test.answers(), [[1, false]])
++            test.compare(test.commands("set_settings").length, 0, "still nothing saved")
++            test.find("deviceNameField").text = "Pekka"
++            test.stack.pop()
++            return 100
++        },
++        function () {
++            var saved = test.commands("set_settings")
++            test.compare(saved.length, 1, "saved once, on leaving")
++            test.compare(saved[0].cmd.settings.device_name, "Pekka", "what was typed in the end")
++            test.compare(saved[0].cmd.settings.logging, true)
++            test.compare(test.top(), "mainPage")
++            // A share opens a Send page, which asks for discovery.
++            test.find("shareText").triggered([{ data: "first" }])
++            return 100
++        },
++        function () {
++            test.compare(test.top(), "sendPage")
++            test.compare(test.engine.discoveryUsers, 1)
++            bridge.emitEvent(Ev.peerFound("p1", "local_send"))
++            bridge.emitEvent(Ev.peerFound("q1", "quick_share", "Android"))
++            return 50
++        },
++        function () {
++            test.compare(test.engine.localSendPeers.count, 1)
++            // A second share while that page is open replaces it.
++            test.find("shareText").triggered([{ data: "second" }])
++            return 200
++        },
++        function () {
++            test.compare(test.names(), ["mainPage", "sendPage"], "one Send page, replaced")
++            test.compare(test.stack.currentPage.texts, ["second"])
++            var d = test.discovery()
++            test.compare(d[d.length - 1], "start_discovery", "no stop after the new page's start: " + d)
++            test.compare(test.engine.discoveryUsers, 1, "the new page holds discovery")
++            test.compare(test.engine.localSendPeers.count, 1, "the peers found are still listed")
++            test.compare(test.engine.quickSharePeers.count, 1)
++            test.compare(probe.find(test.stack.currentPage, "peerName").text, Ev.EVIL_NAME, "and shown")
++            // A send whose reply comes while an offer's dialog is up.
++            bridge.autoReply = false
++            probe.find(test.stack.currentPage, "peerItem").clicked()
++            test.pendingId = test.lastId("send")
++            test.verify(test.pendingId > 0, "the send went out")
++            bridge.emitEvent(Ev.offer(2, {}))
++            return 100
++        },
++        function () {
++            test.compare(test.top(), "consentDialog")
++            bridge.emitEvent(Ev.reply(test.pendingId, true, "", 40))
++            return 200
++        },
++        function () {
++            test.compare(test.names(), ["mainPage", "sendPage", "consentDialog"],
++                         "the send's reply leaves the dialog alone")
++            test.compare(test.stack.currentPage.offer.offerId, 2)
++            test.compare(test.answers(), [[1, false]], "and nothing answers the offer for the user")
++            test.stack.currentPage.reject()
++            return 400
++        },
++        function () {
++            test.compare(test.answers(), [[1, false], [2, false]])
++            test.compare(test.names(), ["mainPage"], "the Send page went once it was on top")
++            var d = test.discovery()
++            test.compare(d[d.length - 1], "stop_discovery", "the last page out stops discovery")
++            test.compare(test.engine.discoveryUsers, 0)
++            test.compare(test.engine.localSendPeers.count, 0, "and the peers are forgotten")
++            // The same for a wormhole send, whose reply replaces the page.
++            test.find("shareText").triggered([{ data: "one" }])
++            return 100
++        },
++        function () {
++            var page = test.stack.currentPage
++            test.compare(page.objectName, "sendPage")
++            probe.find(page, "protocolChoice").choose(page.available.indexOf("wormhole"))
++            test.compare(page.protocol, "wormhole")
++            probe.find(page, "wormholeSend").clicked()
++            test.pendingId = test.lastId("send")
++            bridge.emitEvent(Ev.offer(3, {}))
++            return 100
++        },
++        function () {
++            test.compare(test.top(), "consentDialog")
++            bridge.emitEvent(Ev.reply(test.pendingId, true, "", 41))
++            return 200
++        },
++        function () {
++            test.compare(test.names(), ["mainPage", "sendPage", "consentDialog"],
++                         "the code page does not replace the dialog")
++            test.stack.currentPage.accept()
++            return 400
++        },
++        function () {
++            test.compare(test.answers(), [[1, false], [2, false], [3, true]])
++            test.compare(test.names(), ["mainPage", "wormholeCodePage"], "then it replaces the Send page")
++            test.compare(test.stack.currentPage.transferId, 41)
++            test.stack.pop()
++            // Receiving with a code: its reply pops its own page only.
++            test.stack.push(Qt.resolvedUrl("../../qml/pages/WormholeReceivePage.qml"), { engine: test.engine })
++            test.find("codeField").text = "7-guitarist-revenge"
++            test.find("receiveButton").clicked()
++            test.pendingId = test.lastId("receive_wormhole")
++            bridge.emitEvent(Ev.offer(4, {}))
++            return 100
++        },
++        function () {
++            test.compare(test.top(), "consentDialog")
++            bridge.emitEvent(Ev.reply(test.pendingId, true))
++            return 200
++        },
++        function () {
++            test.compare(test.names(), ["mainPage", "wormholeReceivePage", "consentDialog"],
++                         "the code's reply leaves the dialog alone")
++            test.stack.currentPage.reject()
++            return 400
++        },
++        function () {
++            test.compare(test.answers(), [[1, false], [2, false], [3, true], [4, false]])
++            test.compare(test.names(), ["mainPage"], "the code page went once it was on top")
++            bridge.autoReply = true
++            // Two offers; the first is withdrawn while its dialog is still
++            // arriving, and the stack comes free between the dialog's own
++            // way out (100 ms ticks) and the window's next look (150 ms).
++            bridge.emitEvent(Ev.offer(5, {}))
++            bridge.emitEvent(Ev.offer(6, { sender: "Sixth EVIL" }))
++            return 300
++        },
++        function () {
++            test.compare(test.names(), ["mainPage", "consentDialog"])
++            test.compare(test.stack.currentPage.offer.offerId, 5)
++            test.stack.holdBusy = true
++            bridge.emitEvent(Ev.offerClosed(5, "withdrawn"))
++            return 125
++        },
++        function () {
++            test.stack.holdBusy = false
++            return 600
++        },
++        function () {
++            test.compare(test.names(), ["mainPage", "consentDialog"], "one dialog, never one over another")
++            test.compare(test.stack.currentPage.offer.offerId, 6, "the next offer's")
++            test.compare(test.answers().length, 4, "the withdrawn offer is not answered")
++            test.stack.currentPage.accept()
++            return 400
++        },
++        function () {
++            test.compare(test.answers()[4], [6, true])
++            test.compare(test.names(), ["mainPage"], "and no stale dialog comes back")
++            // An offer that times out while the stack is busy: declined by
++            // the dialog's countdown, and gone before the next one shows.
++            bridge.emitEvent(Ev.offer(7, { expires_in: 1 }))
++            bridge.emitEvent(Ev.offer(8, {}))
++            return 100
++        },
++        function () {
++            test.compare(test.stack.currentPage.offer.offerId, 7)
++            test.stack.holdBusy = true
++            // Its countdown's second tick, or at worst its third.
++            return 2200
++        },
++        function () {
++            test.compare(test.answers()[5], [7, false], "the countdown declined it")
++            test.compare(test.names(), ["mainPage", "consentDialog"], "nothing pushed while busy")
++            test.stack.holdBusy = false
++            return 600
++        },
++        function () {
++            test.compare(test.names(), ["mainPage", "consentDialog"])
++            test.compare(test.stack.currentPage.offer.offerId, 8)
++            // The engine closes it as the user reaches for Accept: the
++            // closed offer is not answered, and the dialog goes.
++            test.stack.holdBusy = true
++            bridge.emitEvent(Ev.offerClosed(8, "timed_out"))
++            return 50
++        },
++        function () {
++            test.verify(!test.stack.currentPage.canAccept, "a closed offer's dialog accepts nothing")
++            test.stack.currentPage.accept()
++            test.compare(test.answers().length, 6, "no answer for a closed offer")
++            test.stack.holdBusy = false
++            return 400
++        },
++        function () {
++            test.compare(test.names(), ["mainPage"])
++            test.compare(test.engine.answer(8, true), 0, "the engine answers no closed offer either")
++            test.compare(test.answers().length, 6)
++        }
++    ]
++}
+diff --git a/translations/harbour-sukkula-de.ts b/translations/harbour-sukkula-de.ts
+index f800da0..57c2419 100644
+--- a/translations/harbour-sukkula-de.ts
++++ b/translations/harbour-sukkula-de.ts
+@@ -453,14 +453,9 @@ Opens the file picker.</extracomment>
+     </message>
+     <message>
+         <source>Bluetooth nudge</source>
+-        <extracomment>Settings: advertise over Bluetooth LE so Android phones look for this one (F-QS2).</extracomment>
++        <extracomment>Settings: while sending, a Bluetooth LE signal makes nearby Android phones announce themselves on the Wi-Fi (F-QS2).</extracomment>
+         <translation>Bluetooth-Hinweis</translation>
+     </message>
+-    <message>
+-        <source>Announce over Bluetooth that this phone is receiving, so Android phones look for it.</source>
+-        <extracomment>Settings: what the Bluetooth nudge does.</extracomment>
+-        <translation>Per Bluetooth ankündigen, dass dieses Telefon empfängt, damit Android-Telefone danach suchen.</translation>
+-    </message>
+     <message>
+         <source>Mailbox server</source>
+         <extracomment>Settings: the Magic Wormhole mailbox server (F-MW4).</extracomment>
+@@ -511,6 +506,21 @@ Opens the file picker.</extracomment>
+         <extracomment>Settings: what debug logging does.</extracomment>
+         <translation>Nur zur Fehlersuche. Sonst ausgeschaltet lassen.</translation>
+     </message>
++    <message>
++        <source>While the Send page looks for devices, a Bluetooth signal prompts Android phones nearby to show up.</source>
++        <extracomment>Settings: what the Bluetooth nudge does. It works only while the Send page looks for devices; it does not make this phone visible.</extracomment>
++        <translation>Während die Senden-Seite nach Geräten sucht, bringt ein Bluetooth-Signal Android-Telefone in der Nähe dazu, sich zu zeigen.</translation>
++    </message>
++    <message>
++        <source>Use Magic Wormhole</source>
++        <extracomment>Settings: switch a protocol on or off.</extracomment>
++        <translation>Magic Wormhole verwenden</translation>
++    </message>
++    <message>
++        <source>Send and receive with a code, through a server on the internet.</source>
++        <extracomment>Settings: what the Magic Wormhole switch covers (F-C1): sending to a code and receiving with one.</extracomment>
++        <translation>Mit einem Code senden und empfangen, über einen Server im Internet.</translation>
++    </message>
+ </context>
+ <context>
+     <name>ShareTarget</name>
+diff --git a/translations/harbour-sukkula-fi.ts b/translations/harbour-sukkula-fi.ts
+index a252d3d..c78682b 100644
+--- a/translations/harbour-sukkula-fi.ts
++++ b/translations/harbour-sukkula-fi.ts
+@@ -453,14 +453,9 @@ Opens the file picker.</extracomment>
+     </message>
+     <message>
+         <source>Bluetooth nudge</source>
+-        <extracomment>Settings: advertise over Bluetooth LE so Android phones look for this one (F-QS2).</extracomment>
++        <extracomment>Settings: while sending, a Bluetooth LE signal makes nearby Android phones announce themselves on the Wi-Fi (F-QS2).</extracomment>
+         <translation>Bluetooth-herätys</translation>
+     </message>
+-    <message>
+-        <source>Announce over Bluetooth that this phone is receiving, so Android phones look for it.</source>
+-        <extracomment>Settings: what the Bluetooth nudge does.</extracomment>
+-        <translation>Ilmoita Bluetoothilla, että puhelin vastaanottaa, jotta Android-puhelimet etsivät sitä.</translation>
+-    </message>
+     <message>
+         <source>Mailbox server</source>
+         <extracomment>Settings: the Magic Wormhole mailbox server (F-MW4).</extracomment>
+@@ -511,6 +506,21 @@ Opens the file picker.</extracomment>
+         <extracomment>Settings: what debug logging does.</extracomment>
+         <translation>Vain vikojen etsintään. Pidä muuten pois päältä.</translation>
+     </message>
++    <message>
++        <source>While the Send page looks for devices, a Bluetooth signal prompts Android phones nearby to show up.</source>
++        <extracomment>Settings: what the Bluetooth nudge does. It works only while the Send page looks for devices; it does not make this phone visible.</extracomment>
++        <translation>Kun Lähetä-sivu etsii laitteita, Bluetooth-signaali saa lähellä olevat Android-puhelimet tulemaan näkyviin.</translation>
++    </message>
++    <message>
++        <source>Use Magic Wormhole</source>
++        <extracomment>Settings: switch a protocol on or off.</extracomment>
++        <translation>Käytä Magic Wormholea</translation>
++    </message>
++    <message>
++        <source>Send and receive with a code, through a server on the internet.</source>
++        <extracomment>Settings: what the Magic Wormhole switch covers (F-C1): sending to a code and receiving with one.</extracomment>
++        <translation>Lähetä ja vastaanota koodilla internetissä olevan palvelimen kautta.</translation>
++    </message>
+ </context>
+ <context>
+     <name>ShareTarget</name>
+diff --git a/translations/harbour-sukkula-sv.ts b/translations/harbour-sukkula-sv.ts
+index 4768cab..8371d3d 100644
+--- a/translations/harbour-sukkula-sv.ts
++++ b/translations/harbour-sukkula-sv.ts
+@@ -453,14 +453,9 @@ Opens the file picker.</extracomment>
+     </message>
+     <message>
+         <source>Bluetooth nudge</source>
+-        <extracomment>Settings: advertise over Bluetooth LE so Android phones look for this one (F-QS2).</extracomment>
++        <extracomment>Settings: while sending, a Bluetooth LE signal makes nearby Android phones announce themselves on the Wi-Fi (F-QS2).</extracomment>
+         <translation>Bluetooth-knuff</translation>
+     </message>
+-    <message>
+-        <source>Announce over Bluetooth that this phone is receiving, so Android phones look for it.</source>
+-        <extracomment>Settings: what the Bluetooth nudge does.</extracomment>
+-        <translation>Meddela via Bluetooth att telefonen tar emot, så att Android-telefoner letar efter den.</translation>
+-    </message>
+     <message>
+         <source>Mailbox server</source>
+         <extracomment>Settings: the Magic Wormhole mailbox server (F-MW4).</extracomment>
+@@ -511,6 +506,21 @@ Opens the file picker.</extracomment>
+         <extracomment>Settings: what debug logging does.</extracomment>
+         <translation>Bara för felsökning. Låt den annars vara av.</translation>
+     </message>
++    <message>
++        <source>While the Send page looks for devices, a Bluetooth signal prompts Android phones nearby to show up.</source>
++        <extracomment>Settings: what the Bluetooth nudge does. It works only while the Send page looks for devices; it does not make this phone visible.</extracomment>
++        <translation>Medan Skicka-sidan letar efter enheter får en Bluetooth-signal Android-telefoner i närheten att visa sig.</translation>
++    </message>
++    <message>
++        <source>Use Magic Wormhole</source>
++        <extracomment>Settings: switch a protocol on or off.</extracomment>
++        <translation>Använd Magic Wormhole</translation>
++    </message>
++    <message>
++        <source>Send and receive with a code, through a server on the internet.</source>
++        <extracomment>Settings: what the Magic Wormhole switch covers (F-C1): sending to a code and receiving with one.</extracomment>
++        <translation>Skicka och ta emot med en kod, via en server på internet.</translation>
++    </message>
+ </context>
+ <context>
+     <name>ShareTarget</name>
+diff --git a/translations/harbour-sukkula.ts b/translations/harbour-sukkula.ts
+index 5c51c25..81e9f9c 100644
+--- a/translations/harbour-sukkula.ts
++++ b/translations/harbour-sukkula.ts
+@@ -453,12 +453,7 @@ Opens the file picker.</extracomment>
+     </message>
+     <message>
+         <source>Bluetooth nudge</source>
+-        <extracomment>Settings: advertise over Bluetooth LE so Android phones look for this one (F-QS2).</extracomment>
+-        <translation type="unfinished"></translation>
+-    </message>
+-    <message>
+-        <source>Announce over Bluetooth that this phone is receiving, so Android phones look for it.</source>
+-        <extracomment>Settings: what the Bluetooth nudge does.</extracomment>
++        <extracomment>Settings: while sending, a Bluetooth LE signal makes nearby Android phones announce themselves on the Wi-Fi (F-QS2).</extracomment>
+         <translation type="unfinished"></translation>
+     </message>
+     <message>
+@@ -511,6 +506,21 @@ Opens the file picker.</extracomment>
+         <extracomment>Settings: what debug logging does.</extracomment>
+         <translation type="unfinished"></translation>
+     </message>
++    <message>
++        <source>While the Send page looks for devices, a Bluetooth signal prompts Android phones nearby to show up.</source>
++        <extracomment>Settings: what the Bluetooth nudge does. It works only while the Send page looks for devices; it does not make this phone visible.</extracomment>
++        <translation type="unfinished"></translation>
++    </message>
++    <message>
++        <source>Use Magic Wormhole</source>
++        <extracomment>Settings: switch a protocol on or off.</extracomment>
++        <translation type="unfinished"></translation>
++    </message>
++    <message>
++        <source>Send and receive with a code, through a server on the internet.</source>
++        <extracomment>Settings: what the Magic Wormhole switch covers (F-C1): sending to a code and receiving with one.</extracomment>
++        <translation type="unfinished"></translation>
++    </message>
+ </context>
+ <context>
+     <name>ShareTarget</name>
+-- 
+2.43.0
+
