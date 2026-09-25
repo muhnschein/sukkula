@@ -1,7 +1,7 @@
 From 22f16301803e98f8ffaeeaf687bcdadd8b420aa1 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Fri, 25 Sep 2026 09:15:02 +0000
-Subject: [PATCH 4/5] WIP: F-C1 engine test for every protocol's switch; FFI.md
+Subject: [PATCH 4/7] WIP: F-C1 engine test for every protocol's switch; FFI.md
  for the new settings field, budgets and recovery
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

@@ -1,7 +1,7 @@
 From a8d4b382fc65a543a1957936c0425e73ff1e20a5 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Fri, 25 Sep 2026 09:19:00 +0000
-Subject: [PATCH 3/3] WIP: ban every dbus-crate constructor, open_private
+Subject: [PATCH 3/6] WIP: ban every dbus-crate constructor, open_private
  included; HARBOUR.md for the gate fixes
 
 clippy.toml now bans the address-taking D-Bus constructors too

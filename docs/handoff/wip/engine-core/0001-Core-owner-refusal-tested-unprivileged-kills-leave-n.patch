@@ -1,7 +1,7 @@
 From a2e733760218dd5d352c1642ee9da039c8c7277f Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Fri, 25 Sep 2026 06:42:58 +0000
-Subject: [PATCH 1/5] Core: owner refusal tested unprivileged; kills leave
+Subject: [PATCH 1/7] Core: owner refusal tested unprivileged; kills leave
  nothing torn or orphaned
 
 The owner checks in dirfd and the store were tested only as root, and CI

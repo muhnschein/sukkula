@@ -1,7 +1,7 @@
 From 9c8c561cc818a89011e0cfeaa5ac11fb8c83b488 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Fri, 25 Sep 2026 09:19:34 +0000
-Subject: [PATCH 5/5] WIP: SECURITY.md core and hub rows for the fix round
+Subject: [PATCH 5/7] WIP: SECURITY.md core and hub rows for the fix round
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01ENZSCiAud5Vs29ugEacpyR

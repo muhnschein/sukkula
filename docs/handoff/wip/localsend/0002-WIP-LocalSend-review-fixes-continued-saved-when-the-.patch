@@ -1,7 +1,7 @@
 From d3cdfbfb7f3b11795200c23152e8db1bc77268ef Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Fri, 25 Sep 2026 09:03:47 +0000
-Subject: [PATCH 2/3] WIP: LocalSend review fixes (continued; saved when the
+Subject: [PATCH 2/5] WIP: LocalSend review fixes (continued; saved when the
  session limit stopped the agent)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
