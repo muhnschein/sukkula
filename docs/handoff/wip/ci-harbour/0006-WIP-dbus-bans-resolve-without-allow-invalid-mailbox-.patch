@@ -1,7 +1,7 @@
 From 149fb20a526a1489cb3ee59c034b592f9208cc5a Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Fri, 25 Sep 2026 09:34:59 +0000
-Subject: [PATCH 6/6] WIP: dbus bans resolve without allow-invalid; mailbox
+Subject: [PATCH 6/8] WIP: dbus bans resolve without allow-invalid; mailbox
  oracle row
 
 Clippy skips a banned path whose crate is not a dependency and warns on
