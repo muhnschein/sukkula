@@ -23,7 +23,7 @@
 mod wormhole_support;
 
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use magic_wormhole::Wormhole;
@@ -643,6 +643,73 @@ async fn messages_the_library_would_panic_on_are_stopped_at_the_guard() {
     }
 }
 
+/// How many panics of the two kinds the mailbox guard exists to prevent --
+/// W3's `split_at` ("mid > len") and W2's `todo!()` -- have happened
+/// anywhere in this test binary. `session::CatchUnwind` turns either into a
+/// failed transfer, so the outcome alone cannot tell a panic caught from
+/// one prevented. No test here should ever cause one.
+fn library_panics() -> usize {
+    static COUNT: AtomicUsize = AtomicUsize::new(0);
+    static HOOK: std::sync::Once = std::sync::Once::new();
+    HOOK.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let what = info.payload_as_str().unwrap_or("");
+            if what == "mid > len" || what.starts_with("not yet implemented") {
+                COUNT.fetch_add(1, Ordering::SeqCst);
+            }
+            previous(info);
+        }));
+    });
+    COUNT.load(Ordering::SeqCst)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn peer_messages_out_of_the_order_the_library_reads_them_are_stopped_at_the_guard() {
+    let before = library_panics();
+    // A PAKE the library's key exchange accepts: symmetric 'S', then the
+    // Ed25519 base point.
+    let element = format!("5358{}", "66".repeat(31));
+    let pake = sukkula_core::hex::encode(format!(r#"{{"pake_v1":"{element}"}}"#).as_bytes());
+    let frame = |phase: &str, body: &str| {
+        json!({"type": "message", "side": "evil", "phase": phase, "body": body}).to_string()
+    };
+    for (frames, why) in [
+        (
+            // Each passes a check of its phase alone: a "version" long
+            // enough to be sealed, a "pake" short enough to be a PAKE. The
+            // library takes the first as the PAKE and decrypts the second
+            // as the version message: split_at(24) on two bytes (W3). No
+            // code needed; anyone on the ws:// path can send these.
+            vec![frame("version", &pake), frame("pake", "7b7d")],
+            "a PAKE under version, then a short pake",
+        ),
+        (
+            // A PAKE under a number: taken as the PAKE all the same, which
+            // leaves "pake" unused for a later todo!() (W2).
+            vec![frame("7", &pake)],
+            "a PAKE under a number",
+        ),
+    ] {
+        let e = receive_fails_against(Behaviour {
+            after_open: frames,
+            nameplates: vec!["7".into()],
+            ..Behaviour::default()
+        })
+        .await;
+        assert_eq!(
+            library_panics(),
+            before,
+            "{why}: the library panicked -- caught, not prevented"
+        );
+        assert_eq!(e.code, ErrorCode::Network, "{why}: {e:?}");
+        assert_eq!(
+            e.message, "the mailbox server relayed a message out of order",
+            "{why}"
+        );
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn oversized_and_endless_server_messages_are_cut_off() {
     let big = json!({"type": "motd", "pad": "a".repeat(2 * 1024 * 1024)}).to_string();
@@ -853,4 +920,146 @@ async fn a_malformed_code_from_the_mailbox_never_reaches_the_screen() {
             .any(|e| matches!(e, Event::WormholeCode { .. }));
         assert!(!shown, "{forced:?}: a malformed code was shown");
     }
+}
+
+/// A mailbox whose welcome asks for hashcash the library takes seconds to
+/// mint (18 bits over the longest resource the guard allows: about four
+/// seconds on average in a debug build), minted in a loop that never
+/// yields (W1).
+async fn minting_mailbox() -> FakeMailbox {
+    mailbox(Behaviour {
+        welcome: Some(
+            json!({"type": "welcome", "welcome": {"permission-required": {
+            "none": null, "hashcash": {"bits": 18, "resource": "r".repeat(256)}}}}),
+        ),
+        ..Behaviour::default()
+    })
+    .await
+}
+
+/// Runs `attempt` until one of its mints was still running when it had
+/// judged what it came to judge; mint lengths are geometric, and one that
+/// happens to end at once proves nothing either way.
+async fn with_a_long_mint<F, Fut>(mut attempt: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    for _ in 0..6 {
+        if attempt().await {
+            return;
+        }
+    }
+    panic!("no mint was ever still running when judged");
+}
+
+/// The longest the runtime went, by the wall clock, without running a task
+/// that asks to run every 10 ms: how long its workers were held.
+struct Stalls {
+    last: Arc<std::sync::Mutex<(std::time::Instant, Duration)>>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Stalls {
+    fn watch() -> Stalls {
+        let last = Arc::new(std::sync::Mutex::new((
+            std::time::Instant::now(),
+            Duration::ZERO,
+        )));
+        let l = last.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                let mut g = l.lock().unwrap();
+                let gap = g.0.elapsed();
+                *g = (std::time::Instant::now(), g.1.max(gap));
+            }
+        });
+        Stalls { last, task }
+    }
+
+    /// The worst stall so far, counting one still going on.
+    fn worst(&self) -> Duration {
+        let g = self.last.lock().unwrap();
+        g.1.max(g.0.elapsed())
+    }
+}
+
+impl Drop for Stalls {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+// One worker, so a mint on it would hold the whole runtime.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn a_hashcash_mint_holds_up_neither_the_runtime_nor_an_engine_stop() {
+    with_a_long_mint(|| async {
+        let mb = minting_mailbox().await;
+        let side = Side::new(&mb.url, "tcp://127.0.0.1:9", CONSENT);
+        let stalls = Stalls::watch();
+        let rx = receive(&side, "7-guitarist-revenge".into());
+        while mb.connections.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        // The welcome is on its way to the library, which mints.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let stopping = std::time::Instant::now();
+        side.ctx.shut_down();
+        let e = rx.await.unwrap().unwrap_err();
+        let stop_took = stopping.elapsed();
+        let stalled = stalls.worst();
+        assert!(
+            stalled < Duration::from_millis(500),
+            "the runtime was held for {stalled:?}"
+        );
+        if mb.has_received("submit-permission") {
+            return false;
+        }
+        assert!(
+            stop_took < Duration::from_secs(1),
+            "the stop took {stop_took:?}"
+        );
+        assert_eq!(e.message, "cancelled");
+        true
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn a_hashcash_mint_does_not_hold_up_a_cancel() {
+    with_a_long_mint(|| async {
+        let mb = minting_mailbox().await;
+        let side = Side::new(&mb.url, "tcp://127.0.0.1:9", CONSENT);
+        let stalls = Stalls::watch();
+        let id = side
+            .adapter
+            .send(SendTarget::Wormhole, vec![Outgoing::Text("x".into())])
+            .await
+            .unwrap();
+        while mb.connections.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let cancelling = std::time::Instant::now();
+        let cancelled = side.ctx.transfers().cancel(id);
+        let outcome = side.finished(id).await.0;
+        let cancel_took = cancelling.elapsed();
+        let stalled = stalls.worst();
+        assert!(
+            stalled < Duration::from_millis(500),
+            "the runtime was held for {stalled:?}"
+        );
+        if mb.has_received("submit-permission") {
+            return false;
+        }
+        assert!(cancelled, "the send ended before the cancel: {outcome:?}");
+        assert!(
+            cancel_took < Duration::from_secs(1),
+            "the cancel took {cancel_took:?}"
+        );
+        assert_eq!(outcome, Outcome::Cancelled);
+        true
+    })
+    .await;
 }

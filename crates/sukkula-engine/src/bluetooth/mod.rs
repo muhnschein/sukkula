@@ -29,7 +29,8 @@
 //! are bounded by the engine's transfer limit.
 //!
 //! **Sailjail.** The `Bluetooth` permission grants talking to `org.bluez`
-//! on the system bus and `org.bluez.obex` on the session bus. This module
+//! on the system bus and `org.bluez.obex` on the session bus (including
+//! the `org.freedesktop.DBus.Peer.Ping` that `obex` sends it). This module
 //! calls nothing else except the bus daemon itself (`Hello`, `AddMatch`),
 //! which xdg-dbus-proxy always allows. Nothing more is needed.
 //!
@@ -37,8 +38,12 @@
 //! `DBUS_SESSION_BUS_ADDRESS` (or the standard sockets), and only `unix:`
 //! addresses are used: libdbus's `unixexec:` and `autolaunch:` transports
 //! spawn processes (S8), so libdbus's own bus lookup is not used either.
-//! Tests pass private buses through [`adapter_with`], which is not a
-//! setting and not reachable from the UI.
+//! Every connection is made by `bus::Bus::connect`, which checks the
+//! address right before the one `Channel::open_private` call; the dbus
+//! crate's constructors that let libdbus pick the address (`new_session`,
+//! `new_system`, `get_private`) are never called. Tests pass private buses
+//! through [`adapter_with`], which is not a setting and not reachable from
+//! the UI.
 
 mod bluez;
 mod bus;

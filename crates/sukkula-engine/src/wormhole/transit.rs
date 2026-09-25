@@ -25,6 +25,8 @@
 //! peer's hints.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
 
 use magic_wormhole::transit::{DirectHint, Hints, RelayHint};
@@ -43,6 +45,13 @@ use crate::api::{ErrorCode, ErrorInfo};
 /// our two relay hints and of the peer's two at once; one guard each keeps
 /// the order ours rather than a `HashSet`'s.
 pub(crate) const MAX_TARGETS: usize = 4;
+
+/// Connection attempts one transfer makes to addresses the peer chose --
+/// its direct hints and its relay -- counting those refused or timed out
+/// (docs/SECURITY.md, "Wormhole peers choose where we connect"). Each
+/// target the peer named gets one attempt, and at most three are kept, but
+/// the count is enforced where the connections are made.
+pub(crate) const MAX_PEER_CONNECTS: usize = 3;
 
 /// The relay request line: "please relay <64 hex> for side <16 hex>\n".
 const RELAY_LINE_BYTES: usize = 104;
@@ -160,9 +169,12 @@ pub(crate) fn targets(
     out
 }
 
-/// Whether the peer may make us connect to `ip`. Never our own machine,
-/// nothing unspecified, multicast or broadcast; loopback only when the
-/// reach policy allows it (tests).
+/// Whether the peer may make us connect to `ip`: nothing unspecified,
+/// multicast or broadcast; loopback only when the reach policy allows it
+/// (tests). The phone's own LAN address is not told apart, so a peer can
+/// point one of its [`MAX_PEER_CONNECTS`] attempts at a service of ours
+/// that listens on every interface; it only ever gets the fixed relay or
+/// transit handshake bytes.
 fn peer_may_name(ip: IpAddr, reach: ReachPolicy) -> bool {
     let ip = match ip {
         IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, IpAddr::V4),
@@ -203,6 +215,7 @@ pub(crate) async fn plan(
 ) -> Result<Plan, ErrorInfo> {
     let stop = parent.child_token();
     let unused = stop.child_token();
+    let peer_connects = Arc::new(AtomicUsize::new(0));
     let mut hints = Vec::with_capacity(targets.len());
     let mut tasks = Vec::with_capacity(targets.len());
     for target in targets.into_iter().take(MAX_TARGETS) {
@@ -216,6 +229,7 @@ pub(crate) async fn plan(
             role,
             tuning: *tuning,
             reach,
+            peer_connects: peer_connects.clone(),
         };
         let running = stop.clone();
         let waiting = unused.clone();
@@ -256,6 +270,9 @@ struct TransitGuard {
     role: Role,
     tuning: Tuning,
     reach: ReachPolicy,
+    /// Attempts made so far, by every guard of the transfer, to addresses
+    /// the peer chose. Never given back.
+    peer_connects: Arc<AtomicUsize>,
 }
 
 impl TransitGuard {
@@ -332,21 +349,19 @@ impl TransitGuard {
 
     async fn connect(&self) -> Result<TcpStream, &'static str> {
         match &self.target {
-            Target::Direct(addr) => TcpStream::connect(addr)
-                .await
-                .map_err(|_| "peer unreachable"),
-            Target::Relay { endpoints, ours } => {
+            Target::Direct(addr) => self.peer_connect(*addr).await,
+            // Our own relay is the user's choice: every endpoint and
+            // address is tried until one answers.
+            Target::Relay {
+                endpoints,
+                ours: true,
+            } => {
                 for ep in endpoints {
                     let Ok(addrs) = tokio::net::lookup_host((ep.host.as_str(), ep.port)).await
                     else {
                         continue;
                     };
                     for addr in addrs.take(MAX_ADDRS_PER_HOST) {
-                        // Our own relay is the user's choice; the peer's
-                        // is held to the same rule as its direct hints.
-                        if !ours && !peer_may_name(addr.ip(), self.reach) {
-                            continue;
-                        }
                         if let Ok(s) = TcpStream::connect(addr).await {
                             return Ok(s);
                         }
@@ -354,7 +369,40 @@ impl TransitGuard {
                 }
                 Err("relay unreachable")
             }
+            // The peer's relay is held to the rule for its direct hints,
+            // and gets one attempt: the first address it may name. Falling
+            // back through its endpoints and their addresses would let one
+            // relay hint probe a dozen addresses, one refusal at a time.
+            Target::Relay {
+                endpoints,
+                ours: false,
+            } => {
+                for ep in endpoints {
+                    let Ok(addrs) = tokio::net::lookup_host((ep.host.as_str(), ep.port)).await
+                    else {
+                        continue;
+                    };
+                    let first = addrs
+                        .take(MAX_ADDRS_PER_HOST)
+                        .find(|a| peer_may_name(a.ip(), self.reach));
+                    if let Some(addr) = first {
+                        return self.peer_connect(addr).await;
+                    }
+                }
+                Err("relay unreachable")
+            }
         }
+    }
+
+    /// One connection attempt to an address the peer chose, if the
+    /// transfer has any left.
+    async fn peer_connect(&self, addr: SocketAddr) -> Result<TcpStream, &'static str> {
+        if !crate::slots::take(&self.peer_connects, MAX_PEER_CONNECTS) {
+            return Err("no connection attempts left for the peer's addresses");
+        }
+        TcpStream::connect(addr)
+            .await
+            .map_err(|_| "peer unreachable")
     }
 }
 
@@ -518,6 +566,99 @@ mod tests {
         assert_eq!(t.len(), 1, "hints without the ability are not used");
     }
 
+    /// A loopback listener that counts the connections it accepts.
+    async fn counting() -> (u16, Arc<AtomicUsize>) {
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = l.local_addr().unwrap().port();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let h = hits.clone();
+        tokio::spawn(async move {
+            while let Ok((s, _)) = l.accept().await {
+                h.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                drop(s);
+            }
+        });
+        (port, hits)
+    }
+
+    /// A loopback port nothing listens on: connecting is refused.
+    async fn refusing() -> u16 {
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        l.local_addr().unwrap().port()
+    }
+
+    fn guard(target: Target, peer_connects: &Arc<AtomicUsize>) -> TransitGuard {
+        TransitGuard {
+            target,
+            prefix: String::new(),
+            role: Role::Follower,
+            tuning: Tuning::default(),
+            reach: ReachPolicy {
+                allow_loopback: true,
+            },
+            peer_connects: peer_connects.clone(),
+        }
+    }
+
+    fn hits(h: &Arc<AtomicUsize>) -> usize {
+        h.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[tokio::test]
+    async fn the_peer_gets_three_connection_attempts_in_all() {
+        // The worst the peer can name: a relay with three endpoints whose
+        // first refuses, and more direct hints than fit.
+        let (a, a_hits) = counting().await;
+        let (b, b_hits) = counting().await;
+        let mut direct = Vec::new();
+        for _ in 0..3 {
+            direct.push(counting().await);
+        }
+        let their = TheirTransit {
+            direct: true,
+            relay: true,
+            direct_hints: direct
+                .iter()
+                .map(|(p, _)| ("127.0.0.1".parse().unwrap(), *p))
+                .collect(),
+            relays: vec![vec![
+                ep("127.0.0.1", refusing().await),
+                ep("127.0.0.1", a),
+                ep("127.0.0.1", b),
+            ]],
+        };
+        let ours = ep("127.0.0.1", refusing().await);
+        let tried = Arc::new(AtomicUsize::new(0));
+        let reach = ReachPolicy {
+            allow_loopback: true,
+        };
+        for target in targets(&ours, &their, reach) {
+            let _ = guard(target, &tried).connect().await;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        // The relay had its one attempt, refused; it fell back to nothing.
+        assert_eq!(hits(&a_hits) + hits(&b_hits), 0);
+        // Two direct hints fit beside it, one attempt each: three in all.
+        let direct_hits: usize = direct.iter().map(|(_, h)| hits(h)).sum();
+        assert_eq!(direct_hits, 2);
+        assert_eq!(hits(&tried), MAX_PEER_CONNECTS);
+        // However the targets were chosen, a fourth is not made.
+        let (d, d_hits) = counting().await;
+        let fourth = guard(Target::Direct(([127, 0, 0, 1], d).into()), &tried);
+        assert!(fourth.connect().await.is_err());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(hits(&d_hits), 0);
+        // Our own relay is not the peer's choice, and is not counted.
+        let (o, o_hits) = counting().await;
+        let own = Target::Relay {
+            endpoints: vec![ep("127.0.0.1", refusing().await), ep("127.0.0.1", o)],
+            ours: true,
+        };
+        assert!(guard(own, &tried).connect().await.is_ok());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(hits(&o_hits), 1);
+    }
+
     #[test]
     fn only_the_librarys_relay_line_is_accepted() {
         let g = TransitGuard {
@@ -526,6 +667,7 @@ mod tests {
             role: Role::Follower,
             tuning: Tuning::default(),
             reach: ReachPolicy::default(),
+            peer_connects: Arc::default(),
         };
         let good = format!(
             "please relay {} for side 0123456789abcdef\n",

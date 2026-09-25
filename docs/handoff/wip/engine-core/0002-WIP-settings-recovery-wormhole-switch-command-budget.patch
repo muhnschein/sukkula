@@ -1,0 +1,1556 @@
+From 57833896e5c4ead3b63782d30962a9c5d34d12a8 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 25 Sep 2026 06:50:43 +0000
+Subject: [PATCH 2/5] WIP: settings recovery, wormhole switch, command budgets,
+ progress, requested offers
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01ENZSCiAud5Vs29ugEacpyR
+---
+ crates/sukkula-core/src/config.rs             | 466 +++++++++++++++++-
+ crates/sukkula-engine/src/api.rs              | 124 ++++-
+ crates/sukkula-engine/src/ctx.rs              | 282 ++++++++++-
+ crates/sukkula-engine/src/hub.rs              | 233 +++++++--
+ crates/sukkula-engine/src/wormhole/session.rs |   2 +
+ .../tests/wormhole_support/mod.rs             |   1 +
+ 6 files changed, 1053 insertions(+), 55 deletions(-)
+
+diff --git a/crates/sukkula-core/src/config.rs b/crates/sukkula-core/src/config.rs
+index 5606487..cdf26c6 100644
+--- a/crates/sukkula-core/src/config.rs
++++ b/crates/sukkula-core/src/config.rs
+@@ -4,8 +4,36 @@
+ //! (which may be from an older version, or edited by hand) and the UI. Both
+ //! go through [`Settings::validate`]. Unknown fields are refused, lengths
+ //! are capped, and URLs are held to the schemes each protocol can use.
++//!
++//! # A file that does not read
++//!
++//! The UI's settings are refused whole, and the user sees why. The file is
++//! read by [`Settings::from_stored`], which fails closed, part by part:
++//!
++//! - A part -- the device name, a protocol's section, the logging switch --
++//!   that reads and validates on its own is kept as it is. One bad field no
++//!   longer throws away everything else: a mailbox URL an older build took
++//!   and this one refuses does not cost the LocalSend PIN or Quick Share's
++//!   Hidden ("One invalid or unknown field in settings.json silently
++//!   resets every setting").
++//! - A protocol section that does not is not reset to its defaults, which
++//!   are the most permissive values there are (LocalSend without a PIN,
++//!   Quick Share visible to everyone). The protocol is switched off and its
++//!   options take their strictest values: no PIN, Hidden, no BLE nudge, the
++//!   default servers. Whatever the file meant for it, the phone now does
++//!   less, not more.
++//! - A key this build does not know may be a restriction from a newer one;
++//!   what it restricted cannot be known, so every protocol is switched off.
++//!   A key given twice cannot be read one way only, and a file that is not
++//!   a JSON object cannot be read at all: both give
++//!   [`Settings::locked_down`].
++//!
++//! The engine tells the UI (`recovered` in the `settings` event), and
++//! leaves the file as it is until the user saves settings again.
+ 
++use serde::de::{self, DeserializeOwned, Deserializer, MapAccess, SeqAccess, Visitor};
+ use serde::{Deserialize, Serialize};
++use serde_json::{Map, Value};
+ use thiserror::Error;
+ 
+ use crate::limits::{MAX_ALIAS_CHARS, MAX_PIN_CHARS};
+@@ -85,9 +113,13 @@ pub struct QuickShareSettings {
+ }
+ 
+ /// Magic Wormhole settings (F-MW4).
+-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
++#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+ #[serde(deny_unknown_fields, default)]
+ pub struct WormholeSettings {
++    /// Send and receive with Magic Wormhole (F-C1). A file from before this
++    /// setting has none, and reads as on.
++    // CONTRACT: new field (F-C1; the one change to the settings' shape).
++    pub enabled: bool,
+     /// A mailbox server instead of the default, `ws://` or `wss://`.
+     pub mailbox_url: Option<String>,
+     /// A transit relay instead of the default, `tcp://host:port`.
+@@ -121,12 +153,74 @@ impl Default for QuickShareSettings {
+     }
+ }
+ 
++impl Default for WormholeSettings {
++    fn default() -> Self {
++        WormholeSettings {
++            enabled: true,
++            mailbox_url: None,
++            relay_url: None,
++        }
++    }
++}
++
+ impl Default for BluetoothSettings {
+     fn default() -> Self {
+         BluetoothSettings { enabled: true }
+     }
+ }
+ 
++impl LocalSendSettings {
++    /// Off, and no PIN kept.
++    fn locked_down() -> Self {
++        LocalSendSettings {
++            enabled: false,
++            pin: None,
++        }
++    }
++}
++
++impl QuickShareSettings {
++    /// Off, hidden, and silent over BLE.
++    fn locked_down() -> Self {
++        QuickShareSettings {
++            enabled: false,
++            visibility: Visibility::Hidden,
++            ble_nudge: false,
++        }
++    }
++}
++
++impl WormholeSettings {
++    /// Off, and no server of anyone's choosing.
++    fn locked_down() -> Self {
++        WormholeSettings {
++            enabled: false,
++            mailbox_url: None,
++            relay_url: None,
++        }
++    }
++}
++
++impl BluetoothSettings {
++    /// Off.
++    fn locked_down() -> Self {
++        BluetoothSettings { enabled: false }
++    }
++}
++
++/// What [`Settings::from_stored`] made of a settings file.
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub struct Stored {
++    /// The settings to run with.
++    pub settings: Settings,
++    /// The parts of the file that could not be used as they were, by name:
++    /// `device_name`, `localsend`, `quickshare`, `wormhole`, `bluetooth`,
++    /// `logging`, `unknown` for a key this build does not know, `file` when
++    /// nothing could be read. Empty when the file was used whole. Fixed
++    /// names, never the file's content: safe to log (S9).
++    pub unusable: Vec<&'static str>,
++}
++
+ /// A setting that cannot be used.
+ #[derive(Clone, Debug, Error, PartialEq, Eq)]
+ pub enum ConfigError {
+@@ -166,6 +260,101 @@ impl Settings {
+         Ok(self)
+     }
+ 
++    /// The strictest settings there are: every protocol off, Quick Share
++    /// hidden and silent, no PIN, no custom server, logging off. What a
++    /// settings file that cannot be read at all becomes.
++    #[must_use]
++    pub fn locked_down() -> Settings {
++        Settings {
++            device_name: String::new(),
++            localsend: LocalSendSettings::locked_down(),
++            quickshare: QuickShareSettings::locked_down(),
++            wormhole: WormholeSettings::locked_down(),
++            bluetooth: BluetoothSettings::locked_down(),
++            logging: false,
++        }
++    }
++
++    /// Reads a settings file, failing closed: see the module docs, "A file
++    /// that does not read". A file that parses and validates whole is used
++    /// as it is.
++    #[must_use]
++    pub fn from_stored(bytes: &[u8]) -> Stored {
++        if let Ok(whole) = serde_json::from_slice::<Settings>(bytes)
++            && let Ok(settings) = whole.validate()
++        {
++            return Stored {
++                settings,
++                unusable: Vec::new(),
++            };
++        }
++        let Ok(Unique(Value::Object(map))) = serde_json::from_slice::<Unique>(bytes) else {
++            return Stored {
++                settings: Settings::locked_down(),
++                unusable: vec!["file"],
++            };
++        };
++        let mut s = Settings::default();
++        let mut unusable = Vec::new();
++        for (key, value) in map {
++            let (part, used) = match key.as_str() {
++                "device_name" => ("device_name", s.adopt(value, |s, v| s.device_name = v)),
++                "localsend" => ("localsend", s.adopt(value, |s, v| s.localsend = v)),
++                "quickshare" => ("quickshare", s.adopt(value, |s, v| s.quickshare = v)),
++                "wormhole" => ("wormhole", s.adopt(value, |s, v| s.wormhole = v)),
++                "bluetooth" => ("bluetooth", s.adopt(value, |s, v| s.bluetooth = v)),
++                "logging" => ("logging", s.adopt(value, |s, v| s.logging = v)),
++                _ => ("unknown", false),
++            };
++            if used {
++                continue;
++            }
++            match part {
++                "localsend" => s.localsend = LocalSendSettings::locked_down(),
++                "quickshare" => s.quickshare = QuickShareSettings::locked_down(),
++                "wormhole" => s.wormhole = WormholeSettings::locked_down(),
++                "bluetooth" => s.bluetooth = BluetoothSettings::locked_down(),
++                // The name falls back to the model and logging stays off:
++                // neither lets anything in.
++                _ => {}
++            }
++            if !unusable.contains(&part) {
++                unusable.push(part);
++            }
++        }
++        if unusable.contains(&"unknown") {
++            s.localsend.enabled = false;
++            s.quickshare.enabled = false;
++            s.wormhole.enabled = false;
++            s.bluetooth.enabled = false;
++        }
++        Stored {
++            settings: s,
++            unusable,
++        }
++    }
++
++    /// Takes `value` as the part `put` sets, if it parses as that part and
++    /// the whole still validates. False, and nothing changed, otherwise.
++    fn adopt<T: DeserializeOwned>(
++        &mut self,
++        value: Value,
++        put: impl FnOnce(&mut Settings, T),
++    ) -> bool {
++        let Ok(part) = serde_json::from_value::<T>(value) else {
++            return false;
++        };
++        let mut next = self.clone();
++        put(&mut next, part);
++        match next.validate() {
++            Ok(valid) => {
++                *self = valid;
++                true
++            }
++            Err(_) => false,
++        }
++    }
++
+     /// The name to show peers: the setting, else `model`, else "Sailfish".
+     #[must_use]
+     pub fn effective_device_name(&self, model: &str) -> String {
+@@ -182,6 +371,78 @@ impl Settings {
+     }
+ }
+ 
++/// A JSON value in which no object has a key twice, at any depth.
++/// serde_json's own `Value` keeps the last of two, and a file that says two
++/// things about one setting cannot be read one way only. Nesting is bounded
++/// by serde_json's recursion limit, and size by the file's.
++struct Unique(Value);
++
++impl<'de> Deserialize<'de> for Unique {
++    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
++        d.deserialize_any(UniqueVisitor)
++    }
++}
++
++struct UniqueVisitor;
++
++impl<'de> Visitor<'de> for UniqueVisitor {
++    type Value = Unique;
++
++    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.write_str("a JSON value")
++    }
++
++    fn visit_bool<E>(self, v: bool) -> Result<Unique, E> {
++        Ok(Unique(Value::Bool(v)))
++    }
++
++    fn visit_i64<E>(self, v: i64) -> Result<Unique, E> {
++        Ok(Unique(Value::from(v)))
++    }
++
++    fn visit_u64<E>(self, v: u64) -> Result<Unique, E> {
++        Ok(Unique(Value::from(v)))
++    }
++
++    fn visit_f64<E: de::Error>(self, v: f64) -> Result<Unique, E> {
++        serde_json::Number::from_f64(v)
++            .map(|n| Unique(Value::Number(n)))
++            .ok_or_else(|| E::custom("not a JSON number"))
++    }
++
++    fn visit_str<E>(self, v: &str) -> Result<Unique, E> {
++        Ok(Unique(Value::String(v.to_owned())))
++    }
++
++    fn visit_string<E>(self, v: String) -> Result<Unique, E> {
++        Ok(Unique(Value::String(v)))
++    }
++
++    fn visit_unit<E>(self) -> Result<Unique, E> {
++        Ok(Unique(Value::Null))
++    }
++
++    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Unique, A::Error> {
++        let mut items = Vec::new();
++        while let Some(Unique(item)) = seq.next_element()? {
++            items.push(item);
++        }
++        Ok(Unique(Value::Array(items)))
++    }
++
++    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Unique, A::Error> {
++        let mut out = Map::new();
++        while let Some(key) = map.next_key::<String>()? {
++            if out.contains_key(&key) {
++                return Err(de::Error::custom("a key given twice"));
++            }
++            let Unique(value) = map.next_value()?;
++            out.insert(key, value);
++        }
++        Ok(Unique(Value::Object(out)))
++    }
++}
++
+ fn check_url(
+     url: Option<String>,
+     schemes: &[&str],
+@@ -252,6 +513,7 @@ mod tests {
+         s.wormhole.mailbox_url = Some("wss://relay.example/v1".into());
+         s.wormhole.relay_url = Some("tcp://relay.example:4001".into());
+         assert!(s.clone().validate().is_ok());
++        assert!(s.wormhole.enabled, "on unless switched off");
+         for bad in [
+             "wss://user:pass@relay.example/v1",
+             "wss://relay.example/v1?token=x",
+@@ -350,6 +612,208 @@ mod tests {
+         assert!(format!("{s:?}").contains("pin: None"));
+     }
+ 
++    /// The file the tests below damage: every choice a user can make
++    /// against the defaults, to be kept or failed closed.
++    const CAREFUL: &str = r#"{
++        "device_name": "Pekka",
++        "localsend": {"enabled": true, "pin": "4711"},
++        "quickshare": {"enabled": true, "visibility": "hidden", "ble_nudge": false},
++        "wormhole": {"enabled": true, "mailbox_url": "wss://m.example/v1", "relay_url": "tcp://r.example:4001"},
++        "bluetooth": {"enabled": false},
++        "logging": false
++    }"#;
++
++    fn careful() -> Settings {
++        serde_json::from_str::<Settings>(CAREFUL)
++            .unwrap()
++            .validate()
++            .unwrap()
++    }
++
++    /// `CAREFUL` with the part `key` replaced by `value` (or removed).
++    fn damaged(key: &str, value: Option<Value>) -> Vec<u8> {
++        let mut v: Value = serde_json::from_str(CAREFUL).unwrap();
++        let map = v.as_object_mut().unwrap();
++        match value {
++            Some(value) => {
++                map.insert(key.to_owned(), value);
++            }
++            None => {
++                map.remove(key);
++            }
++        }
++        serde_json::to_vec(&v).unwrap()
++    }
++
++    #[test]
++    fn a_whole_file_is_used_as_it_is() {
++        let stored = Settings::from_stored(CAREFUL.as_bytes());
++        assert_eq!(stored.settings, careful());
++        assert!(stored.unusable.is_empty());
++        // Parts left out take their defaults, as they always did, and a file
++        // from before `wormhole.enabled` reads as on.
++        let stored = Settings::from_stored(br#"{"logging":true,"wormhole":{"mailbox_url":null}}"#);
++        assert!(stored.unusable.is_empty());
++        assert!(stored.settings.logging);
++        assert!(stored.settings.wormhole.enabled);
++        assert_eq!(stored.settings.localsend, LocalSendSettings::default());
++        assert_eq!(Settings::from_stored(b"{}").settings, Settings::default());
++    }
++
++    #[test]
++    fn one_bad_part_costs_only_that_part() {
++        // The review's case: a mailbox URL an earlier build took.
++        let bytes = damaged(
++            "wormhole",
++            Some(serde_json::json!({"mailbox_url": "wss://relay.example/v1?token=x"})),
++        );
++        let stored = Settings::from_stored(&bytes);
++        assert_eq!(stored.unusable, vec!["wormhole"]);
++        let s = stored.settings;
++        assert_eq!(s.localsend.pin.as_deref(), Some("4711"), "the PIN survives");
++        assert!(s.localsend.enabled);
++        assert_eq!(
++            s.quickshare.visibility,
++            Visibility::Hidden,
++            "so does Hidden"
++        );
++        assert!(s.quickshare.enabled);
++        assert_eq!(s.device_name, "Pekka");
++        // And the part that did not read is off, with no server of anyone's.
++        assert!(!s.wormhole.enabled);
++        assert_eq!(s.wormhole.mailbox_url, None);
++        assert_eq!(s.wormhole.relay_url, None);
++    }
++
++    #[test]
++    fn a_bad_section_is_switched_off_not_reset_to_its_defaults() {
++        let bad_pin = damaged(
++            "localsend",
++            Some(serde_json::json!({"enabled": true, "pin": "12 34"})),
++        );
++        let s = Settings::from_stored(&bad_pin).settings;
++        assert_eq!(s.localsend, LocalSendSettings::locked_down());
++        assert_eq!(s.quickshare, careful().quickshare);
++        let contacts = damaged(
++            "quickshare",
++            Some(serde_json::json!({"enabled": true, "visibility": "contacts"})),
++        );
++        let s = Settings::from_stored(&contacts).settings;
++        assert_eq!(s.quickshare, QuickShareSettings::locked_down());
++        assert_eq!(s.quickshare.visibility, Visibility::Hidden);
++        assert_eq!(s.localsend, careful().localsend);
++        let from_a_newer_build = damaged(
++            "localsend",
++            Some(serde_json::json!({"enabled": true, "pin": "4711", "allow_only": ["x"]})),
++        );
++        let stored = Settings::from_stored(&from_a_newer_build);
++        assert_eq!(stored.unusable, vec!["localsend"]);
++        assert!(!stored.settings.localsend.enabled);
++    }
++
++    #[test]
++    fn an_unknown_key_switches_every_protocol_off() {
++        let mut v: Value = serde_json::from_str(CAREFUL).unwrap();
++        v["contacts_only"] = Value::Bool(true);
++        let stored = Settings::from_stored(&serde_json::to_vec(&v).unwrap());
++        assert_eq!(stored.unusable, vec!["unknown"]);
++        let s = stored.settings;
++        assert!(!s.localsend.enabled && !s.quickshare.enabled);
++        assert!(!s.wormhole.enabled && !s.bluetooth.enabled);
++        // Everything else is kept, for when the user switches them back on.
++        assert_eq!(s.localsend.pin.as_deref(), Some("4711"));
++        assert_eq!(s.quickshare.visibility, Visibility::Hidden);
++        assert_eq!(s.device_name, "Pekka");
++    }
++
++    #[test]
++    fn a_file_that_cannot_be_read_one_way_is_locked_down() {
++        for bytes in [
++            &b""[..],
++            b"nonsense",
++            b"7",
++            b"null",
++            b"{\"localsend\":",
++            br#"{"logging":false,"logging":true}"#,
++            br#"{"localsend":{"pin":"4711","pin":null}}"#,
++            br#"{"wormhole":{"mailbox_url":"ws://a/v1"},"x":{"y":{"z":1,"z":2}}}"#,
++            b"\xef\xbb\xbf{}",
++        ] {
++            let stored = Settings::from_stored(bytes);
++            assert_eq!(stored.settings, Settings::locked_down(), "{bytes:?}");
++            assert_eq!(stored.unusable, vec!["file"], "{bytes:?}");
++        }
++        let s = Settings::locked_down();
++        assert!(!s.localsend.enabled && !s.quickshare.enabled);
++        assert!(!s.wormhole.enabled && !s.bluetooth.enabled && !s.logging);
++        assert_eq!(s.quickshare.visibility, Visibility::Hidden);
++        assert!(!s.quickshare.ble_nudge);
++        assert_eq!(s.clone().validate().unwrap(), s);
++    }
++
++    /// Every part of the careful file, damaged every way: the result is never
++    /// more permissive than the file was.
++    #[test]
++    fn damage_never_opens_anything_up() {
++        let bad = [
++            Value::Null,
++            Value::Bool(true),
++            serde_json::json!(1),
++            serde_json::json!(-1.5),
++            serde_json::json!("everyone"),
++            serde_json::json!([1]),
++            serde_json::json!({"enabled": "yes"}),
++            serde_json::json!({"enabled": true, "surprise": 1}),
++            serde_json::json!({"enabled": true, "pin": 4711}),
++            serde_json::json!({"enabled": true, "pin": "12 34"}),
++            serde_json::json!({"enabled": true, "visibility": "contacts"}),
++            serde_json::json!({"enabled": true, "ble_nudge": "on"}),
++            serde_json::json!({"enabled": true, "mailbox_url": "http://evil/v1"}),
++            serde_json::json!({"enabled": true, "relay_url": "tcp://u@evil:1"}),
++        ];
++        let keys = [
++            "device_name",
++            "localsend",
++            "quickshare",
++            "wormhole",
++            "bluetooth",
++            "logging",
++            "extra",
++        ];
++        let base = careful();
++        let mut damaged_files = 0;
++        for key in keys {
++            for value in &bad {
++                let bytes = damaged(key, Some(value.clone()));
++                let whole = serde_json::from_slice::<Settings>(&bytes)
++                    .ok()
++                    .and_then(|s| s.validate().ok());
++                if whole.is_some() {
++                    // Not damage: a file that says something else.
++                    continue;
++                }
++                damaged_files += 1;
++                let s = Settings::from_stored(&bytes).settings;
++                let at = format!("{key} = {value}");
++                if s.localsend.enabled {
++                    assert_eq!(s.localsend.pin, base.localsend.pin, "{at}");
++                }
++                if s.quickshare.enabled {
++                    assert_eq!(s.quickshare.visibility, Visibility::Hidden, "{at}");
++                    assert!(!s.quickshare.ble_nudge, "{at}");
++                }
++                if s.wormhole.enabled {
++                    assert_eq!(s.wormhole.mailbox_url, base.wormhole.mailbox_url, "{at}");
++                    assert_eq!(s.wormhole.relay_url, base.wormhole.relay_url, "{at}");
++                }
++                assert!(!s.bluetooth.enabled, "{at}");
++                assert!(!s.logging, "{at}");
++                assert_eq!(s.clone().validate().unwrap(), s, "{at}");
++            }
++        }
++        assert!(damaged_files > 60, "{damaged_files}");
++    }
++
+     #[test]
+     fn the_file_format_is_strict() {
+         assert!(
+diff --git a/crates/sukkula-engine/src/api.rs b/crates/sukkula-engine/src/api.rs
+index a40b364..f94fa34 100644
+--- a/crates/sukkula-engine/src/api.rs
++++ b/crates/sukkula-engine/src/api.rs
+@@ -83,6 +83,13 @@ pub struct CommandEnvelope {
+ }
+ 
+ /// What the UI can ask for.
++///
++/// The variants without fields read through [`no_fields`]: serde's derive
++/// reads a unit variant of an internally tagged enum by draining and
++/// ignoring every other key, whatever `deny_unknown_fields` says, so
++/// `{"type":"get_settings","auto_accept":true}` was taken as a
++/// `get_settings` ("deny_unknown_fields is not enforced for unit
++/// variants"). The Rust shape and the JSON shape are what they were.
+ #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+ #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+ pub enum Command {
+@@ -98,10 +105,13 @@ pub enum Command {
+         settings: Settings,
+     },
+     /// Asks for an [`Event::Settings`].
++    #[serde(deserialize_with = "no_fields")]
+     GetSettings,
+     /// Starts looking for LocalSend and Quick Share peers to send to.
++    #[serde(deserialize_with = "no_fields")]
+     StartDiscovery,
+     /// Stops looking.
++    #[serde(deserialize_with = "no_fields")]
+     StopDiscovery,
+     /// Answers a pending offer (F-C2).
+     Answer {
+@@ -130,10 +140,12 @@ pub enum Command {
+     },
+     /// Asks for an [`Event::BluetoothDevices`] listing paired devices that
+     /// accept Object Push.
++    #[serde(deserialize_with = "no_fields")]
+     ListBluetoothDevices,
+ }
+ 
+-/// Where a [`Command::Send`] goes.
++/// Where a [`Command::Send`] goes. [`SendTarget::Wormhole`] reads through
++/// [`no_fields`], as [`Command`]'s variants without fields do.
+ #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+ #[serde(tag = "protocol", rename_all = "snake_case", deny_unknown_fields)]
+ pub enum SendTarget {
+@@ -149,6 +161,7 @@ pub enum SendTarget {
+     },
+     /// Magic Wormhole: the engine allocates a code and reports it in
+     /// [`Event::WormholeCode`] (F-MW1). One file, or one text.
++    #[serde(deserialize_with = "no_fields")]
+     Wormhole,
+     /// A paired Bluetooth device from [`Event::BluetoothDevices`] (F-BT1).
+     Bluetooth {
+@@ -211,6 +224,15 @@ pub enum Event {
+         settings: Settings,
+         /// The name peers actually see.
+         effective_device_name: String,
++        /// The settings file could not be used as it was saved -- edited by
++        /// hand, from another version, damaged -- and what could not be
++        /// read was switched off rather than reset to its defaults
++        /// (`sukkula_core::config`, "A file that does not read"). Until the
++        /// next `set_settings`. Absent when false.
++        // CONTRACT: new field (additive), for the review's "one invalid
++        // field in settings.json silently resets every setting".
++        #[serde(default, skip_serializing_if = "is_false")]
++        recovered: bool,
+     },
+     /// Whether receiving is on, and how each protocol is doing (F-C1).
+     Receiving {
+@@ -594,6 +616,21 @@ pub fn parse_start_config(json: &str) -> Result<StartConfig, ParseError> {
+     Ok(cfg)
+ }
+ 
++/// The variant without fields that the tag named: no other key may be
++/// there. The keys left once serde has taken the tag are read as a struct
++/// with no fields that refuses unknown ones, which is what a struct variant
++/// with fields gets.
++fn no_fields<'de, D: serde::Deserializer<'de>>(d: D) -> Result<(), D::Error> {
++    #[derive(Deserialize)]
++    #[serde(deny_unknown_fields)]
++    struct NoFields {}
++    NoFields::deserialize(d).map(|NoFields {}| ())
++}
++
++fn is_false(b: &bool) -> bool {
++    !*b
++}
++
+ /// Whether `json` is an object at the top level. serde's derived structs
+ /// also accept the positional form `[1, 7, {...}]`, where
+ /// `deny_unknown_fields` means nothing; the envelope is only ever an object.
+@@ -659,6 +696,91 @@ mod tests {
+         ));
+     }
+ 
++    /// Every command and target without fields refuses a field, as those
++    /// with fields do; the tag alone, and nothing else, is the command.
++    #[test]
++    fn variants_without_fields_refuse_fields() {
++        for kind in [
++            "get_settings",
++            "start_discovery",
++            "stop_discovery",
++            "list_bluetooth_devices",
++        ] {
++            let bare = format!(r#"{{"v":1,"id":3,"cmd":{{"type":"{kind}"}}}}"#);
++            assert!(parse_command(&bare).is_ok(), "{kind}");
++            for extra in [
++                r#""x":1"#,
++                r#""auto_accept":true"#,
++                r#""type":"get_settings""#,
++            ] {
++                let json = format!(r#"{{"v":1,"id":3,"cmd":{{"type":"{kind}",{extra}}}}}"#);
++                assert!(
++                    matches!(
++                        parse_command(&json),
++                        Err((Some(3), ParseError::Malformed(_)))
++                    ),
++                    "{json}"
++                );
++            }
++        }
++        let send = |target: &str| {
++            format!(
++                r#"{{"v":1,"id":4,"cmd":{{"type":"send","target":{target},"items":[{{"kind":"text","text":"hi"}}]}}}}"#
++            )
++        };
++        let env = parse_command(&send(r#"{"protocol":"wormhole"}"#)).unwrap();
++        assert!(matches!(
++            env.cmd,
++            Command::Send {
++                target: SendTarget::Wormhole,
++                ..
++            }
++        ));
++        for target in [
++            r#"{"protocol":"wormhole","peer":"x"}"#,
++            r#"{"protocol":"wormhole","code":"7-foo"}"#,
++            r#"{"peer":"x","protocol":"wormhole"}"#,
++        ] {
++            assert!(
++                matches!(
++                    parse_command(&send(target)),
++                    Err((Some(4), ParseError::Malformed(_)))
++                ),
++                "{target}"
++            );
++        }
++        // What they serialise to is unchanged, and reads back.
++        for cmd in [
++            Command::GetSettings,
++            Command::StartDiscovery,
++            Command::StopDiscovery,
++            Command::ListBluetoothDevices,
++        ] {
++            let json = serde_json::to_string(&cmd).unwrap();
++            assert!(!json.contains(','), "{json}");
++            assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), cmd);
++        }
++        assert_eq!(
++            serde_json::to_string(&SendTarget::Wormhole).unwrap(),
++            r#"{"protocol":"wormhole"}"#
++        );
++    }
++
++    #[test]
++    fn a_settings_event_says_recovered_only_when_it_was() {
++        let e = |recovered| Event::Settings {
++            settings: Settings::default(),
++            effective_device_name: "P".into(),
++            recovered,
++        };
++        let json = serde_json::to_string(&e(false)).unwrap();
++        assert!(!json.contains("recovered"), "{json}");
++        assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), e(false));
++        let json = serde_json::to_string(&e(true)).unwrap();
++        assert!(json.ends_with(r#","recovered":true}"#), "{json}");
++        assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), e(true));
++    }
++
+     #[test]
+     fn events_serialise_with_their_tag() {
+         let e = Event::Reply {
+diff --git a/crates/sukkula-engine/src/ctx.rs b/crates/sukkula-engine/src/ctx.rs
+index 3f77d49..a2dba95 100644
+--- a/crates/sukkula-engine/src/ctx.rs
++++ b/crates/sukkula-engine/src/ctx.rs
+@@ -6,7 +6,8 @@
+ //!
+ //! 1. the adapter checks the peer's address with [`Ctx::permits`] and
+ //!    [`Ctx::allow_offer`] before parsing anything it sent;
+-//! 2. it builds a [`RawOffer`] from the wire and calls [`Ctx::offer`], which
++//! 2. it builds a [`RawOffer`] from the wire and calls [`Ctx::offer`] (or,
++//!    for an offer the user asked for, [`Ctx::offer_requested`]), which
+ //!    validates it (S1, S2, S4, S6), asks the user (S5), checks free space
+ //!    and registers a transfer;
+ //! 3. for each file it calls [`Ctx::begin_file`] and feeds the
+@@ -185,15 +186,36 @@ impl Ctx {
+     }
+ 
+     /// Validates `raw`, asks the user, checks the space, and registers an
+-    /// incoming transfer. Steps 2 of the module docs.
++    /// incoming transfer. Steps 2 of the module docs. For an offer nobody
++    /// asked for: one from the LAN.
+     ///
+     /// # Errors
+     ///
+     /// Why the offer is not going ahead; the adapter declines it at the
+     /// protocol level. The UI has already been told whatever it needs to be.
+     pub async fn offer(self: &Arc<Self>, raw: RawOffer) -> Result<Accepted, Declined> {
++        self.offer_as(raw, Asked::No).await
++    }
++
++    /// As [`offer`](Self::offer), for an offer the user asked for: a
++    /// wormhole receive exists only because the user typed its code. It is
++    /// outside the limit on offers from all peers together, which is there
++    /// for offers nobody asked for, so that a LAN flood cannot make a code
++    /// the user typed fail as busy and waste it ("Global offer budget is
++    /// shared with user-initiated wormhole receives"). Every other rule and
++    /// limit applies as to any offer.
++    ///
++    /// # Errors
++    ///
++    /// As [`offer`](Self::offer).
++    // CONTRACT: new (additive); the wormhole adapter's receive calls it.
++    pub async fn offer_requested(self: &Arc<Self>, raw: RawOffer) -> Result<Accepted, Declined> {
++        self.offer_as(raw, Asked::Yes).await
++    }
++
++    async fn offer_as(self: &Arc<Self>, raw: RawOffer, asked: Asked) -> Result<Accepted, Declined> {
+         let protocol = raw.protocol;
+-        let result = self.decide(raw).await;
++        let result = self.decide(raw, asked).await;
+         // S9: counts, sizes and reasons; never a name, the text, the
+         // sender or the PIN.
+         match &result {
+@@ -211,7 +233,7 @@ impl Ctx {
+         result
+     }
+ 
+-    async fn decide(self: &Arc<Self>, raw: RawOffer) -> Result<Accepted, Declined> {
++    async fn decide(self: &Arc<Self>, raw: RawOffer, asked: Asked) -> Result<Accepted, Declined> {
+         let offer = Offer::validate(raw).map_err(Declined::Invalid)?;
+         // Not worth asking the user about an offer that cannot run: they
+         // would see it accepted and then nothing happen. (Checked again
+@@ -227,9 +249,11 @@ impl Ctx {
+         // source address, which on IPv6 costs nothing: at most
+         // GLOBAL_OFFER_BURST well-formed offers a minute reach the user from
+         // everyone together. Malformed ones never get this far, so they
+-        // cannot use up the shared allowance.
+-        if !lock(&self.global_offer_limiter)
+-            .allow(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), Instant::now())
++        // cannot use up the shared allowance, and offers the user asked for
++        // neither use it nor wait for it.
++        if asked == Asked::No
++            && !lock(&self.global_offer_limiter)
++                .allow(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), Instant::now())
+         {
+             return Err(Declined::Busy);
+         }
+@@ -281,6 +305,15 @@ impl Ctx {
+     }
+ }
+ 
++/// Whether the user asked for an offer.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++enum Asked {
++    /// A wormhole receive: the user typed the code.
++    Yes,
++    /// Anything from the LAN.
++    No,
++}
++
+ /// An offer the user accepted.
+ #[derive(Debug)]
+ pub struct Accepted {
+@@ -326,6 +359,8 @@ impl ReceivingFile<'_> {
+             return Err(cancelled());
+         }
+         self.incoming.write(chunk).await.map_err(storage_error)?;
++        // An empty chunk moves nothing and reports nothing (see
++        // `TransferHandle::add_progress`).
+         self.transfer
+             .add_progress(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
+         Ok(())
+@@ -438,7 +473,7 @@ impl Transfers {
+             id,
+             total,
+             bytes: AtomicU64::new(0),
+-            last_report: Mutex::new(None),
++            last_report: Mutex::new(Report::default()),
+             token,
+             ctx: Arc::downgrade(ctx),
+             finished: false,
+@@ -481,7 +516,7 @@ pub struct TransferHandle {
+     id: TransferId,
+     total: u64,
+     bytes: AtomicU64,
+-    last_report: Mutex<Option<Instant>>,
++    last_report: Mutex<Report>,
+     token: CancellationToken,
+     ctx: std::sync::Weak<Ctx>,
+     finished: bool,
+@@ -506,23 +541,39 @@ impl TransferHandle {
+         self.token.is_cancelled()
+     }
+ 
+-    /// Counts `n` more bytes and tells the UI, at most every 250 ms.
++    /// Counts `n` more bytes and tells the UI, at most every 250 ms, and
++    /// once more when the count reaches the total. Each value is reported
++    /// once, and `n == 0` reports nothing: the report on reaching the total
++    /// used to skip the throttle every time, so once a transfer was
++    /// complete, or for a file of zero bytes, a peer sending empty chunks as
++    /// fast as the LAN allows got one event per chunk ("Progress throttle is
++    /// skipped once bytes >= total").
+     pub fn add_progress(&self, n: u64) {
++        if n == 0 {
++            return;
++        }
+         let bytes = self.bytes.fetch_add(n, Ordering::Relaxed).saturating_add(n);
++        let shown = bytes.min(self.total);
+         let now = Instant::now();
+         let due = {
+             let mut last = lock(&self.last_report);
+-            let due = last.is_none_or(|t| now.saturating_duration_since(t) >= PROGRESS_INTERVAL)
+-                || bytes >= self.total;
++            let due = last.shown != Some(shown)
++                && (shown >= self.total
++                    || last
++                        .at
++                        .is_none_or(|t| now.saturating_duration_since(t) >= PROGRESS_INTERVAL));
+             if due {
+-                *last = Some(now);
++                *last = Report {
++                    at: Some(now),
++                    shown: Some(shown),
++                };
+             }
+             due
+         };
+         if due && let Some(ctx) = self.ctx.upgrade() {
+             ctx.emit(Event::TransferProgress {
+                 transfer: self.id,
+-                bytes: bytes.min(self.total),
++                bytes: shown,
+                 total: self.total,
+             });
+         }
+@@ -579,6 +630,15 @@ impl TransferHandle {
+     }
+ }
+ 
++/// The last progress report of a transfer.
++#[derive(Debug, Default)]
++struct Report {
++    /// When.
++    at: Option<Instant>,
++    /// The count it showed.
++    shown: Option<u64>,
++}
++
+ impl Drop for TransferHandle {
+     fn drop(&mut self) {
+         if !self.finished {
+@@ -638,9 +698,18 @@ mod tests {
+     use sukkula_core::offer::RawFile;
+ 
+     fn ctx(dir: &std::path::Path) -> (Arc<Ctx>, Arc<Mutex<Vec<ConsentEvent>>>) {
++        let (ctx, seen, _) = ctx_with_events(dir);
++        (ctx, seen)
++    }
++
++    type Events = Arc<Mutex<Vec<Event>>>;
++
++    fn ctx_with_events(dir: &std::path::Path) -> (Arc<Ctx>, Arc<Mutex<Vec<ConsentEvent>>>, Events) {
+         let seen = Arc::new(Mutex::new(Vec::new()));
+         let s = seen.clone();
+         let consent = ConsentBroker::new(Arc::new(move |e| s.lock().unwrap().push(e)));
++        let events: Events = Arc::default();
++        let e = events.clone();
+         let ctx = Ctx::new(
+             Settings::default(),
+             "Test Phone".into(),
+@@ -650,9 +719,190 @@ mod tests {
+             ReachPolicy {
+                 allow_loopback: true,
+             },
+-            Arc::new(|_| {}),
++            Arc::new(move |event| e.lock().unwrap().push(event)),
+         );
+-        (Arc::new(ctx), seen)
++        (Arc::new(ctx), seen, events)
++    }
++
++    fn progress_reports(events: &Events) -> Vec<u64> {
++        events
++            .lock()
++            .unwrap()
++            .iter()
++            .filter_map(|e| match e {
++                Event::TransferProgress { bytes, .. } => Some(*bytes),
++                _ => None,
++            })
++            .collect()
++    }
++
++    fn one_file(protocol: Protocol, size: u64) -> RawOffer {
++        let mut raw = RawOffer::new(protocol, "Eve");
++        raw.files.push(RawFile {
++            name: "a".into(),
++            size,
++            ..RawFile::default()
++        });
++        raw
++    }
++
++    /// Answers the first offer shown after the first `before` consent
++    /// events.
++    async fn answer_next(
++        ctx: &Arc<Ctx>,
++        seen: &Arc<Mutex<Vec<ConsentEvent>>>,
++        before: usize,
++        accept: bool,
++    ) {
++        loop {
++            let id = seen.lock().unwrap()[before..].iter().find_map(|e| match e {
++                ConsentEvent::Pending { id, .. } => Some(*id),
++                ConsentEvent::Closed { .. } => None,
++            });
++            if let Some(id) = id {
++                let decision = if accept {
++                    sukkula_core::consent::Decision::Accept
++                } else {
++                    sukkula_core::consent::Decision::Decline
++                };
++                assert!(ctx.consent().answer(id, decision));
++                return;
++            }
++            tokio::task::yield_now().await;
++        }
++    }
++
++    /// A peer that sends empty chunks after the last byte (or for a file of
++    /// zero bytes) gets nothing onto the event path: each value is reported
++    /// once, and an empty chunk reports nothing.
++    #[tokio::test]
++    async fn empty_chunks_cost_nothing_and_each_value_is_reported_once() {
++        let dir = tempfile::tempdir().unwrap();
++        let (ctx, seen, events) = ctx_with_events(dir.path());
++        for size in [3u64, 0] {
++            events.lock().unwrap().clear();
++            let before = seen.lock().unwrap().len();
++            let (accepted, ()) = tokio::join!(
++                ctx.offer(one_file(Protocol::QuickShare, size)),
++                answer_next(&ctx, &seen, before, true)
++            );
++            let Accepted {
++                offer, transfer, ..
++            } = accepted.unwrap();
++            let mut file = ctx.begin_file(&transfer, &offer.files[0]).await.unwrap();
++            if size > 0 {
++                file.write(b"abc").await.unwrap();
++            }
++            for _ in 0..10_000 {
++                file.write(b"").await.unwrap();
++            }
++            let expected: Vec<u64> = if size > 0 { vec![3] } else { vec![] };
++            assert_eq!(progress_reports(&events), expected, "size {size}");
++            file.commit().await.unwrap();
++            transfer.finish(Outcome::Done, Vec::new());
++        }
++        // Past the total (no adapter does this; the handle holds anyway).
++        let t = ctx
++            .transfers()
++            .begin_views(
++                &ctx,
++                Direction::Outgoing,
++                Protocol::LocalSend,
++                "p",
++                vec![],
++                5,
++            )
++            .unwrap();
++        events.lock().unwrap().clear();
++        for _ in 0..1000 {
++            t.add_progress(5);
++            t.add_progress(0);
++        }
++        assert_eq!(progress_reports(&events), vec![5]);
++        t.finish(Outcome::Done, Vec::new());
++    }
++
++    #[test]
++    fn progress_is_throttled_below_the_total_and_reaches_it() {
++        let dir = tempfile::tempdir().unwrap();
++        let (ctx, _, events) = ctx_with_events(dir.path());
++        let t = ctx
++            .transfers()
++            .begin_views(
++                &ctx,
++                Direction::Outgoing,
++                Protocol::LocalSend,
++                "p",
++                vec![],
++                10_000,
++            )
++            .unwrap();
++        let started = Instant::now();
++        for _ in 0..10_000 {
++            t.add_progress(1);
++        }
++        let reports = progress_reports(&events);
++        // The first at once, then at most one per 250 ms, then the total.
++        let allowed = 2 + started.elapsed().as_millis() / 250;
++        assert!(reports.len() as u128 <= allowed, "{reports:?}");
++        assert_eq!(reports.first(), Some(&1));
++        assert_eq!(reports.last(), Some(&10_000));
++        assert!(reports.windows(2).all(|w| w[0] < w[1]), "{reports:?}");
++        t.finish(Outcome::Done, Vec::new());
++    }
++
++    /// The limit on offers from all peers together is for offers nobody
++    /// asked for. A code the user typed neither spends it nor is refused by
++    /// it: LAN offers that used it up cannot make a wormhole receive fail as
++    /// busy.
++    #[tokio::test(start_paused = true)]
++    async fn offers_the_user_asked_for_are_outside_the_global_limit() {
++        let dir = tempfile::tempdir().unwrap();
++        let (ctx, seen) = ctx(dir.path());
++        let pending = || {
++            seen.lock()
++                .unwrap()
++                .iter()
++                .filter(|e| matches!(e, ConsentEvent::Pending { .. }))
++                .count()
++        };
++        // Asked-for offers first, more than the allowance: all reach the
++        // user (nobody answers; each times out) and spend nothing.
++        for _ in 0..(GLOBAL_OFFER_BURST + 5) {
++            assert_eq!(
++                ctx.offer_requested(one_file(Protocol::Wormhole, 1))
++                    .await
++                    .unwrap_err(),
++                Declined::Refused(Refusal::TimedOut)
++            );
++        }
++        assert_eq!(pending(), usize::try_from(GLOBAL_OFFER_BURST + 5).unwrap());
++        // The LAN still has its whole allowance...
++        for _ in 0..GLOBAL_OFFER_BURST {
++            assert_eq!(
++                ctx.offer(one_file(Protocol::LocalSend, 1))
++                    .await
++                    .unwrap_err(),
++                Declined::Refused(Refusal::TimedOut)
++            );
++        }
++        // ...and then none.
++        assert_eq!(
++            ctx.offer(one_file(Protocol::LocalSend, 1))
++                .await
++                .unwrap_err(),
++            Declined::Busy
++        );
++        // A code typed now still reaches the user, and is accepted.
++        let before = seen.lock().unwrap().len();
++        let (accepted, ()) = tokio::join!(
++            ctx.offer_requested(one_file(Protocol::Wormhole, 1)),
++            answer_next(&ctx, &seen, before, true)
++        );
++        accepted
++            .unwrap()
++            .transfer
++            .finish(Outcome::Cancelled, Vec::new());
+     }
+ 
+     #[tokio::test]
+diff --git a/crates/sukkula-engine/src/hub.rs b/crates/sukkula-engine/src/hub.rs
+index 7b93da9..fa75c9c 100644
+--- a/crates/sukkula-engine/src/hub.rs
++++ b/crates/sukkula-engine/src/hub.rs
+@@ -30,9 +30,9 @@
+ //! reply has been delivered, so at most [`MAX_IN_FLIGHT_COMMANDS`] commands
+ //! and their replies exist at once; the next is refused as
+ //! [`Refused::Busy`] without a reply. Each runs in a task of its own under
+-//! [`COMMAND_TIMEOUT`]. A [`ReplyGuard`] owns the slot: whatever becomes of
+-//! the task -- it finishes, it panics, it times out, the runtime drops it
+-//! at stop -- exactly one `Reply` is emitted for it.
++//! a time limit ([`command_timeout`]). A [`ReplyGuard`] owns the slot:
++//! whatever becomes of the task -- it finishes, it panics, it times out,
++//! the runtime drops it at stop -- exactly one `Reply` is emitted for it.
+ 
+ use std::cell::Cell;
+ use std::collections::VecDeque;
+@@ -40,7 +40,7 @@ use std::future::Future;
+ use std::io::{self, Read as _};
+ use std::panic::{AssertUnwindSafe, catch_unwind};
+ use std::path::{Path, PathBuf};
+-use std::sync::atomic::AtomicUsize;
++use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+ use std::thread::{JoinHandle, ThreadId};
+ use std::time::Duration;
+@@ -50,15 +50,15 @@ use sukkula_core::config::{MAX_SETTINGS_BYTES, SETTINGS_FILE, Settings};
+ use sukkula_core::consent::{ConsentBroker, ConsentEvent, Decision};
+ use sukkula_core::inbox::Inbox;
+ use sukkula_core::limits::{
+-    MAX_EVENT_BYTES, MAX_FILE_BYTES, MAX_FILES_PER_OFFER, MAX_MESSAGE_BYTES, MAX_MODEL_CHARS,
+-    MAX_OFFER_BYTES, MAX_PEERS, OFFER_TIMEOUT,
++    HANDSHAKE_TIMEOUT, MAX_EVENT_BYTES, MAX_FILE_BYTES, MAX_FILES_PER_OFFER, MAX_MESSAGE_BYTES,
++    MAX_MODEL_CHARS, MAX_OFFER_BYTES, MAX_PEERS, NETWORK_IDLE_TIMEOUT, OFFER_TIMEOUT,
+ };
+ use sukkula_core::name;
+ use sukkula_core::reach::ReachPolicy;
+ use sukkula_core::store::{Store, StoreError};
+ use sukkula_core::text;
+ use thiserror::Error;
+-use tokio::sync::Mutex as AsyncMutex;
++use tokio::sync::{Mutex as AsyncMutex, MutexGuard as AsyncMutexGuard};
+ use tokio_util::sync::CancellationToken;
+ 
+ use crate::adapter::{Adapter, Outgoing, OutgoingFile};
+@@ -84,6 +84,20 @@ const ADAPTER_TIMEOUT: Duration = Duration::from_secs(15);
+ /// for the life of the engine.
+ const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
+ 
++/// The most a `receive_wormhole` may take: 150 s. It is answered only once
++/// the user has answered the offer (F-MW2), so it waits for the network and
++/// then for the user, each bounded by the adapter: the mailbox connection
++/// and the key exchange ([`HANDSHAKE_TIMEOUT`] each), the offer
++/// ([`NETWORK_IDLE_TIMEOUT`]), the consent dialog's full [`OFFER_TIMEOUT`],
++/// and a goodbye, with room to spare. Under [`COMMAND_TIMEOUT`] the command
++/// died before the dialog's countdown did ("Wormhole receive consent is
++/// killed by the 60 s command timeout").
++const RECEIVE_CODE_TIMEOUT: Duration = HANDSHAKE_TIMEOUT
++    .saturating_mul(2)
++    .saturating_add(NETWORK_IDLE_TIMEOUT)
++    .saturating_add(OFFER_TIMEOUT)
++    .saturating_add(Duration::from_secs(20));
++
+ /// Most events waiting for the sink, not counting replies (which are
+ /// bounded by [`MAX_IN_FLIGHT_COMMANDS`]).
+ const MAX_QUEUED_EVENTS: usize = 1024;
+@@ -134,6 +148,9 @@ struct Hub {
+     discovery: AsyncMutex<()>,
+     /// This engine's log (S9), switched by `Settings::logging`.
+     logging: Logging,
++    /// The settings file was not used as it was saved; the UI is told with
++    /// every `settings` event until a `set_settings` replaces it.
++    recovered: AtomicBool,
+ }
+ 
+ struct HubState {
+@@ -201,7 +218,7 @@ impl Engine {
+         // Again, now that both exist: a symlink could make two different
+         // strings one directory.
+         apart(&resolved(&data_dir)?, &resolved(&download_dir)?)?;
+-        let settings = load_settings(&store);
++        let (settings, recovered) = load_settings(&store);
+         logging.set(settings.logging);
+         let model = config
+             .device_model
+@@ -249,6 +266,7 @@ impl Engine {
+             }),
+             discovery: AsyncMutex::new(()),
+             logging,
++            recovered: AtomicBool::new(recovered),
+         });
+ 
+         hub.ctx.emit(Event::Started {
+@@ -417,6 +435,7 @@ impl Hub {
+         permit: Permit,
+     ) {
+         let hub = self.clone();
++        let limit = command_timeout(&env.cmd);
+         let work = async move { hub.dispatch(env.cmd).await };
+         spawn_reply(
+             runtime.handle(),
+@@ -426,6 +445,7 @@ impl Hub {
+                 permit,
+                 self.ctx.shutdown_token().clone(),
+             ),
++            limit,
+             work,
+         );
+     }
+@@ -433,7 +453,7 @@ impl Hub {
+     async fn dispatch(self: &Arc<Self>, cmd: Command) -> Result<Option<TransferId>, ErrorInfo> {
+         match cmd {
+             Command::SetReceiving { on } => {
+-                let mut state = self.state.lock().await;
++                let mut state = self.switch().await?;
+                 self.set_receiving(&mut state, on).await;
+                 Ok(None)
+             }
+@@ -444,7 +464,7 @@ impl Hub {
+                 // Held from the write to the restart: two `set_settings`
+                 // cannot leave the file and the engine disagreeing, and a
+                 // `set_receiving` cannot slip between a stop and a start.
+-                let mut state = self.state.lock().await;
++                let mut state = self.switch().await?;
+                 let store = self.ctx.store().clone();
+                 let saved = settings.clone();
+                 let logging = settings.logging;
+@@ -452,6 +472,7 @@ impl Hub {
+                     .await
+                     .map_err(|_| ErrorInfo::new(ErrorCode::Internal, "the settings write failed"))?
+                     .map_err(|e| ErrorInfo::new(ErrorCode::Storage, e.to_string()))?;
++                self.recovered.store(false, Ordering::Release);
+                 self.ctx.set_settings(settings);
+                 self.logging.set(logging);
+                 self.emit_settings();
+@@ -540,6 +561,30 @@ impl Hub {
+         }
+     }
+ 
++    /// Takes the receive switch for a `set_receiving` or `set_settings`,
++    /// waiting at most [`COMMAND_TIMEOUT`] for the commands before it. Past
++    /// that the command is refused having changed nothing.
++    ///
++    /// These two commands are not under a timeout as a whole (see
++    /// [`command_timeout`]): once one has the switch, it runs to the end, so
++    /// the final `receiving` is always emitted and the statuses are never
++    /// left at `starting`. That end is bounded all the same: every protocol
++    /// start or stop by [`ADAPTER_TIMEOUT`], a `set_settings` by two of
++    /// them and a write of the settings file. A timeout around the whole
++    /// could stop it half-way, with the switch turned and adapters started
++    /// in tasks nobody waits for ("COMMAND_TIMEOUT can cancel
++    /// set_receiving/set_settings mid-critical-section").
++    async fn switch(&self) -> Result<AsyncMutexGuard<'_, HubState>, ErrorInfo> {
++        tokio::time::timeout(COMMAND_TIMEOUT, self.state.lock())
++            .await
++            .map_err(|_| {
++                ErrorInfo::new(
++                    ErrorCode::Internal,
++                    "the receive switch stayed busy; nothing was changed",
++                )
++            })
++    }
++
+     /// Turns the receivers on or off. Every receiving adapter is started or
+     /// stopped at once, in a task of its own under [`ADAPTER_TIMEOUT`], so
+     /// one that hangs or panics is reported as failed and the rest carry
+@@ -620,6 +665,7 @@ impl Hub {
+         self.ctx.emit(Event::Settings {
+             settings: self.ctx.settings(),
+             effective_device_name: self.ctx.device_name(),
++            recovered: self.recovered.load(Ordering::Acquire),
+         });
+     }
+ 
+@@ -706,11 +752,13 @@ where
+     out
+ }
+ 
++/// Whether the settings let `protocol` run (F-C1): receive, discover, send,
++/// and for wormhole receive by code.
+ fn enabled(settings: &Settings, protocol: Protocol) -> bool {
+     match protocol {
+         Protocol::LocalSend => settings.localsend.enabled,
+         Protocol::QuickShare => settings.quickshare.enabled,
+-        Protocol::Wormhole => true,
++        Protocol::Wormhole => settings.wormhole.enabled,
+         Protocol::Bluetooth => settings.bluetooth.enabled,
+     }
+ }
+@@ -763,23 +811,33 @@ fn consent_observer(events: EventSink) -> sukkula_core::consent::Observer {
+     })
+ }
+ 
+-fn load_settings(store: &Store) -> Settings {
+-    match store.read_json::<Settings>(SETTINGS_FILE, MAX_SETTINGS_BYTES) {
+-        Ok(Some(s)) => s.validate().unwrap_or_else(|e| {
+-            // ConfigError's messages are fixed; they name the setting only.
+-            tracing::warn!(error = %e, "settings invalid; using defaults");
+-            Settings::default()
+-        }),
+-        Ok(None) => Settings::default(),
++/// The saved settings, and whether they were not usable as saved. A file
++/// that does not read is not replaced by the defaults, which are the most
++/// permissive settings there are: what cannot be read is switched off
++/// (`Settings::from_stored`). The file is left as it is.
++fn load_settings(store: &Store) -> (Settings, bool) {
++    match store.read(SETTINGS_FILE, MAX_SETTINGS_BYTES) {
++        Ok(Some(bytes)) => {
++            let stored = Settings::from_stored(&bytes);
++            if stored.unusable.is_empty() {
++                return (stored.settings, false);
++            }
++            // S9: which parts, by their fixed names; never the file's
++            // content, which holds the device name and the LocalSend PIN.
++            tracing::warn!(
++                parts = ?stored.unusable,
++                "settings file not usable as saved; what could not be read is off"
++            );
++            (stored.settings, true)
++        }
++        Ok(None) => (Settings::default(), false),
+         Err(e) => {
+-            // S9: only the kind. The error's text quotes the file -- serde
+-            // repeats the value it choked on -- and the file holds the
+-            // device name and the LocalSend PIN.
++            // S9: only the kind. The error's text names the file's path.
+             tracing::warn!(
+                 why = store_error_kind(&e),
+-                "settings unreadable; using defaults"
++                "settings file unreadable; every protocol is off"
+             );
+-            Settings::default()
++            (Settings::locked_down(), true)
+         }
+     }
+ }
+@@ -889,21 +947,39 @@ impl Drop for ReplyGuard {
+     }
+ }
+ 
+-/// Runs one command's work under [`COMMAND_TIMEOUT`] and replies through
+-/// `guard`.
+-fn spawn_reply<F>(runtime: &tokio::runtime::Handle, guard: ReplyGuard, work: F)
+-where
++/// How long `cmd` may run before it is answered with `internal`: `None`
++/// for a command bounded inside instead.
++fn command_timeout(cmd: &Command) -> Option<Duration> {
++    match cmd {
++        // The wait for the switch is bounded, and so is every step after
++        // it; see `Hub::switch`.
++        Command::SetReceiving { .. } | Command::SetSettings { .. } => None,
++        // It waits for the user too.
++        Command::ReceiveWormhole { .. } => Some(RECEIVE_CODE_TIMEOUT),
++        _ => Some(COMMAND_TIMEOUT),
++    }
++}
++
++/// Runs one command's work, under `limit` if it has one, and replies
++/// through `guard`.
++fn spawn_reply<F>(
++    runtime: &tokio::runtime::Handle,
++    guard: ReplyGuard,
++    limit: Option<Duration>,
++    work: F,
++) where
+     F: Future<Output = Result<Option<TransferId>, ErrorInfo>> + Send + 'static,
+ {
+     runtime.spawn(async move {
+-        let result = tokio::time::timeout(COMMAND_TIMEOUT, work)
+-            .await
+-            .unwrap_or_else(|_| {
++        let result = match limit {
++            Some(limit) => tokio::time::timeout(limit, work).await.unwrap_or_else(|_| {
+                 Err(ErrorInfo::new(
+                     ErrorCode::Internal,
+                     "the command did not finish in time",
+                 ))
+-            });
++            }),
++            None => work.await,
++        };
+         guard.send(result);
+     });
+ }
+@@ -1676,13 +1752,95 @@ mod tests {
+         let lines = lines.lock().unwrap().clone();
+         assert!(
+             lines.iter().any(|l| l.starts_with("sukkula: WARN ")
+-                && l.contains("settings unreadable")
+-                && l.contains(r#"why="malformed""#)),
++                && l.contains("settings file not usable as saved")
++                && l.contains(r#"parts=["localsend"]"#)),
+             "{lines:?}"
+         );
+         for l in &lines {
+             assert!(!l.contains("98765") && !l.contains("Zorbulon"), "{l}");
+         }
++        // A file that is not ours to read at all: by kind too.
++        std::fs::remove_file(data.join(SETTINGS_FILE)).unwrap();
++        std::os::unix::fs::symlink("/etc/hostname", data.join(SETTINGS_FILE)).unwrap();
++        let (engine, _, lines) = start_logged_engine(dir.path());
++        engine.stop();
++        let lines = lines.lock().unwrap().clone();
++        assert!(
++            lines.iter().any(|l| l.starts_with("sukkula: WARN ")
++                && l.contains("settings file unreadable; every protocol is off")
++                && l.contains(r#"why="not a regular file of ours""#)),
++            "{lines:?}"
++        );
++    }
++
++    fn settings_events(log: &Arc<Mutex<Vec<Event>>>) -> Vec<(Settings, bool)> {
++        log.lock()
++            .unwrap()
++            .iter()
++            .filter_map(|e| match e {
++                Event::Settings {
++                    settings,
++                    recovered,
++                    ..
++                } => Some((settings.clone(), *recovered)),
++                _ => None,
++            })
++            .collect()
++    }
++
++    /// The review's case: a mailbox URL an earlier build took costs the
++    /// wormhole section, not the PIN and Hidden; the UI is told until the
++    /// user saves; the file is not touched meanwhile.
++    #[test]
++    fn a_settings_file_that_does_not_read_fails_closed_and_the_ui_is_told() {
++        let dir = tempfile::tempdir().unwrap();
++        let data = dir.path().join("data");
++        Store::open(&data).unwrap();
++        let saved = r#"{"localsend":{"enabled":true,"pin":"4711"},"quickshare":{"enabled":true,"visibility":"hidden","ble_nudge":false},"wormhole":{"mailbox_url":"wss://relay.example/v1?token=x"}}"#;
++        std::fs::write(data.join(SETTINGS_FILE), saved).unwrap();
++        let (engine, log) = start_engine(dir.path());
++        let (s, recovered) = settings_events(&log)[0].clone();
++        assert!(recovered);
++        assert_eq!(s.localsend.pin.as_deref(), Some("4711"));
++        assert!(s.localsend.enabled);
++        assert_eq!(
++            s.quickshare.visibility,
++            sukkula_core::config::Visibility::Hidden
++        );
++        assert!(!s.wormhole.enabled);
++        assert_eq!(s.wormhole.mailbox_url, None);
++        engine.command_json(r#"{"v":1,"id":1,"cmd":{"type":"get_settings"}}"#);
++        wait_for_reply(&log, 1);
++        assert!(settings_events(&log)[1].1, "told again until saved");
++        assert_eq!(
++            std::fs::read_to_string(data.join(SETTINGS_FILE)).unwrap(),
++            saved,
++            "the file is left as it is"
++        );
++        // Receive with a disabled wormhole is refused.
++        engine.command_json(
++            r#"{"v":1,"id":2,"cmd":{"type":"receive_wormhole","code":"7-guitarist-revenge"}}"#,
++        );
++        assert!(matches!(
++            wait_for_reply(&log, 2),
++            Event::Reply { ok: false, error: Some(e), .. } if e.code == ErrorCode::Unavailable
++        ));
++        // Saving settings replaces the file, and the flag goes.
++        let mut fixed = s.clone();
++        fixed.wormhole.enabled = true;
++        let cmd = serde_json::json!({"v":1,"id":3,"cmd":{"type":"set_settings","settings":fixed}});
++        engine.command_json(&cmd.to_string());
++        assert!(matches!(
++            wait_for_reply(&log, 3),
++            Event::Reply { ok: true, .. }
++        ));
++        let (after, recovered) = settings_events(&log).last().unwrap().clone();
++        assert!(!recovered);
++        assert_eq!(after, fixed);
++        engine.stop();
++        let (engine, log) = start_engine(dir.path());
++        assert_eq!(settings_events(&log)[0], (fixed, false));
++        engine.stop();
+     }
+ 
+     fn progress(n: u64) -> Event {
+@@ -1797,11 +1955,12 @@ mod tests {
+                 CancellationToken::new(),
+             )
+         };
+-        spawn_reply(runtime.handle(), guard(1), async {
++        let limit = Some(COMMAND_TIMEOUT);
++        spawn_reply(runtime.handle(), guard(1), limit, async {
+             panic!("a bug in dispatch");
+         });
+-        spawn_reply(runtime.handle(), guard(2), async { Ok(Some(9)) });
+-        spawn_reply(runtime.handle(), guard(3), std::future::pending());
++        spawn_reply(runtime.handle(), guard(2), limit, async { Ok(Some(9)) });
++        spawn_reply(runtime.handle(), guard(3), None, std::future::pending());
+         wait_until("two replies", || log.lock().unwrap().len() == 2);
+         // The runtime drops the pending task, and its guard answers it.
+         drop(runtime);
+diff --git a/crates/sukkula-engine/src/wormhole/session.rs b/crates/sukkula-engine/src/wormhole/session.rs
+index 5332a21..5e31247 100644
+--- a/crates/sukkula-engine/src/wormhole/session.rs
++++ b/crates/sukkula-engine/src/wormhole/session.rs
+@@ -435,6 +435,7 @@ mod tests {
+         let s = Servers::from_settings(&WormholeSettings {
+             mailbox_url: Some("wss://m.example/v1".into()),
+             relay_url: Some("tcp://r.example:9".into()),
++            enabled: true, // CONTRACT: Settings.wormhole.enabled (F-C1)
+         })
+         .unwrap();
+         assert!(s.custom_mailbox);
+@@ -443,6 +444,7 @@ mod tests {
+             Servers::from_settings(&WormholeSettings {
+                 mailbox_url: Some("wss://m.example/v1#x".into()),
+                 relay_url: None,
++                enabled: true, // CONTRACT: Settings.wormhole.enabled (F-C1)
+             })
+             .unwrap_err()
+             .code,
+diff --git a/crates/sukkula-engine/tests/wormhole_support/mod.rs b/crates/sukkula-engine/tests/wormhole_support/mod.rs
+index 1ca4cd6..abcab1a 100644
+--- a/crates/sukkula-engine/tests/wormhole_support/mod.rs
++++ b/crates/sukkula-engine/tests/wormhole_support/mod.rs
+@@ -469,6 +469,7 @@ pub fn settings(mailbox: &str, relay: &str) -> Settings {
+         wormhole: WormholeSettings {
+             mailbox_url: Some(mailbox.to_owned()),
+             relay_url: Some(relay.to_owned()),
++            enabled: true, // CONTRACT: Settings.wormhole.enabled (F-C1)
+         },
+         ..Settings::default()
+     }
+-- 
+2.43.0
+

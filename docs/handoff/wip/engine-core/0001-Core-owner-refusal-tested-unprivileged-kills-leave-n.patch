@@ -1,0 +1,1413 @@
+From a2e733760218dd5d352c1642ee9da039c8c7277f Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 25 Sep 2026 06:42:58 +0000
+Subject: [PATCH 1/5] Core: owner refusal tested unprivileged; kills leave
+ nothing torn or orphaned
+
+The owner checks in dirfd and the store were tested only as root, and CI
+runs unprivileged, so the tests returned early and passed. A test can now
+give one inode away (`dirfd::theirs::disown`, cfg(test) only): the check
+itself runs as in the app, in every `cargo test`, for the store's files,
+its directory, and the inbox's target and staging directories.
+
+A write killed before its rename left its `.name.hex.tmp` behind forever;
+`Store::open` now removes those, and nothing else. The inbox's copy
+fallback created the file under its real name and copied into it, so a
+kill mid-copy left a truncated file that looked complete. It now copies
+into a staging file in the target's own `.partial` and links it, or
+renames it with RENAME_NOREPLACE, into place only once it is whole; the
+next open sweeps what a kill left there.
+
+tests/chaos.rs, after clove's ci/chaos.sh, re-runs the test binary as a
+writer and SIGKILLs it mid-work, 30 times per part: store writes,
+receives placed by link, and receives placed by the copy fallback across
+mounts. After every kill the next open must leave every named file whole
+and no temporary, staging or copy file; every kill is checked to be what
+ended the child, and the kills that landed mid-work are counted and
+required. Against the old copy fallback it fails ("f001.bin is torn").
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01ENZSCiAud5Vs29ugEacpyR
+---
+ crates/sukkula-core/src/dirfd.rs   | 153 ++++++++++--
+ crates/sukkula-core/src/inbox.rs   | 370 +++++++++++++++++++++++-----
+ crates/sukkula-core/src/store.rs   | 197 +++++++++++++--
+ crates/sukkula-core/tests/chaos.rs | 377 +++++++++++++++++++++++++++++
+ 4 files changed, 1004 insertions(+), 93 deletions(-)
+ create mode 100644 crates/sukkula-core/tests/chaos.rs
+
+diff --git a/crates/sukkula-core/src/dirfd.rs b/crates/sukkula-core/src/dirfd.rs
+index a6cf771..126c021 100644
+--- a/crates/sukkula-core/src/dirfd.rs
++++ b/crates/sukkula-core/src/dirfd.rs
+@@ -104,12 +104,29 @@ pub(crate) fn open_at(parent: &OwnedFd, name: &str, share: Share) -> Result<Owne
+     check(fd, share)
+ }
+ 
++/// Opens `name` inside `parent` as [`open_at`] does, but only if it is
++/// there: `Ok(None)` when it is not, and nothing is created.
++// S3: a read-only O_RDONLY|O_DIRECTORY|O_NOFOLLOW open, relative to the
++// checked parent.
++#[allow(clippy::disallowed_methods)]
++pub(crate) fn open_existing_at(
++    parent: &OwnedFd,
++    name: &str,
++    share: Share,
++) -> Result<Option<OwnedFd>, DirError> {
++    match rustix::fs::openat(parent, name, DIR_FLAGS, Mode::empty()) {
++        Ok(fd) => check(fd, share).map(Some),
++        Err(Errno::NOENT) => Ok(None),
++        Err(e) => Err(e.into()),
++    }
++}
++
+ /// Checks an open directory: ours, and not writable by anyone else.
+ // S3/S9: tightening a directory of ours, through its descriptor.
+ #[allow(clippy::disallowed_methods)]
+ fn check(fd: OwnedFd, share: Share) -> Result<OwnedFd, DirError> {
+     let st = rustix::fs::fstat(&fd)?;
+-    if !is_dir(&st) || st.st_uid != rustix::process::geteuid().as_raw() {
++    if !is_dir(&st) || !ours(&st) {
+         return Err(DirError::NotPlain);
+     }
+     let mode = st.st_mode & 0o7777;
+@@ -137,6 +154,77 @@ pub(crate) fn file_id(st: &Stat) -> FileId {
+     (st.st_dev, st.st_ino)
+ }
+ 
++/// Whether what `st` describes belongs to this process's effective user
++/// (S3, S9). Anything else in the app's directories was put there by
++/// someone else, and is refused rather than used.
++pub(crate) fn ours(st: &Stat) -> bool {
++    owner_of(st) == rustix::process::geteuid().as_raw()
++}
++
++#[cfg(not(test))]
++fn owner_of(st: &Stat) -> u32 {
++    st.st_uid
++}
++
++#[cfg(test)]
++fn owner_of(st: &Stat) -> u32 {
++    if theirs::is_disowned(file_id(st)) {
++        // Anyone but us.
++        st.st_uid.wrapping_add(1)
++    } else {
++        st.st_uid
++    }
++}
++
++/// Makes a file or directory "someone else's" for a test. Giving it away
++/// for real (`chown`) needs root, and CI runs unprivileged, so tests that
++/// did that returned early everywhere that mattered and the owner checks
++/// went untested ("The ownership-refusal tests return early unless run as
++/// root"). This changes what [`ours`] is told about one inode, and nothing
++/// else: the check itself runs as it does in the app.
++#[cfg(test)]
++pub(crate) mod theirs {
++    use std::path::Path;
++    use std::sync::{Mutex, PoisonError};
++
++    use super::FileId;
++
++    static DISOWNED: Mutex<Vec<FileId>> = Mutex::new(Vec::new());
++
++    /// Treats what `path` names -- not following a symlink -- as another
++    /// user's until the guard is dropped. Every test gives its own files
++    /// away, so tests running in parallel do not see each other's.
++    #[must_use]
++    pub(crate) fn disown(path: &Path) -> Disowned {
++        let st = rustix::fs::lstat(path).unwrap();
++        let id = super::file_id(&st);
++        DISOWNED
++            .lock()
++            .unwrap_or_else(PoisonError::into_inner)
++            .push(id);
++        Disowned(id)
++    }
++
++    pub(super) fn is_disowned(id: FileId) -> bool {
++        DISOWNED
++            .lock()
++            .unwrap_or_else(PoisonError::into_inner)
++            .contains(&id)
++    }
++
++    /// Gives the inode back when dropped.
++    pub(crate) struct Disowned(FileId);
++
++    impl Drop for Disowned {
++        fn drop(&mut self) {
++            let mut all = DISOWNED.lock().unwrap_or_else(PoisonError::into_inner);
++            if let Some(i) = all.iter().position(|id| *id == self.0) {
++                all.swap_remove(i);
++            }
++        }
++    }
++}
++
+ #[cfg(test)]
+ #[allow(clippy::disallowed_methods)] // Tests set the scene with plain writes.
+ mod tests {
+@@ -209,31 +297,62 @@ mod tests {
+         assert!(!dir.path().join("nowhere").exists());
+     }
+ 
+-    /// Only testable where the tests may give a directory away: as root, as
+-    /// in the CI container. Elsewhere it says so and passes.
+     #[test]
+     fn a_directory_owned_by_someone_else_is_refused() {
+-        if !rustix::process::geteuid().is_root() {
+-            eprintln!("skipped: not root, cannot chown");
+-            return;
+-        }
+         let dir = tempfile::tempdir().unwrap();
+         let theirs = dir.path().join("theirs");
+         std::fs::create_dir(&theirs).unwrap();
+-        rustix::fs::chown(&theirs, Some(rustix::fs::Uid::from_raw(4242)), None).unwrap();
+-        assert!(matches!(
+-            open(&theirs, Share::Nothing),
+-            Err(DirError::NotPlain)
+-        ));
++        std::fs::set_permissions(&theirs, std::fs::Permissions::from_mode(0o777)).unwrap();
+         let root = open(dir.path(), Share::ReadOnly).unwrap();
++        {
++            let _given_away = theirs::disown(&theirs);
++            assert!(matches!(
++                open(&theirs, Share::Nothing),
++                Err(DirError::NotPlain)
++            ));
++            assert!(matches!(
++                open_at(&root, "theirs", Share::Nothing),
++                Err(DirError::NotPlain)
++            ));
++            assert!(matches!(
++                open_existing_at(&root, "theirs", Share::Nothing),
++                Err(DirError::NotPlain)
++            ));
++            // And its mode is left alone: not ours to change.
++            assert_eq!(mode(&theirs), 0o777);
++        }
++        // The same directory, ours again, is used and tightened.
++        open(&theirs, Share::Nothing).unwrap();
++        assert_eq!(mode(&theirs), 0o700);
++    }
++
++    #[test]
++    fn an_existing_directory_is_opened_and_a_missing_one_left_missing() {
++        let dir = tempfile::tempdir().unwrap();
++        let root = open(dir.path(), Share::ReadOnly).unwrap();
++        assert!(
++            open_existing_at(&root, "absent", Share::Nothing)
++                .unwrap()
++                .is_none()
++        );
++        assert!(!dir.path().join("absent").exists());
++        std::fs::create_dir(dir.path().join("here")).unwrap();
++        std::fs::set_permissions(
++            dir.path().join("here"),
++            std::fs::Permissions::from_mode(0o755),
++        )
++        .unwrap();
++        assert!(
++            open_existing_at(&root, "here", Share::Nothing)
++                .unwrap()
++                .is_some()
++        );
++        assert_eq!(mode(&dir.path().join("here")), 0o700);
++        std::os::unix::fs::symlink(dir.path().join("here"), dir.path().join("link")).unwrap();
+         assert!(matches!(
+-            open_at(&root, "theirs", Share::Nothing),
++            open_existing_at(&root, "link", Share::Nothing),
+             Err(DirError::NotPlain)
+         ));
+-        // And its mode is left alone: not ours to change.
+-        std::fs::set_permissions(&theirs, std::fs::Permissions::from_mode(0o777)).unwrap();
+-        assert!(open(&theirs, Share::Nothing).is_err());
+-        assert_eq!(mode(&theirs), 0o777);
+     }
+ 
+     #[test]
+diff --git a/crates/sukkula-core/src/inbox.rs b/crates/sukkula-core/src/inbox.rs
+index be345f6..f39d344 100644
+--- a/crates/sukkula-core/src/inbox.rs
++++ b/crates/sukkula-core/src/inbox.rs
+@@ -6,9 +6,12 @@
+ //! digest when there is one, and is only then placed in the target directory
+ //! under a name nobody else holds -- `photo.jpg`, else `photo (1).jpg`, and so
+ //! on. Placing never overwrites and never follows a link: it is `linkat(2)`,
+-//! which fails on any existing entry, or, where the file system cannot link
+-//! (`EXDEV` across mounts, `EPERM` on FAT), a copy from the staging file's own
+-//! descriptor into a file opened `O_CREAT|O_EXCL|O_NOFOLLOW`.
++//! which fails on any existing entry. Where the staging file cannot be linked
++//! there (`EXDEV` across mounts, `EPERM` on FAT), it is copied, from its own
++//! descriptor, into a new staging file on the target's file system, and only
++//! the whole copy is linked, or renamed with `RENAME_NOREPLACE`, into place:
++//! a kill mid-copy leaves a staging file, never a truncated one under a real
++//! name.
+ //!
+ //! Both directories are held open by descriptor from [`Inbox::begin`] to the
+ //! end of the file (the private `dirfd` module), and every operation is relative to
+@@ -20,7 +23,13 @@
+ //! staging file, so a failure anywhere -- a peer hanging up, a cancel, a
+ //! digest mismatch, a panic in the adapter, the task being aborted -- leaves
+ //! nothing behind. A commit cancelled half-way through the copy fallback
+-//! removes the half-copied destination too.
++//! removes the half-made copy too.
++//!
++//! A kill runs no destructor. What one leaves -- a staging file, a copy in
++//! progress, the second link of a placed file -- is a `*.part` file in a
++//! `.partial` directory, which the next [`Inbox::open`] removes; a file under
++//! its real name is always whole. `tests/chaos.rs` kills a receiver
++//! mid-write and mid-commit, many times, and checks it.
+ //!
+ //! The staging directory is a hidden directory *inside* the target directory
+ //! by default ([`Inbox::open`]): Sailjail's bind mounts make a link or rename
+@@ -31,7 +40,7 @@ use std::io::{self, SeekFrom};
+ use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+ use std::path::{Path, PathBuf};
+ 
+-use rustix::fs::{AtFlags, FileType, Mode, OFlags};
++use rustix::fs::{AtFlags, FileType, Mode, OFlags, RenameFlags};
+ use rustix::io::Errno;
+ use sha2::{Digest, Sha256};
+ use thiserror::Error;
+@@ -154,6 +163,14 @@ impl Inbox {
+         let inbox = Inbox { target, staging };
+         let dirs = inbox.open_dirs()?;
+         sweep_stale(&dirs.staging);
++        if matches!(inbox.staging, Staging::At(_))
++            && let Ok(Some(copies)) =
++                dirfd::open_existing_at(&dirs.target, STAGING_DIR, Share::Nothing)
++        {
++            // The copy fallback's `.partial` on the target's file system,
++            // which is not the staging directory here.
++            sweep_stale(&copies);
++        }
+         Ok(inbox)
+     }
+ 
+@@ -204,9 +221,7 @@ impl Inbox {
+             return Err(InboxError::TooLarge);
+         }
+         let dirs = self.open_dirs()?;
+-        let mut random = [0u8; 16];
+-        getrandom::fill(&mut random).map_err(|e| io::Error::other(e.to_string()))?;
+-        let staging_name = format!("{}{PART_SUFFIX}", hex::encode(&random));
++        let staging_name = part_name()?;
+         // Read-write: the copy fallback reads the data back through this
+         // same descriptor rather than reopening a name.
+         let fd = create_exclusive(&dirs.staging, &staging_name, OFlags::RDWR)?;
+@@ -222,6 +237,7 @@ impl Inbox {
+             written: 0,
+             hasher: Sha256::new(),
+             expected: sha256,
++            copied: None,
+             failed: false,
+             done: false,
+         })
+@@ -247,8 +263,8 @@ impl Inbox {
+     }
+ }
+ 
+-/// Removes regular `*.part` files from the staging directory: what a
+-/// previous run left when it was killed mid-file.
++/// Removes regular `*.part` files from a `.partial` directory: what a
++/// previous run left when it was killed mid-file or mid-commit.
+ // S3: deletes only regular `*.part` entries of the staging directory.
+ #[allow(clippy::disallowed_methods)]
+ fn sweep_stale(staging: &OwnedFd) {
+@@ -290,6 +306,8 @@ pub struct Incoming {
+     written: u64,
+     hasher: Sha256,
+     expected: Option<[u8; 32]>,
++    /// The copy fallback's whole copy, not yet placed.
++    copied: Option<Copied>,
+     /// A write failed, was cancelled half-way, or overflowed: what is on disk
+     /// no longer matches the count, so nothing more is written and the file
+     /// is never placed.
+@@ -428,14 +446,13 @@ impl Incoming {
+         if dirfd::file_id(&staged) != self.id {
+             return Err(tampered_io());
+         }
+-        match rustix::fs::linkat(
++        // No AT_SYMLINK_FOLLOW: a symlink swapped in since the check above
++        // is linked as a symlink, and caught below.
++        match link(
+             &self.dirs.staging,
+             self.staging_name.as_str(),
+             &self.dirs.target,
+             dest,
+-            // No AT_SYMLINK_FOLLOW: a symlink swapped in since the check
+-            // above is linked as a symlink, and caught below.
+-            AtFlags::empty(),
+         ) {
+             Ok(()) => {
+                 if entry_id(self.dirs.target.as_fd(), dest) == Some(self.id) {
+@@ -447,19 +464,79 @@ impl Incoming {
+                     Err(tampered_io())
+                 }
+             }
+-            Err(e) if copy_instead(e) => self.copy_to(dest).await,
++            Err(e) if copy_instead(e) => self.place_copy(dest).await,
+             Err(e) => Err(e.into()),
+         }
+     }
+ 
+-    /// The fallback where the file system cannot link: a copy, from the
+-    /// staging file's own descriptor, into a new exclusive file.
+-    async fn copy_to(&mut self, dest: &str) -> io::Result<()> {
+-        let out = create_exclusive(&self.dirs.target, dest, OFlags::WRONLY)?;
++    /// The fallback where the staging file cannot be linked into the target
++    /// -- across mounts (`EXDEV`), or on a file system without links
++    /// (`EPERM` on FAT). The file is copied once, and only the whole copy is
++    /// linked, or renamed without replacing, to `dest`. It never exists
++    /// under `dest` half-written, so a kill mid-copy, which runs no
++    /// destructor, leaves only a `.part` file that the next
++    /// [`Inbox::open`] sweeps ("No kill-during-write (chaos) test ... a
++    /// final-named partial from the copy fallback").
++    // S3: linkat(2) without AT_SYMLINK_FOLLOW, or renameat2 with
++    // RENAME_NOREPLACE: never over an existing name.
++    #[allow(clippy::disallowed_methods)]
++    async fn place_copy(&mut self, dest: &str) -> io::Result<()> {
++        if self.copied.is_none() {
++            self.copied = Some(self.copy().await?);
++        }
++        let copied = self.copied.as_ref().ok_or_else(spoiled_io)?;
++        if entry_id(copied.dir.as_fd(), &copied.name) != Some(copied.id) {
++            return Err(tampered_io());
++        }
++        let linked = match link(&copied.dir, copied.name.as_str(), &self.dirs.target, dest) {
++            Ok(()) => true,
++            Err(e) if copy_instead(e) => {
++                // No links on this file system: a rename that, like the
++                // link, fails on any existing entry. Where the kernel or
++                // the file system cannot promise that, the file is not
++                // placed at all.
++                rustix::fs::renameat_with(
++                    &copied.dir,
++                    copied.name.as_str(),
++                    &self.dirs.target,
++                    dest,
++                    RenameFlags::NOREPLACE,
++                )?;
++                false
++            }
++            Err(e) => return Err(e.into()),
++        };
++        if entry_id(self.dirs.target.as_fd(), dest) != Some(copied.id) {
++            // The copy's entry was replaced between the check and the
++            // placing. What was placed is not ours; take it away.
++            let _ = rustix::fs::unlinkat(&self.dirs.target, dest, AtFlags::empty());
++            return Err(tampered_io());
++        }
++        if linked {
++            let _ = rustix::fs::unlinkat(&copied.dir, copied.name.as_str(), AtFlags::empty());
++        }
++        self.copied = None;
++        Ok(())
++    }
++
++    /// Copies the staged file, from its own descriptor, into a new staging
++    /// file in the target's `.partial` -- the target's file system, where it
++    /// can be placed -- and makes the copy durable.
++    async fn copy(&mut self) -> io::Result<Copied> {
++        let dir =
++            dirfd::open_at(&self.dirs.target, STAGING_DIR, Share::Nothing).map_err(
++                |e| match e {
++                    DirError::NotPlain => io::Error::other("the target's .partial is not usable"),
++                    DirError::Io(e) => e,
++                },
++            )?;
++        let name = part_name()?;
++        let out = create_exclusive(&dir, &name, OFlags::WRONLY)?;
++        let id = dirfd::file_id(&rustix::fs::fstat(&out)?);
+         let guard = Placing {
+-            dir: self.dirs.target.as_fd(),
+-            name: dest,
+-            id: dirfd::file_id(&rustix::fs::fstat(&out)?),
++            dir: dir.as_fd(),
++            name: &name,
++            id,
+             armed: true,
+         };
+         let mut out = tokio::fs::File::from_std(std::fs::File::from(out));
+@@ -473,14 +550,32 @@ impl Incoming {
+         out.flush().await?;
+         out.sync_all().await?;
+         guard.disarm();
+-        Ok(())
++        Ok(Copied { dir, name, id })
+     }
+ }
+ 
++/// The copy fallback's copy of a staged file: whole, durable, in the
++/// target's `.partial`, waiting for a free name.
++#[derive(Debug)]
++struct Copied {
++    dir: OwnedFd,
++    name: String,
++    id: FileId,
++}
++
+ impl Drop for Incoming {
+     // S3: a file not committed is deleted from staging.
+     #[allow(clippy::disallowed_methods)]
+     fn drop(&mut self) {
++        if let Some(c) = self.copied.take() {
++            // A copy not placed: gone with the file, if it is still ours.
++            drop(Placing {
++                dir: c.dir.as_fd(),
++                name: &c.name,
++                id: c.id,
++                armed: true,
++            });
++        }
+         if !self.done {
+             self.file.take();
+             let _ = rustix::fs::unlinkat(
+@@ -492,9 +587,9 @@ impl Drop for Incoming {
+     }
+ }
+ 
+-/// A destination being copied into. Dropped armed -- the copy failed, or
+-/// the commit was cancelled mid-copy -- it removes the destination, but only
+-/// if the entry is still the file it created.
++/// A copy being made. Dropped armed -- the copy failed, or the commit was
++/// cancelled mid-copy -- it removes the copy, but only if the entry is still
++/// the file it created.
+ struct Placing<'a> {
+     dir: BorrowedFd<'a>,
+     name: &'a str,
+@@ -509,7 +604,7 @@ impl Placing<'_> {
+ }
+ 
+ impl Drop for Placing<'_> {
+-    // S3: removes a half-copied destination, only if it is still ours.
++    // S3: removes a copy not placed, only if it is still ours.
+     #[allow(clippy::disallowed_methods)]
+     fn drop(&mut self) {
+         if self.armed && entry_id(self.dir, self.name) == Some(self.id) {
+@@ -525,6 +620,20 @@ fn entry_id(dir: BorrowedFd<'_>, name: &str) -> Option<FileId> {
+         .map(|st| dirfd::file_id(&st))
+ }
+ 
++/// `linkat(2)` of `old` in `old_dir` to `new` in `new_dir`, never following
++/// a symlink. Tests can play a file system without hard links (FAT's
++/// `EPERM`), so the rename that stands in for the link there runs on every
++/// host.
++// S3: linkat(2) without AT_SYMLINK_FOLLOW; fails on any existing entry.
++#[allow(clippy::disallowed_methods)]
++fn link(old_dir: &OwnedFd, old: &str, new_dir: &OwnedFd, new: &str) -> rustix::io::Result<()> {
++    #[cfg(test)]
++    if tests::linkless() {
++        return Err(Errno::PERM);
++    }
++    rustix::fs::linkat(old_dir, old, new_dir, new, AtFlags::empty())
++}
++
+ /// Whether a failed `linkat` means "this file system cannot link here" --
+ /// across mounts, or no hard links at all -- rather than a real error.
+ fn copy_instead(e: Errno) -> bool {
+@@ -534,6 +643,14 @@ fn copy_instead(e: Errno) -> bool {
+     )
+ }
+ 
++/// A new staging file's name: random, so nobody can guess it, with
++/// [`PART_SUFFIX`], so a sweep finds it.
++fn part_name() -> io::Result<String> {
++    let mut random = [0u8; 16];
++    getrandom::fill(&mut random).map_err(|e| io::Error::other(e.to_string()))?;
++    Ok(format!("{}{PART_SUFFIX}", hex::encode(&random)))
++}
++
+ /// Creates `name` in `dir` with `O_CREAT|O_EXCL|O_NOFOLLOW`, mode `0600`.
+ /// `O_EXCL` alone already refuses an existing symlink; `O_NOFOLLOW` says so.
+ // S3: the inbox's one way to create a file.
+@@ -587,6 +704,31 @@ mod tests {
+         v
+     }
+ 
++    thread_local! {
++        static LINKLESS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
++    }
++
++    /// Whether this test plays a file system without hard links.
++    pub(super) fn linkless() -> bool {
++        LINKLESS.with(std::cell::Cell::get)
++    }
++
++    /// Plays a file system without hard links on this thread until dropped.
++    struct Linkless;
++
++    impl Linkless {
++        fn start() -> Linkless {
++            LINKLESS.with(|l| l.set(true));
++            Linkless
++        }
++    }
++
++    impl Drop for Linkless {
++        fn drop(&mut self) {
++            LINKLESS.with(|l| l.set(false));
++        }
++    }
++
+     /// The only staging file's name.
+     fn the_staging_file(dir: &Path) -> PathBuf {
+         let mut it = std::fs::read_dir(dir).unwrap();
+@@ -1010,56 +1152,170 @@ mod tests {
+         assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+         assert_eq!(std::fs::read(dir.path().join("big.bin")).unwrap(), b"taken");
+         assert_eq!(std::fs::read_dir(&staging).unwrap().count(), 0);
++        // The copy was made in the target's own `.partial` and is gone.
++        assert_eq!(staged_files(dir.path()), 0);
+     }
+ 
+-    #[tokio::test]
+-    async fn a_commit_cancelled_mid_copy_leaves_nothing_half_written() {
++    /// FAT has no hard links (`EPERM`): the file is copied beside the target
++    /// and renamed into place with `RENAME_NOREPLACE`, which, like the link,
++    /// never replaces anything.
++    #[tokio::test(flavor = "current_thread")]
++    async fn without_hard_links_the_copy_is_renamed_into_place_never_over_anything() {
+         let dir = tempfile::tempdir().unwrap();
+-        let Some(shm) = other_mount(dir.path()) else {
+-            eprintln!("skipped: no second file system for staging");
+-            return;
+-        };
+-        let staging = shm.path().join("staging");
+-        let inbox = Inbox::open_with_staging(dir.path(), &staging).unwrap();
+-        let size: usize = 32 * 1024 * 1024;
+-        let chunk = vec![0x5Au8; 1024 * 1024];
++        let inbox = Inbox::open(dir.path()).unwrap();
++        std::fs::write(dir.path().join("a.txt"), b"mine").unwrap();
++        std::os::unix::fs::symlink(dir.path().join("nowhere"), dir.path().join("a (1).txt"))
++            .unwrap();
++        let _fat = Linkless::start();
++        let mut f = inbox.begin(&sanitize("a.txt"), 3, None).await.unwrap();
++        f.write(b"new").await.unwrap();
++        let saved = f.commit().await.unwrap();
++        assert_eq!(saved.name.as_str(), "a (2).txt");
++        assert_eq!(std::fs::read(&saved.path).unwrap(), b"new");
++        let meta = std::fs::symlink_metadata(&saved.path).unwrap();
++        assert!(meta.file_type().is_file());
++        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
++        assert_eq!(meta.nlink(), 1);
++        assert_eq!(std::fs::read(dir.path().join("a.txt")).unwrap(), b"mine");
++        assert!(
++            std::fs::symlink_metadata(dir.path().join("a (1).txt"))
++                .unwrap()
++                .file_type()
++                .is_symlink()
++        );
++        assert!(!dir.path().join("nowhere").exists());
++        assert_eq!(staged_files(dir.path()), 0, "staging file or copy left");
++        // And a failure after the copy takes the copy with it.
++        let name = sanitize("x");
++        for n in 0..MAX_NAME_ATTEMPTS {
++            std::fs::write(dir.path().join(name.numbered(n).as_str()), b"").unwrap();
++        }
++        let mut f = inbox.begin(&name, 1, None).await.unwrap();
++        f.write(b"1").await.unwrap();
++        assert!(matches!(f.commit().await, Err(InboxError::NoFreeName)));
++        assert_eq!(staged_files(dir.path()), 0);
++    }
++
++    /// A commit of 32 MiB across mounts, driven until the copy has started
++    /// (a file appears in the target's `.partial`) or it finished first.
++    /// Returns the pending commit, if it was caught mid-copy.
++    async fn caught_mid_copy(
++        dir: &Path,
++        staging: &Path,
++    ) -> Option<std::pin::Pin<Box<impl Future<Output = Result<Saved, InboxError>>>>> {
++        let inbox = Inbox::open_with_staging(dir, staging).unwrap();
++        // 32 chunks of 1 MiB.
++        let size: usize = 33_554_432;
++        let chunk = vec![0x5Au8; 1_048_576];
+         let mut f = inbox
+             .begin(&sanitize("big.bin"), u64::try_from(size).unwrap(), None)
+             .await
+             .unwrap();
+-        for _ in 0..size / chunk.len() {
++        for _ in 0..32 {
+             f.write(&chunk).await.unwrap();
+         }
+-        let dest = dir.path().join("big.bin");
++        let copies = dir.join(STAGING_DIR);
++        let copying = || std::fs::read_dir(&copies).is_ok_and(|mut d| d.next().is_some());
+         let mut commit = Box::pin(f.commit());
+         let mut cx = Context::from_waker(Waker::noop());
+-        // Drive the commit until the copy has started, then drop it.
+-        let mut cancelled = false;
+         for _ in 0..100_000 {
+             match commit.as_mut().poll(&mut cx) {
+                 Poll::Ready(r) => {
+                     // Finished before we could catch it: then it is whole.
+-                    r.unwrap();
+-                    break;
+-                }
+-                Poll::Pending if dest.exists() => {
+-                    cancelled = true;
+-                    break;
++                    assert_eq!(
++                        std::fs::metadata(r.unwrap().path).unwrap().len(),
++                        u64::try_from(size).unwrap()
++                    );
++                    return None;
+                 }
++                Poll::Pending if copying() => return Some(commit),
+                 Poll::Pending => tokio::task::yield_now().await,
+             }
+         }
+-        drop(commit);
+-        // Let a copy step already handed to a blocking thread finish.
+-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+-        if cancelled {
+-            assert!(!dest.exists(), "a half-copied file was left in place");
+-        } else if dest.exists() {
+-            assert_eq!(
+-                std::fs::metadata(&dest).unwrap().len(),
+-                u64::try_from(size).unwrap()
+-            );
++        None
++    }
++
++    #[tokio::test]
++    async fn a_commit_cancelled_mid_copy_leaves_nothing_half_written() {
++        let dir = tempfile::tempdir().unwrap();
++        let Some(shm) = other_mount(dir.path()) else {
++            eprintln!("skipped: no second file system for staging");
++            return;
++        };
++        let staging = shm.path().join("staging");
++        let dest = dir.path().join("big.bin");
++        if let Some(commit) = caught_mid_copy(dir.path(), &staging).await {
++            assert!(!dest.exists(), "a half-copied file under its real name");
++            drop(commit);
++            // Let a copy step already handed to a blocking thread finish.
++            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
++            assert!(!dest.exists());
++            assert_eq!(staged_files(dir.path()), 0, "the copy was left behind");
+         }
+         assert_eq!(std::fs::read_dir(&staging).unwrap().count(), 0);
+     }
++
++    /// A kill runs no destructor. Forgetting the commit mid-copy leaves the
++    /// disk as a SIGKILL would (`tests/chaos.rs` does it for real): nothing
++    /// under the file's name, and only what the next open sweeps.
++    #[tokio::test]
++    #[allow(clippy::mem_forget)] // The point: no destructor runs.
++    async fn a_commit_killed_mid_copy_leaves_no_file_under_its_name() {
++        let dir = tempfile::tempdir().unwrap();
++        let Some(shm) = other_mount(dir.path()) else {
++            eprintln!("skipped: no second file system for staging");
++            return;
++        };
++        let staging = shm.path().join("staging");
++        let dest = dir.path().join("big.bin");
++        let Some(commit) = caught_mid_copy(dir.path(), &staging).await else {
++            eprintln!("skipped: the copy finished before it could be caught");
++            return;
++        };
++        std::mem::forget(commit);
++        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
++        assert!(!dest.exists(), "a partial file under its real name");
++        assert!(placed(dir.path()).is_empty());
++        assert_eq!(staged_files(dir.path()), 1, "the copy in progress");
++        assert_eq!(std::fs::read_dir(&staging).unwrap().count(), 1);
++        // The next start sweeps both.
++        drop(Inbox::open_with_staging(dir.path(), &staging).unwrap());
++        assert_eq!(staged_files(dir.path()), 0);
++        assert_eq!(std::fs::read_dir(&staging).unwrap().count(), 0);
++        assert!(placed(dir.path()).is_empty());
++    }
++
++    #[tokio::test]
++    async fn a_directory_owned_by_someone_else_is_refused() {
++        let dir = tempfile::tempdir().unwrap();
++        let target = dir.path().join("target");
++        let inbox = Inbox::open(&target).unwrap();
++        {
++            let _given_away = dirfd::theirs::disown(&target.join(STAGING_DIR));
++            assert!(matches!(
++                Inbox::open(&target),
++                Err(InboxError::NotADirectory(p)) if p == target.join(STAGING_DIR)
++            ));
++            assert!(matches!(
++                inbox.begin(&sanitize("a"), 1, None).await,
++                Err(InboxError::NotADirectory(_))
++            ));
++        }
++        {
++            let _given_away = dirfd::theirs::disown(&target);
++            assert!(matches!(
++                Inbox::open(&target),
++                Err(InboxError::NotADirectory(p)) if p == target
++            ));
++            assert!(matches!(
++                inbox.begin(&sanitize("a"), 1, None).await,
++                Err(InboxError::NotADirectory(_))
++            ));
++        }
++        // Ours again: fine, and nothing was written meanwhile.
++        let mut f = inbox.begin(&sanitize("a"), 1, None).await.unwrap();
++        f.write(b"x").await.unwrap();
++        f.commit().await.unwrap();
++        assert_eq!(placed(&target), vec!["a".to_owned()]);
++    }
+ }
+diff --git a/crates/sukkula-core/src/store.rs b/crates/sukkula-core/src/store.rs
+index d8968fa..29201bf 100644
+--- a/crates/sukkula-core/src/store.rs
++++ b/crates/sukkula-core/src/store.rs
+@@ -9,6 +9,13 @@
+ //! Every operation opens the directory by descriptor (the private `dirfd` module) and
+ //! works relative to it, and every read checks the file it actually opened,
+ //! not the name it asked for.
++//!
++//! A write killed before its rename -- the low-memory killer does not wait
++//! -- leaves its temporary file behind; [`Store::open`] removes those, so
++//! kills do not pile them up ("No kill-during-write (chaos) test").
++//! `tests/chaos.rs` kills a writer mid-write, many times, and checks both
++//! halves: the file is the old or the new version, whole, and nothing else
++//! survives the next open.
+ 
+ use std::io::{self, Read, Write};
+ use std::os::fd::OwnedFd;
+@@ -27,6 +34,13 @@ use crate::inbox::InboxError;
+ /// Longest store file name.
+ const MAX_STORE_NAME: usize = 64;
+ 
++/// Random bytes in a temporary file's name.
++const TMP_RANDOM_BYTES: usize = 8;
++
++/// Most directory entries looked at for leftover temporary files when a
++/// store opens.
++const MAX_TMP_SWEEP: usize = 10_000;
++
+ /// Why a store operation failed.
+ #[derive(Debug, Error)]
+ pub enum StoreError {
+@@ -67,7 +81,12 @@ pub struct Store {
+ 
+ impl Store {
+     /// Opens `dir`, creating it `0700` if needed, and tightening it to
+-    /// `0700` if it is looser (S9).
++    /// `0700` if it is looser (S9). Removes the temporary files of writes
++    /// that a kill interrupted; nothing else in it is touched.
++    ///
++    /// One engine per data directory: a write in progress elsewhere would
++    /// lose its temporary file, as a receive would lose its staging file to
++    /// the inbox's own sweep.
+     ///
+     /// # Errors
+     ///
+@@ -76,7 +95,8 @@ impl Store {
+         let store = Store {
+             dir: dir.to_path_buf(),
+         };
+-        store.open_dir()?;
++        let fd = store.open_dir()?;
++        sweep_temporaries(&fd);
+         Ok(store)
+     }
+ 
+@@ -115,11 +135,9 @@ impl Store {
+     pub fn write(&self, name: &str, bytes: &[u8]) -> Result<(), StoreError> {
+         check_name(name)?;
+         let dir = self.open_dir()?;
+-        let mut random = [0u8; 8];
++        let mut random = [0u8; TMP_RANDOM_BYTES];
+         getrandom::fill(&mut random).map_err(|e| io::Error::other(e.to_string()))?;
+-        // A leading dot: no store name has one, so a temporary file can
+-        // never be mistaken for, or collide with, a real one.
+-        let tmp = format!(".{name}.{}.tmp", hex::encode(&random));
++        let tmp = temporary_name(name, &random);
+         let result = replace(&dir, &tmp, name, bytes);
+         if result.is_err() {
+             let _ = rustix::fs::unlinkat(&dir, tmp.as_str(), AtFlags::empty());
+@@ -182,9 +200,7 @@ impl Store {
+             Err(e) => return Err(StoreError::Io(e.into())),
+         };
+         let st = rustix::fs::fstat(&fd).map_err(io::Error::from)?;
+-        if FileType::from_raw_mode(st.st_mode) != FileType::RegularFile
+-            || st.st_uid != rustix::process::geteuid().as_raw()
+-        {
++        if FileType::from_raw_mode(st.st_mode) != FileType::RegularFile || !dirfd::ours(&st) {
+             return Err(StoreError::NotRegular(name.to_owned()));
+         }
+         if secret && st.st_mode & 0o077 != 0 {
+@@ -239,6 +255,60 @@ fn replace(dir: &OwnedFd, tmp: &str, name: &str, bytes: &[u8]) -> io::Result<()>
+     Ok(())
+ }
+ 
++/// Removes the regular files named as [`Store::write`] names its temporary
++/// files (`.{name}.{16 hex}.tmp`): what a write left when it was killed
++/// before its rename. A crash never leaves anything else, and nothing else
++/// is touched -- not other hidden names, not directories, not symlinks.
++// S3: deletes only the store's own temporary files, in its own directory.
++#[allow(clippy::disallowed_methods)]
++fn sweep_temporaries(dir: &OwnedFd) {
++    let Ok(entries) = rustix::fs::Dir::read_from(dir) else {
++        return;
++    };
++    for entry in entries.take(MAX_TMP_SWEEP).flatten() {
++        let Ok(name) = entry.file_name().to_str() else {
++            continue;
++        };
++        if !is_temporary(name) {
++            continue;
++        }
++        let regular = match entry.file_type() {
++            FileType::RegularFile => true,
++            // Some file systems do not fill in `d_type`.
++            FileType::Unknown => rustix::fs::statat(dir, name, AtFlags::SYMLINK_NOFOLLOW)
++                .is_ok_and(|st| FileType::from_raw_mode(st.st_mode) == FileType::RegularFile),
++            _ => false,
++        };
++        if regular {
++            let _ = rustix::fs::unlinkat(dir, name, AtFlags::empty());
++        }
++    }
++}
++
++/// The temporary file [`Store::write`] writes `name` to first. A leading
++/// dot: no store name has one, so a temporary file can never be mistaken
++/// for, or collide with, a real one.
++fn temporary_name(name: &str, random: &[u8; TMP_RANDOM_BYTES]) -> String {
++    format!(".{name}.{}.tmp", hex::encode(random))
++}
++
++/// Whether `name` is a temporary file of [`Store::write`]'s: a dot, a store
++/// name, a dot, [`TMP_RANDOM_BYTES`] as lowercase hex, `.tmp`.
++fn is_temporary(name: &str) -> bool {
++    let Some((store_name, random)) = name
++        .strip_prefix('.')
++        .and_then(|rest| rest.strip_suffix(".tmp"))
++        .and_then(|rest| rest.rsplit_once('.'))
++    else {
++        return false;
++    };
++    random.len() == TMP_RANDOM_BYTES.saturating_mul(2)
++        && random
++            .bytes()
++            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
++        && check_name(store_name).is_ok()
++}
++
+ /// A store name is one plain lowercase component: no separators, no leading
+ /// dot (so never `.`, `..` or a temporary file), at most [`MAX_STORE_NAME`]
+ /// bytes.
+@@ -384,19 +454,10 @@ mod tests {
+ 
+     #[test]
+     fn a_file_owned_by_someone_else_is_refused() {
+-        if !rustix::process::geteuid().is_root() {
+-            eprintln!("skipped: not root, cannot chown");
+-            return;
+-        }
+         let dir = tempfile::tempdir().unwrap();
+         let store = Store::open(dir.path()).unwrap();
+         store.write("key.pem", b"planted").unwrap();
+-        rustix::fs::chown(
+-            dir.path().join("key.pem"),
+-            Some(rustix::fs::Uid::from_raw(4242)),
+-            None,
+-        )
+-        .unwrap();
++        let _given_away = dirfd::theirs::disown(&dir.path().join("key.pem"));
+         assert!(matches!(
+             store.read_secret("key.pem", 100),
+             Err(StoreError::NotRegular(_))
+@@ -405,6 +466,104 @@ mod tests {
+             store.read("key.pem", 100),
+             Err(StoreError::NotRegular(_))
+         ));
++        assert!(matches!(
++            store.read_json::<serde_json::Value>("key.pem", 100),
++            Err(StoreError::NotRegular(_))
++        ));
++    }
++
++    #[test]
++    fn a_store_directory_owned_by_someone_else_is_refused() {
++        let dir = tempfile::tempdir().unwrap();
++        let data = dir.path().join("data");
++        let store = Store::open(&data).unwrap();
++        store.write("settings.json", b"{}").unwrap();
++        let _given_away = dirfd::theirs::disown(&data);
++        assert!(matches!(Store::open(&data), Err(StoreError::Directory(_))));
++        assert!(matches!(
++            store.read("settings.json", 100),
++            Err(StoreError::Directory(_))
++        ));
++        assert!(matches!(
++            store.write("settings.json", b"[]"),
++            Err(StoreError::Directory(_))
++        ));
++        assert_eq!(std::fs::read(data.join("settings.json")).unwrap(), b"{}");
++    }
++
++    #[test]
++    fn leftover_temporaries_are_swept_and_nothing_else() {
++        let dir = tempfile::tempdir().unwrap();
++        let data = dir.path().join("data");
++        let store = Store::open(&data).unwrap();
++        store.write("settings.json", b"{}").unwrap();
++        // What a write killed before its rename leaves: swept.
++        let torn = [
++            ".settings.json.0123456789abcdef.tmp",
++            ".key.pem.fedcba9876543210.tmp",
++        ];
++        for name in torn {
++            std::fs::write(data.join(name), b"half").unwrap();
++        }
++        // Anything else: kept, whatever it looks like.
++        let kept = [
++            "settings.json",
++            ".settings.json.tmp",
++            ".settings.json.0123456789ABCDEF.tmp",
++            ".settings.json.0123456789abcde.tmp",
++            ".Bad Name.0123456789abcdef.tmp",
++            "settings.json.0123456789abcdef.tmp",
++            ".settings.json.0123456789abcdef.tmp~",
++        ];
++        for name in &kept[1..] {
++            std::fs::write(data.join(name), b"x").unwrap();
++        }
++        std::fs::create_dir(data.join(".cert.pem.1111111111111111.tmp")).unwrap();
++        let victim = dir.path().join("victim");
++        std::fs::write(&victim, b"untouched").unwrap();
++        std::os::unix::fs::symlink(&victim, data.join(".key.pem.2222222222222222.tmp")).unwrap();
++
++        let again = Store::open(&data).unwrap();
++        for name in torn {
++            assert!(!data.join(name).exists(), "{name} survived");
++        }
++        for name in kept {
++            assert!(data.join(name).exists(), "{name} was removed");
++        }
++        assert!(data.join(".cert.pem.1111111111111111.tmp").is_dir());
++        assert!(
++            std::fs::symlink_metadata(data.join(".key.pem.2222222222222222.tmp"))
++                .unwrap()
++                .file_type()
++                .is_symlink()
++        );
++        assert_eq!(std::fs::read(&victim).unwrap(), b"untouched");
++        assert_eq!(again.read("settings.json", 10).unwrap().unwrap(), b"{}");
++    }
++
++    #[test]
++    fn temporary_names_are_recognised_exactly() {
++        let longest = "z".repeat(MAX_STORE_NAME);
++        for random in [[0u8; TMP_RANDOM_BYTES], [0xff; TMP_RANDOM_BYTES]] {
++            for name in ["settings.json", "key.pem", "a", longest.as_str()] {
++                assert!(is_temporary(&temporary_name(name, &random)), "{name}");
++            }
++        }
++        for name in [
++            ".tmp",
++            "..tmp",
++            "..0000000000000000.tmp",
++            ".x.0000000000000000",
++            "x.0000000000000000.tmp",
++            ".x.00000000000000000.tmp",
++            ".x.000000000000000.tmp",
++            ".x.000000000000000g.tmp",
++            ".x.000000000000000A.tmp",
++            ".x/y.0000000000000000.tmp",
++            "..x.0000000000000000.tmp",
++        ] {
++            assert!(!is_temporary(name), "{name}");
++        }
+     }
+ 
+     #[test]
+diff --git a/crates/sukkula-core/tests/chaos.rs b/crates/sukkula-core/tests/chaos.rs
+new file mode 100644
+index 0000000..7381dab
+--- /dev/null
++++ b/crates/sukkula-core/tests/chaos.rs
+@@ -0,0 +1,377 @@
++//! Kill-during-write chaos, after clove's `ci/chaos.sh`: the promise that a
++//! crash never leaves a torn or orphaned file is worth nothing untested.
++//!
++//! A child process -- this test binary, run again with [`ROLE`] set --
++//! writes in a loop: the settings and the key through `Store::write`, or
++//! received files through the inbox, both with staging next to the target
++//! (placing is a link) and on another file system (placing is the copy
++//! fallback). The parent SIGKILLs it at a varying moment, many times; the
++//! low-memory killer does the same to a backgrounded app. After every kill
++//! the next open must leave:
++//!
++//! - every file under a real name whole: the old version or the new one,
++//!   never a mix and never short, and never a partial received file;
++//! - no temporary, staging or copy file, which the open sweeps.
++//!
++//! A kill that only ever hit the child between writes would prove nothing,
++//! so each kill is checked to have killed the child (not a child that had
++//! already died), and the kills that left work in progress for the sweep
++//! are counted: each part requires some, as clove requires its storm to
++//! land.
++
++#![allow(
++    clippy::arithmetic_side_effects,
++    clippy::indexing_slicing,
++    clippy::unwrap_used,
++    clippy::expect_used,
++    clippy::panic,
++    clippy::as_conversions,
++    clippy::cast_possible_truncation,
++    clippy::print_stdout,
++    clippy::print_stderr,
++    // The parent sets the scene and cleans up with plain file calls.
++    clippy::disallowed_methods
++)]
++
++use std::io::{BufRead, BufReader, Write};
++use std::os::unix::process::ExitStatusExt;
++use std::path::{Path, PathBuf};
++use std::process::{Child, Stdio};
++use std::sync::mpsc;
++use std::time::{Duration, Instant};
++
++use sukkula_core::inbox::{Inbox, STAGING_DIR};
++use sukkula_core::name::sanitize;
++use sukkula_core::store::Store;
++
++/// Which loop the re-run binary runs: `store` or `inbox`.
++const ROLE: &str = "SUKKULA_CHAOS_ROLE";
++/// The directory it writes to.
++const DIR: &str = "SUKKULA_CHAOS_DIR";
++/// The inbox's staging directory, when it is elsewhere.
++const STAGING: &str = "SUKKULA_CHAOS_STAGING";
++/// What the child prints once it is about to write.
++const READY: &str = "chaos: writing";
++/// What the inbox child prints before each commit.
++const COMMITTING: &str = "chaos: committing";
++
++/// Size of every store file and received file: large enough that a write,
++/// its fsync and a copy take long enough to be caught in.
++const STORE_BYTES: usize = 256 * 1024;
++const FILE_BYTES: usize = 512 * 1024;
++
++/// Kill cycles per part.
++const CYCLES: u32 = 30;
++
++/// How long a child may wait to be killed before it gives up on its own. A
++/// child is killed within milliseconds; this only stops one whose parent
++/// died from filling the disk.
++const CHILD_LIFETIME: Duration = Duration::from_secs(30);
++
++/// The store files the child writes.
++const STORE_FILES: [&str; 2] = ["settings.json", "key.pem"];
++
++// ---------------------------------------------------------------------------
++// The child.
++
++/// Not a test of its own: the entry point of the re-run binary. As an
++/// ordinary test, without [`ROLE`], it returns at once.
++#[test]
++fn chaos_child() {
++    let Ok(role) = std::env::var(ROLE) else {
++        return;
++    };
++    let dir = PathBuf::from(std::env::var(DIR).unwrap());
++    match role.as_str() {
++        "store" => store_child(&dir),
++        "inbox" => inbox_child(&dir, std::env::var(STAGING).ok().map(PathBuf::from)),
++        other => panic!("unknown role {other}"),
++    }
++}
++
++/// Tells the parent where the child is.
++fn mark(marker: &str) {
++    let mut out = std::io::stdout();
++    writeln!(out, "{marker}").unwrap();
++    out.flush().unwrap();
++}
++
++/// Tells the parent the loop starts, and makes sure the child does not
++/// outlive it.
++fn ready() -> Instant {
++    rustix::process::set_parent_process_death_signal(Some(rustix::process::Signal::KILL)).unwrap();
++    mark(READY);
++    Instant::now()
++}
++
++/// Rewrites both store files forever, each time whole in a new byte.
++fn store_child(dir: &Path) -> ! {
++    let store = Store::open(dir).unwrap();
++    let started = ready();
++    let mut n: u64 = 0;
++    while started.elapsed() < CHILD_LIFETIME {
++        n += 1;
++        let content = vec![(n % 251) as u8; STORE_BYTES];
++        for name in STORE_FILES {
++            store.write(name, &content).unwrap();
++        }
++    }
++    panic!("never killed");
++}
++
++/// Receives files forever. `f<b>.bin` holds nothing but the byte `b`.
++fn inbox_child(dir: &Path, staging: Option<PathBuf>) -> ! {
++    let inbox = match staging {
++        Some(s) => Inbox::open_with_staging(dir, &s),
++        None => Inbox::open(dir),
++    }
++    .unwrap();
++    let runtime = tokio::runtime::Builder::new_current_thread()
++        .enable_all()
++        .build()
++        .unwrap();
++    let started = ready();
++    runtime.block_on(async move {
++        let mut n: u64 = 0;
++        while started.elapsed() < CHILD_LIFETIME {
++            n += 1;
++            let b = (n % 251) as u8;
++            let mut f = inbox
++                .begin(&sanitize(&format!("f{b:03}.bin")), FILE_BYTES as u64, None)
++                .await
++                .unwrap();
++            let chunk = vec![b; 64 * 1024];
++            for _ in 0..FILE_BYTES / chunk.len() {
++                f.write(&chunk).await.unwrap();
++            }
++            mark(COMMITTING);
++            f.commit().await.unwrap();
++        }
++    });
++    panic!("never killed");
++}
++
++// ---------------------------------------------------------------------------
++// The parent.
++
++/// A child, and the markers it prints as they arrive.
++struct Running {
++    child: Child,
++    markers: mpsc::Receiver<&'static str>,
++}
++
++/// Starts the child and waits until it is about to write.
++// S8 bans spawning processes in Sukkula; this test needs one to kill.
++#[allow(clippy::disallowed_methods, clippy::disallowed_types)]
++fn spawn(role: &str, dir: &Path, staging: Option<&Path>) -> Running {
++    let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
++    cmd.args(["--exact", "chaos_child", "--nocapture", "--test-threads=1"])
++        .env(ROLE, role)
++        .env(DIR, dir)
++        .env_remove(STAGING)
++        .stdin(Stdio::null())
++        .stdout(Stdio::piped())
++        .stderr(Stdio::inherit());
++    if let Some(s) = staging {
++        cmd.env(STAGING, s);
++    }
++    let mut child = cmd.spawn().unwrap();
++    let out = BufReader::new(child.stdout.take().unwrap());
++    // libtest prints lines of its own, and `test chaos_child ... ` without
++    // a line break before the test's first output. Read on a thread, so a
++    // child that never gets there fails the test instead of hanging it.
++    let (tx, markers) = mpsc::channel();
++    std::thread::spawn(move || {
++        for line in out.lines() {
++            let Ok(line) = line else { break };
++            let line = line.trim_end();
++            for marker in [READY, COMMITTING] {
++                if line.ends_with(marker) && tx.send(marker).is_err() {
++                    return;
++                }
++            }
++        }
++    });
++    let mut run = Running { child, markers };
++    run.wait_for(READY);
++    run
++}
++
++impl Running {
++    fn wait_for(&mut self, marker: &str) {
++        loop {
++            match self.markers.recv_timeout(Duration::from_secs(60)) {
++                Ok(m) if m == marker => return,
++                Ok(_) => {}
++                Err(_) => {
++                    let _ = self.child.kill();
++                    let _ = self.child.wait();
++                    panic!("the child never got to {marker:?}");
++                }
++            }
++        }
++    }
++
++    /// Kills the child `delay` after it prints `marker` (or at once, with
++    /// none), and checks that the kill is what ended it.
++    fn kill(mut self, marker: Option<&str>, delay: Duration) {
++        if let Some(m) = marker {
++            self.wait_for(m);
++        }
++        std::thread::sleep(delay);
++        self.child.kill().unwrap();
++        let status = self.child.wait().unwrap();
++        assert_eq!(
++            status.signal(),
++            Some(9),
++            "the child was not ended by the SIGKILL: {status}"
++        );
++    }
++}
++
++/// A different moment for every cycle: 0 up to `max_ms`.
++fn delay(cycle: u32, max_ms: u32) -> Duration {
++    Duration::from_micros(u64::from(cycle.wrapping_mul(7_919) % (max_ms * 1000)))
++}
++
++fn names(dir: &Path) -> Vec<String> {
++    let mut v: Vec<String> = std::fs::read_dir(dir)
++        .map(|d| {
++            d.map(|e| e.unwrap().file_name().into_string().unwrap())
++                .collect()
++        })
++        .unwrap_or_default();
++    v.sort();
++    v
++}
++
++fn assert_uniform(what: &str, bytes: &[u8], len: usize, byte: Option<u8>) {
++    assert_eq!(bytes.len(), len, "{what} is torn: {} bytes", bytes.len());
++    let first = byte.unwrap_or(bytes[0]);
++    assert!(
++        bytes.iter().all(|b| *b == first),
++        "{what} mixes two versions"
++    );
++}
++
++#[test]
++fn a_store_write_killed_at_any_moment_leaves_the_old_or_the_new_file_and_nothing_else() {
++    let dir = tempfile::tempdir().unwrap();
++    let data = dir.path().join("data");
++    let mut landed = 0;
++    for cycle in 0..CYCLES {
++        spawn("store", &data, None).kill(None, delay(cycle, 40));
++        if names(&data).iter().any(|n| n.ends_with(".tmp")) {
++            landed += 1;
++        }
++        // The next start.
++        let store = Store::open(&data).unwrap();
++        for name in names(&data) {
++            assert!(
++                STORE_FILES.contains(&name.as_str()),
++                "cycle {cycle}: {name} survived the open"
++            );
++            let bytes = store.read(&name, STORE_BYTES).unwrap().unwrap();
++            assert_uniform(&format!("cycle {cycle}: {name}"), &bytes, STORE_BYTES, None);
++        }
++    }
++    eprintln!("chaos: {landed} of {CYCLES} store kills landed mid-write");
++    assert!(
++        landed > 0,
++        "no kill landed mid-write; the test proved nothing"
++    );
++}
++
++/// One inbox part: kills a receiver, and after every kill checks what the
++/// next open leaves. With staging elsewhere, the kills aim at the commit,
++/// where the copy is. Returns how many kills left work in progress, and how
++/// many of those were mid-copy.
++fn inbox_storm(target: &Path, staging: Option<&Path>) -> (u32, u32) {
++    let (mut landed, mut mid_copy) = (0, 0);
++    let copies = target.join(STAGING_DIR);
++    let parts = |d: &Path| names(d).iter().filter(|n| n.ends_with(".part")).count();
++    for cycle in 0..CYCLES {
++        let run = spawn("inbox", target, staging);
++        match staging {
++            None => run.kill(None, delay(cycle, 40)),
++            Some(_) => run.kill(Some(COMMITTING), delay(cycle, 4)),
++        }
++        let staged = staging.map_or(0, parts);
++        let copying = parts(&copies);
++        if staged + copying > 0 {
++            landed += 1;
++        }
++        if staging.is_some() && copying > 0 {
++            mid_copy += 1;
++        }
++        // The next start.
++        drop(match staging {
++            Some(s) => Inbox::open_with_staging(target, s).unwrap(),
++            None => Inbox::open(target).unwrap(),
++        });
++        assert_eq!(names(&copies), Vec::<String>::new(), "cycle {cycle}");
++        if let Some(s) = staging {
++            assert_eq!(names(s), Vec::<String>::new(), "cycle {cycle}");
++        }
++        for name in names(target) {
++            if name == STAGING_DIR {
++                continue;
++            }
++            // `f007.bin`, or `f007 (3).bin` when the name was taken.
++            let byte: u8 = name
++                .get(1..4)
++                .and_then(|b| b.parse().ok())
++                .unwrap_or_else(|| panic!("cycle {cycle}: {name} is not a received file"));
++            let path = target.join(&name);
++            let bytes = std::fs::read(&path).unwrap();
++            assert_uniform(
++                &format!("cycle {cycle}: {name}"),
++                &bytes,
++                FILE_BYTES,
++                Some(byte),
++            );
++            // Checked; out of the way, so the disk stays small.
++            std::fs::remove_file(&path).unwrap();
++        }
++    }
++    (landed, mid_copy)
++}
++
++#[test]
++fn a_receive_killed_at_any_moment_leaves_whole_files_and_nothing_else() {
++    let dir = tempfile::tempdir().unwrap();
++    let target = dir.path().join("Sukkula");
++    let (landed, _) = inbox_storm(&target, None);
++    eprintln!("chaos: {landed} of {CYCLES} receive kills landed mid-file");
++    assert!(
++        landed > 0,
++        "no kill landed mid-file; the test proved nothing"
++    );
++}
++
++/// The copy fallback, for real: staging on `/dev/shm`, the target on disk,
++/// so the link fails with `EXDEV`. It used to create the file under its
++/// real name and copy into it, and a kill mid-copy left a truncated file
++/// that looked complete.
++#[test]
++fn a_receive_killed_mid_copy_leaves_no_partial_file_under_its_name() {
++    let dir = tempfile::tempdir().unwrap();
++    let target = dir.path().join("Sukkula");
++    std::fs::create_dir(&target).unwrap();
++    let Ok(shm) = tempfile::tempdir_in("/dev/shm") else {
++        eprintln!("chaos: SKIP the copy fallback: no /dev/shm here");
++        return;
++    };
++    let dev = |p: &Path| std::os::unix::fs::MetadataExt::dev(&std::fs::metadata(p).unwrap());
++    if dev(shm.path()) == dev(&target) {
++        eprintln!("chaos: SKIP the copy fallback: /dev/shm is the target's file system");
++        return;
++    }
++    let staging = shm.path().join("staging");
++    let (landed, mid_copy) = inbox_storm(&target, Some(&staging));
++    eprintln!("chaos: {landed} of {CYCLES} receive kills landed mid-file, {mid_copy} mid-copy");
++    assert!(
++        mid_copy > 0,
++        "no kill landed mid-copy; the test proved nothing"
++    );
++}
+-- 
+2.43.0
+

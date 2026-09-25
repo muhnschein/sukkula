@@ -1,0 +1,2366 @@
+From 0256ab6233d1ac9f26fd4335db2f8a490ae3a0c2 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 25 Sep 2026 06:49:58 +0000
+Subject: [PATCH 1/3] WIP: LocalSend review fixes
+
+---
+ crates/sukkula-engine/src/localsend/client.rs |  11 +-
+ .../sukkula-engine/src/localsend/discovery.rs | 473 +++++++++++++++--
+ .../sukkula-engine/src/localsend/identity.rs  |   9 +-
+ crates/sukkula-engine/src/localsend/mod.rs    | 130 ++++-
+ crates/sukkula-engine/src/localsend/peers.rs  | 477 ++++++++++++++++--
+ crates/sukkula-engine/src/localsend/server.rs | 331 ++++++++++--
+ .../sukkula-engine/tests/localsend_hostile.rs | 215 +++++++-
+ .../tests/localsend_loopback.rs               | 127 +++++
+ .../tests/localsend_support/mod.rs            |   8 +-
+ 9 files changed, 1634 insertions(+), 147 deletions(-)
+
+diff --git a/crates/sukkula-engine/src/localsend/client.rs b/crates/sukkula-engine/src/localsend/client.rs
+index 76c7c1a..0da41c3 100644
+--- a/crates/sukkula-engine/src/localsend/client.rs
++++ b/crates/sukkula-engine/src/localsend/client.rs
+@@ -50,8 +50,11 @@ pub(super) struct Conn {
+ /// Why a request failed, before it is mapped to what the UI shows.
+ #[derive(Debug)]
+ pub(super) enum Failure {
+-    /// The certificate was not the pinned one (F-LS3).
+-    Mismatch,
++    /// The certificate was not the pinned one (F-LS3). The fingerprint of
++    /// the one the server showed instead: what discovery learns about that
++    /// address (`discovery::Claims`). Shown, not proven -- the handshake
++    /// stopped before the server signed anything.
++    Mismatch(Option<String>),
+     /// The address is not one we talk to (S7).
+     NotPermitted,
+     /// Timed out, refused, reset, or garbled.
+@@ -64,7 +67,7 @@ impl Failure {
+     /// What the UI is told.
+     pub(super) fn into_error(self) -> ErrorInfo {
+         match self {
+-            Failure::Mismatch => ErrorInfo::new(
++            Failure::Mismatch(_) => ErrorInfo::new(
+                 ErrorCode::PeerMismatch,
+                 "the peer's certificate does not match the one it announced",
+             ),
+@@ -119,7 +122,7 @@ impl Conn {
+             .map_err(|_| Failure::Network("the TLS handshake timed out"))?;
+         let tls = match tls {
+             Ok(tls) => tls,
+-            Err(_) if verifier.mismatched() => return Err(Failure::Mismatch),
++            Err(_) if verifier.mismatched() => return Err(Failure::Mismatch(verifier.seen())),
+             Err(_) => return Err(Failure::Network("the TLS handshake failed")),
+         };
+         let fingerprint = verifier
+diff --git a/crates/sukkula-engine/src/localsend/discovery.rs b/crates/sukkula-engine/src/localsend/discovery.rs
+index 5485339..f7ac21e 100644
+--- a/crates/sukkula-engine/src/localsend/discovery.rs
++++ b/crates/sukkula-engine/src/localsend/discovery.rs
+@@ -1,23 +1,49 @@
+ //! F-LS1: multicast discovery, through the upstream crate's multicast
+-//! module, and the HTTPS register exchange that answers it.
++//! module; the HTTPS register exchange that answers it; and the HTTP
++//! register fallback.
+ //!
+ //! Upstream's `discovery` module is not used: it answers every announcement
+ //! it hears -- from any address, at any rate, over plain HTTP when the
+ //! announcement says `http` -- by spawning a register request to wherever
+ //! the announcement points. Here an announcement is screened first
+-//! ([`screen`]): the source must be permitted and within its rate (S7), the
+-//! announced protocol must be HTTPS (F-LS2), the fingerprint well-formed.
+-//! Answers are few at a time and pinned to the announced fingerprint, so
+-//! nothing is sent to a host that does not hold the announced certificate,
+-//! and a peer only enters the table after that handshake.
++//! ([`screen`]): the source must be permitted and within its budget (S7,
++//! [`Claims`]), the announced protocol must be HTTPS (F-LS2), the
++//! fingerprint well-formed. Answers are few at a time and pinned to the
++//! announced fingerprint, so nothing is sent to a host that does not hold
++//! the announced certificate, and a peer only enters the table after that
++//! handshake.
++//!
++//! # The HTTP register fallback
++//!
++//! Upstream's fallback, for networks that do not carry multicast, is a
++//! scan: a register request to every host of each `/24` of the phone's
++//! interfaces when multicast confirms nobody within a second. That is 254
++//! TLS connections per interface to hosts that never said they speak
++//! LocalSend -- a probe of every neighbour from the phone, well past what
++//! S7's per-address budget is for. Ours registers only with LocalSend
++//! servers it already knows of ([`fallback`]): peers found by multicast or
++//! in an earlier discovery, peers that registered with our server over
++//! HTTPS, and announcements that could not be answered at once. It runs
++//! when discovery starts and every [`Options::announce_interval`] after,
++//! over HTTPS only (F-LS2), pinned to the fingerprint each was known by
++//! (F-LS3), to permitted addresses only (S7), each at most once a round and
++//! a few rounds in all (`peers::Leads`). That covers multicast that gets
++//! through in one direction only, answers lost to a busy moment, and peers
++//! that stop being heard; a network with no multicast at all is covered
++//! when the other side's own scan registers with our server. A phone that
++//! only sends, on a network with no multicast, finds nobody it has not met:
++//! that is the price of not scanning.
+ //!
+ //! The multicast socket runs while receiving (so senders looking for us get
+ //! an answer) or discovering (so we hear who is there), and announces when
+ //! either starts, and periodically while discovering.
++//!
++//! [`Options::announce_interval`]: super::Options::announce_interval
+ 
++use std::collections::HashMap;
+ use std::net::{IpAddr, SocketAddr};
+ use std::sync::Arc;
+-use std::time::Duration;
++use std::time::{Duration, Instant};
+ 
+ use localsend::model::discovery::{DeviceType as LsDeviceType, MulticastMessageV2, ProtocolType};
+ use localsend::multicast::{
+@@ -25,29 +51,36 @@ use localsend::multicast::{
+     MulticastHandle,
+ };
+ use localsend::util::interface::InterfaceFilter;
++use sukkula_core::limits::{DISCOVERY_BURST, DISCOVERY_WINDOW, RATE_LIMIT_ENTRIES};
++use sukkula_core::reach::RateLimiter;
+ use tokio::sync::{Semaphore, mpsc, oneshot};
+ use tokio_util::sync::CancellationToken;
+ 
++use super::client::Failure;
+ use super::identity::Identity;
+-use super::peers::Sighting;
+-use super::{Shared, canonical, client, wire};
++use super::peers::{PEER_TTL, Sighting};
++use super::{DEFAULT_PORT, Shared, canonical, client, lock, wire};
+ 
+ /// Announcements queued between the multicast socket and us. When full,
+ /// upstream stops reading the socket and the kernel drops datagrams.
+ const QUEUE: usize = 16;
+ 
+-/// Register answers in flight at once; announcements beyond are ignored.
++/// Register answers in flight at once; announcements beyond wait for the
++/// fallback's next round. The fallback's rounds have as many again.
+ const MAX_ANSWERS: usize = 4;
+ 
+ /// An answer, connect to response, takes at most this long.
+ const ANSWER_TIMEOUT: Duration = Duration::from_secs(3);
+ 
+-/// How often discovery announces while it runs.
++/// How often discovery announces, and the fallback runs, while it runs.
+ pub(super) const ANNOUNCE_INTERVAL: Duration = Duration::from_secs(30);
+ 
+ /// How often stale peers are swept.
+ const SWEEP_INTERVAL: Duration = Duration::from_secs(10);
+ 
++/// How long what a server showed in a handshake is trusted ([`Claims`]).
++const SHOWN_TTL: Duration = PEER_TTL;
++
+ /// What we announce; a change restarts the socket with the new details.
+ #[derive(Clone, Debug, PartialEq, Eq)]
+ pub(super) struct Announced {
+@@ -67,7 +100,8 @@ pub(super) struct Multicast {
+ 
+ impl Multicast {
+     /// Binds the multicast socket on `port`. `None` when no interface can
+-    /// carry multicast: discovery then works through registrations alone.
++    /// carry multicast: discovery then works through registrations and the
++    /// fallback alone.
+     pub(super) async fn start(
+         shared: &Arc<Shared>,
+         identity: &Arc<Identity>,
+@@ -157,6 +191,126 @@ pub(super) struct Candidate {
+     pub(super) fingerprint: String,
+ }
+ 
++/// S7 for answers to announcements, and what each server showed.
++///
++/// An announcement is a UDP datagram: its source address is whatever the
++/// sender wrote, so it proves nothing, and neither does anything in it.
++/// Answering one costs the address it names a TLS handshake. So:
++///
++/// - Answers are limited per address an announcement names, in a budget of
++///   LocalSend's own. The engine's shared discovery budget
++///   (`Ctx::allow_discovery`) is for requests that came over TCP and TLS --
++///   `/register` and `/info` to our server, Quick Share's services -- and
++///   forged datagrams spending it, as they once did, hid the address they
++///   named from all of those. LocalSend's own port has a budget apart from
++///   every other port's, so a flood naming other ports cannot use it up.
++/// - A claim matching what the server at that address last showed in a
++///   handshake is answered once per [`DISCOVERY_WINDOW`], budget or none. A
++///   flood of forged claims naming a device's address can spend the budget,
++///   but the first of them we answer shows us the device's certificate (a
++///   mismatch, [`Failure::Mismatch`]), and from then on the device's own
++///   announcements, which name that certificate, get through. Forging the
++///   device's claim exactly only makes us answer the device.
++pub(super) struct Claims {
++    /// Answers to claims naming LocalSend's port, per address.
++    default_port: RateLimiter,
++    /// Answers to claims naming any other port, per address.
++    other_ports: RateLimiter,
++    /// What each server showed, at most [`RATE_LIMIT_ENTRIES`] of them.
++    shown: HashMap<SocketAddr, Shown>,
++}
++
++/// A certificate a server showed in a handshake.
++struct Shown {
++    fingerprint: String,
++    at: Instant,
++    /// When a claim naming it was last answered.
++    answered: Option<Instant>,
++}
++
++impl Default for Claims {
++    fn default() -> Self {
++        Claims {
++            default_port: RateLimiter::new(DISCOVERY_BURST, DISCOVERY_WINDOW),
++            other_ports: RateLimiter::new(DISCOVERY_BURST, DISCOVERY_WINDOW),
++            shown: HashMap::new(),
++        }
++    }
++}
++
++impl Claims {
++    /// Whether to answer an announcement claiming that the server at
++    /// `addr` holds `fingerprint`.
++    pub(super) fn admit(&mut self, addr: SocketAddr, fingerprint: &str, now: Instant) -> bool {
++        if let Some(shown) = self.shown.get_mut(&addr)
++            && now.saturating_duration_since(shown.at) < SHOWN_TTL
++            && shown.fingerprint == fingerprint
++        {
++            let recent = shown
++                .answered
++                .is_some_and(|t| now.saturating_duration_since(t) < DISCOVERY_WINDOW);
++            if !recent {
++                shown.answered = Some(now);
++            }
++            return !recent;
++        }
++        let budget = if addr.port() == DEFAULT_PORT {
++            &mut self.default_port
++        } else {
++            &mut self.other_ports
++        };
++        budget.allow(addr.ip(), now)
++    }
++
++    /// The server at `addr` showed `fingerprint` in a handshake; `proven`
++    /// when it went on to prove it, which answers it too.
++    pub(super) fn showed(
++        &mut self,
++        addr: SocketAddr,
++        fingerprint: &str,
++        proven: bool,
++        now: Instant,
++    ) {
++        if let Some(shown) = self.shown.get_mut(&addr)
++            && shown.fingerprint == fingerprint
++        {
++            shown.at = now;
++            if proven {
++                shown.answered = Some(now);
++            }
++            return;
++        }
++        if !self.shown.contains_key(&addr) && self.shown.len() >= RATE_LIMIT_ENTRIES {
++            // Forgetting costs a handshake more when the address is named
++            // again; the budget still bounds how often.
++            if let Some(stalest) = self
++                .shown
++                .iter()
++                .min_by_key(|(_, s)| s.at)
++                .map(|(addr, _)| *addr)
++            {
++                self.shown.remove(&stalest);
++            }
++        }
++        self.shown.insert(
++            addr,
++            Shown {
++                fingerprint: fingerprint.to_owned(),
++                at: now,
++                answered: proven.then_some(now),
++            },
++        );
++    }
++
++    /// Whether the server at `addr` lately showed a certificate other than
++    /// `fingerprint`: registering with it, pinned to that, would only fail.
++    pub(super) fn contradicts(&self, addr: SocketAddr, fingerprint: &str, now: Instant) -> bool {
++        self.shown.get(&addr).is_some_and(|s| {
++            now.saturating_duration_since(s.at) < SHOWN_TTL && s.fingerprint != fingerprint
++        })
++    }
++}
++
+ /// S7 and F-LS2 on one announcement. The datagram has been parsed by
+ /// upstream by now -- at most 64 KiB of JSON, the only thing read before
+ /// this check; nothing is sent and nothing is kept for one that fails it.
+@@ -174,15 +328,13 @@ pub(super) fn screen(
+         return None;
+     }
+     let (port, fingerprint) = answerable(own_fingerprint, message)?;
+-    // Last, so that only well-formed announcements spend the address's
+-    // budget.
+-    if !shared.ctx.allow_discovery(ip) {
++    let addr = SocketAddr::new(ip, port);
++    // Last, so that only well-formed announcements spend a budget -- and
++    // LocalSend's own, never the one TLS requests and Quick Share use.
++    if !lock(&shared.claims).admit(addr, &fingerprint, Instant::now()) {
+         return None;
+     }
+-    Some(Candidate {
+-        addr: SocketAddr::new(ip, port),
+-        fingerprint,
+-    })
++    Some(Candidate { addr, fingerprint })
+ }
+ 
+ /// The part of [`screen`] that looks at the announcement alone, so the
+@@ -223,6 +375,9 @@ async fn consume(
+             continue;
+         };
+         let Ok(permit) = permits.clone().try_acquire_owned() else {
++            // Busy: the fallback's next round tries it.
++            let now = Instant::now();
++            lock(&shared.leads).add(candidate.addr, &candidate.fingerprint, false, now);
+             continue;
+         };
+         let task_shared = shared.clone();
+@@ -230,48 +385,147 @@ async fn consume(
+         let task_cancel = cancel.clone();
+         shared.tasks.spawn(async move {
+             let _permit = permit;
++            let Candidate { addr, fingerprint } = candidate;
+             tokio::select! {
+                 () = task_cancel.cancelled() => {}
+-                () = answer(&task_shared, &task_identity, candidate) => {}
++                answered = reach(&task_shared, &task_identity, addr, &fingerprint) => {
++                    if answered == Answered::Silent {
++                        // No answer at all: the fallback's next round tries
++                        // again.
++                        let now = Instant::now();
++                        lock(&task_shared.leads).add(addr, &fingerprint, false, now);
++                    }
++                }
+             }
+         });
+     }
+ }
+ 
+-/// Introduces ourselves to an announcer, pinned to its announced
+-/// fingerprint, and lists it if it proves that fingerprint.
+-async fn answer(shared: &Arc<Shared>, identity: &Identity, candidate: Candidate) {
++/// How a server answered [`reach`].
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++enum Answered {
++    /// It proved the fingerprint.
++    Proved,
++    /// It showed another certificate: nothing was sent.
++    Other,
++    /// Nothing usable: no connection, a timeout, an error status.
++    Silent,
++}
++
++/// Introduces ourselves to the server at `addr`, pinned to `fingerprint`,
++/// and lists it if it proves that fingerprint. What it showed is kept
++/// ([`Claims`]) either way.
++async fn reach(
++    shared: &Arc<Shared>,
++    identity: &Identity,
++    addr: SocketAddr,
++    fingerprint: &str,
++) -> Answered {
+     let introduced = tokio::time::timeout(
+         ANSWER_TIMEOUT,
+-        client::introduce(
+-            shared,
+-            identity,
+-            candidate.addr,
+-            Some(&candidate.fingerprint),
+-        ),
++        client::introduce(shared, identity, addr, Some(fingerprint)),
+     )
+     .await;
++    let now = Instant::now();
+     match introduced {
+-        Ok(Ok((fingerprint, says))) => shared.saw_peer(&Sighting {
+-            fingerprint: &fingerprint,
+-            addr: candidate.addr,
+-            alias: &says.alias,
+-            model: says.model.as_deref(),
+-            device_type: wire::device_type(says.device_type.as_ref()),
+-        }),
+-        _ => tracing::debug!("an announcing LocalSend peer did not answer"),
++        Ok(Ok((proven, says))) => {
++            lock(&shared.claims).showed(addr, &proven, true, now);
++            shared.saw_peer(&Sighting {
++                fingerprint: &proven,
++                addr,
++                alias: &says.alias,
++                model: says.model.as_deref(),
++                device_type: wire::device_type(says.device_type.as_ref()),
++            });
++            Answered::Proved
++        }
++        Ok(Err(Failure::Mismatch(shown))) => {
++            if let Some(shown) = shown {
++                lock(&shared.claims).showed(addr, &shown, false, now);
++            }
++            lock(&shared.leads).settle(addr, fingerprint);
++            tracing::debug!("a LocalSend server showed another certificate than it was known by");
++            Answered::Other
++        }
++        _ => {
++            tracing::debug!("a LocalSend server did not answer");
++            Answered::Silent
++        }
+     }
+ }
+ 
+-/// While discovering: announce now and every [`ANNOUNCE_INTERVAL`], and
+-/// sweep peers that went quiet.
+-pub(super) async fn run(shared: Arc<Shared>, cancel: CancellationToken) {
+-    let mut announce = tokio::time::interval(ANNOUNCE_INTERVAL);
++/// One round of the HTTP register fallback (see the module doc): every
++/// peer not heard from for a round, and every lead, once, pinned.
++async fn fallback(shared: Arc<Shared>, identity: Arc<Identity>, cancel: CancellationToken) {
++    let now = Instant::now();
++    let round = shared.opts.announce_interval();
++    let quiet = lock(&shared.peers).quiet(now, round);
++    let leads = lock(&shared.leads).due(now);
++    let mut targets: Vec<(SocketAddr, String)> =
++        Vec::with_capacity(quiet.len().saturating_add(leads.len()));
++    let mut refuted = Vec::new();
++    {
++        let claims = lock(&shared.claims);
++        for target in quiet.into_iter().chain(leads) {
++            if claims.contradicts(target.0, &target.1, now) {
++                refuted.push(target);
++            } else if !targets.contains(&target) {
++                targets.push(target);
++            }
++        }
++    }
++    {
++        let mut leads = lock(&shared.leads);
++        for (addr, fingerprint) in &refuted {
++            leads.settle(*addr, fingerprint);
++        }
++    }
++    let permits = Arc::new(Semaphore::new(MAX_ANSWERS));
++    let mut running = Vec::with_capacity(targets.len());
++    for (addr, fingerprint) in targets {
++        let permit = tokio::select! {
++            () = cancel.cancelled() => break,
++            permit = permits.clone().acquire_owned() => permit,
++        };
++        let Ok(permit) = permit else { break };
++        let task_shared = shared.clone();
++        let task_identity = identity.clone();
++        let task_cancel = cancel.clone();
++        running.push(shared.tasks.spawn(async move {
++            let _permit = permit;
++            tokio::select! {
++                () = task_cancel.cancelled() => {}
++                answered = reach(&task_shared, &task_identity, addr, &fingerprint) => {
++                    if answered == Answered::Silent {
++                        lock(&task_shared.leads).missed(addr, &fingerprint);
++                    }
++                }
++            }
++        }));
++    }
++    for task in running {
++        let _ = task.await;
++    }
++}
++
++/// While discovering: announce now and every round, run the fallback beside
++/// each announcement (one round at a time), and sweep peers that went
++/// quiet.
++pub(super) async fn run(shared: Arc<Shared>, identity: Arc<Identity>, cancel: CancellationToken) {
++    let mut announce = tokio::time::interval(shared.opts.announce_interval());
+     let mut sweep = tokio::time::interval(SWEEP_INTERVAL);
++    let mut round: Option<tokio::task::JoinHandle<()>> = None;
+     loop {
+         tokio::select! {
+             () = cancel.cancelled() => break,
+             _ = announce.tick() => {
++                if round.as_ref().is_none_or(tokio::task::JoinHandle::is_finished) {
++                    round = Some(shared.tasks.spawn(fallback(
++                        shared.clone(),
++                        identity.clone(),
++                        cancel.clone(),
++                    )));
++                }
+                 if let Some(handle) = shared.multicast() {
+                     tokio::select! {
+                         () = cancel.cancelled() => break,
+@@ -282,12 +536,17 @@ pub(super) async fn run(shared: Arc<Shared>, cancel: CancellationToken) {
+             _ = sweep.tick() => shared.expire_peers(),
+         }
+     }
++    if let Some(round) = round {
++        let _ = round.await;
++    }
+ }
+ 
+ #[cfg(test)]
++#[allow(clippy::arithmetic_side_effects)] // Test scenes add times and ports.
+ mod tests {
+     use super::*;
+-    use crate::localsend::tests::shared_for_tests;
++    use crate::adapter::Adapter;
++    use crate::localsend::tests::{seeded_adapter, shared_for_tests};
+ 
+     fn message(protocol: ProtocolType, fingerprint: &str, port: u16) -> MulticastMessageV2 {
+         MulticastMessageV2 {
+@@ -302,6 +561,14 @@ mod tests {
+         }
+     }
+ 
++    fn junk(i: usize, port: u16) -> MulticastMessageV2 {
++        message(ProtocolType::Https, &format!("{i:064X}"), port)
++    }
++
++    fn burst() -> usize {
++        usize::try_from(DISCOVERY_BURST).unwrap()
++    }
++
+     #[test]
+     fn announcements_are_screened_before_anything_is_sent() {
+         let (_dir, shared) = shared_for_tests(false);
+@@ -376,11 +643,125 @@ mod tests {
+         let answered = (0..100)
+             .filter(|_| screen(&shared, &own, a, &ok).is_some())
+             .count();
+-        assert_eq!(
+-            answered,
+-            usize::try_from(sukkula_core::limits::DISCOVERY_BURST).unwrap()
+-        );
++        assert_eq!(answered, burst());
+         // Another address has its own budget.
+         assert!(screen(&shared, &own, "192.168.1.31".parse().unwrap(), &ok).is_some());
+     }
++
++    /// Datagrams forged with a device's address as their source once spent
++    /// the engine's shared budget for that address, and so hid it: its TLS
++    /// registration got 429, its Quick Share service was dropped, and its
++    /// own announcements were screened out.
++    #[test]
++    fn forged_announcements_cannot_hide_the_address_they_name() {
++        let (_dir, shared) = shared_for_tests(false);
++        shared.set_discovering(true);
++        let own = "AA".repeat(32);
++        let device: IpAddr = "192.168.1.20".parse().unwrap();
++        let real = "BB".repeat(32);
++        let forged = (0..100)
++            .filter(|i| screen(&shared, &own, device, &junk(*i, DEFAULT_PORT)).is_some())
++            .count();
++        assert_eq!(forged, burst(), "still limited per address (S7)");
++        // The budget the device's own TLS requests, and Quick Share, are
++        // held to is untouched.
++        assert!(shared.ctx.allow_discovery(device));
++
++        // The first forgery answered showed us the device's certificate...
++        let now = Instant::now();
++        let at = SocketAddr::new(device, DEFAULT_PORT);
++        lock(&shared.claims).showed(at, &real, false, now);
++        // ...so its own announcement gets through, budget or none, once
++        // per window, forgeries before and after notwithstanding.
++        let own_claim = message(ProtocolType::Https, &real, DEFAULT_PORT);
++        assert!(screen(&shared, &own, device, &own_claim).is_some());
++        for i in 100..200 {
++            assert!(screen(&shared, &own, device, &junk(i, DEFAULT_PORT)).is_none());
++        }
++        assert!(
++            screen(&shared, &own, device, &own_claim).is_none(),
++            "once per window"
++        );
++        let mut claims = lock(&shared.claims);
++        let later = now + DISCOVERY_WINDOW + Duration::from_secs(1);
++        assert!(claims.admit(at, &real, later));
++        assert!(claims.contradicts(at, &"CC".repeat(32), later));
++        assert!(!claims.contradicts(at, &real, later));
++        // What a server showed is trusted only so long.
++        assert!(!claims.contradicts(at, &"CC".repeat(32), now + SHOWN_TTL));
++    }
++
++    #[test]
++    fn claims_naming_other_ports_cannot_use_up_localsends_own() {
++        let (_dir, shared) = shared_for_tests(false);
++        shared.set_discovering(true);
++        let own = "AA".repeat(32);
++        let device: IpAddr = "192.168.1.20".parse().unwrap();
++        let forged = (0..100u16)
++            .filter(|i| screen(&shared, &own, device, &junk(usize::from(*i), 1000 + i)).is_some())
++            .count();
++        assert_eq!(forged, burst());
++        let own_claim = message(ProtocolType::Https, &"BB".repeat(32), DEFAULT_PORT);
++        assert!(screen(&shared, &own, device, &own_claim).is_some());
++    }
++
++    #[test]
++    fn what_servers_showed_is_bounded() {
++        let mut claims = Claims::default();
++        let t0 = Instant::now();
++        for i in 0..2000u32 {
++            let addr = SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::from(0x0A00_0000 | i)), 1);
++            claims.showed(addr, "X", false, t0);
++        }
++        assert!(claims.shown.len() <= RATE_LIMIT_ENTRIES);
++    }
++
++    /// The whole path, over loopback TLS: a forged claim naming a device's
++    /// address is answered, the device shows its certificate, and then the
++    /// device's own claim is answered and lists it although the forgeries
++    /// used the budget up.
++    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++    async fn a_forgery_answered_shows_the_device_it_named() {
++        let (_d1, device) = seeded_adapter(1);
++        device.start_receiving().await.unwrap();
++        let port = device.port().await.unwrap();
++        let real = device.fingerprint().await.unwrap();
++
++        let (_d2, us) = seeded_adapter(0);
++        let identity = us.identity().await.unwrap();
++        let shared = us.shared.clone();
++        shared.set_discovering(true);
++        let loopback: IpAddr = "127.0.0.1".parse().unwrap();
++        let addr = SocketAddr::new(loopback, port);
++        let own = identity.fingerprint().to_owned();
++
++        let first = screen(&shared, &own, loopback, &junk(0, port)).unwrap();
++        assert_eq!(
++            reach(&shared, &identity, first.addr, &first.fingerprint).await,
++            Answered::Other
++        );
++        assert!(
++            lock(&shared.peers)
++                .get(&wire::peer_id(&first.fingerprint))
++                .is_none()
++        );
++        while screen(&shared, &own, loopback, &junk(1, port)).is_some() {}
++        let own_claim = screen(
++            &shared,
++            &own,
++            loopback,
++            &message(ProtocolType::Https, &real, port),
++        )
++        .unwrap();
++        assert_eq!(own_claim.addr, addr);
++        assert_eq!(
++            reach(&shared, &identity, addr, &own_claim.fingerprint).await,
++            Answered::Proved
++        );
++        assert_eq!(
++            lock(&shared.peers).get(&wire::peer_id(&real)).unwrap().addr,
++            addr
++        );
++        device.stop_receiving().await;
++    }
+ }
+diff --git a/crates/sukkula-engine/src/localsend/identity.rs b/crates/sukkula-engine/src/localsend/identity.rs
+index 13ac30e..2b772ca 100644
+--- a/crates/sukkula-engine/src/localsend/identity.rs
++++ b/crates/sukkula-engine/src/localsend/identity.rs
+@@ -177,7 +177,14 @@ pub(crate) mod tests {
+         })
+     }
+ 
+-    fn seed(store: &Store, cert_of: usize, key_of: usize) {
++    /// Pre-made pair `i` as an identity.
++    pub(crate) fn pair(i: usize) -> Identity {
++        let p = &test_pairs()[i];
++        Identity::from_pem(p.certificate_pem.as_bytes(), p.private_key_pem.as_bytes()).unwrap()
++    }
++
++    /// Writes pair `cert_of`'s certificate and pair `key_of`'s key.
++    pub(crate) fn seed(store: &Store, cert_of: usize, key_of: usize) {
+         let pairs = test_pairs();
+         store
+             .write(CERT_FILE, pairs[cert_of].certificate_pem.as_bytes())
+diff --git a/crates/sukkula-engine/src/localsend/mod.rs b/crates/sukkula-engine/src/localsend/mod.rs
+index eab26bf..28b161f 100644
+--- a/crates/sukkula-engine/src/localsend/mod.rs
++++ b/crates/sukkula-engine/src/localsend/mod.rs
+@@ -29,12 +29,12 @@
+ //!
+ //! # Lifecycle
+ //!
+-//! Receiving runs the HTTPS server; discovery runs announcements and the
+-//! peer table; the multicast socket runs while either does. Every task is
+-//! tracked, and every one selects on a token that the engine's shutdown
+-//! cancels. Stopping receiving with a transfer running lets that transfer
+-//! finish (the adapter contract) but serves only its sender; the listener
+-//! closes when it ends.
++//! Receiving runs the HTTPS server; discovery runs announcements, the HTTP
++//! register fallback and the peer table; the multicast socket runs while
++//! either does. Every task is tracked, and every one selects on a token
++//! that the engine's shutdown cancels. Stopping receiving with a transfer
++//! running lets that transfer finish (the adapter contract) but serves
++//! only its sender; the listener closes when it ends.
+ 
+ mod client;
+ mod discovery;
+@@ -60,9 +60,9 @@ use tokio::sync::{Mutex as AsyncMutex, OnceCell};
+ use tokio_util::sync::CancellationToken;
+ use tokio_util::task::TaskTracker;
+ 
+-use self::discovery::{Announced, Multicast};
++use self::discovery::{Announced, Claims, Multicast};
+ use self::identity::Identity;
+-use self::peers::{Peers, Sighting};
++use self::peers::{Leads, Peers, Sighting};
+ use self::server::Server;
+ use crate::adapter::{Adapter, BoxFuture, Outgoing};
+ use crate::api::{Direction, ErrorCode, ErrorInfo, Event, Peer, SendTarget, TransferId};
+@@ -94,8 +94,15 @@ pub struct Options {
+     /// Longest a sender waits for the receiving user to answer. Capped at
+     /// [`OFFER_TIMEOUT`] plus [`NETWORK_IDLE_TIMEOUT`].
+     pub prepare_timeout: Duration,
++    /// How often discovery announces itself and runs a round of the HTTP
++    /// register fallback. At least [`MIN_ANNOUNCE_INTERVAL`], so no peer is
++    /// asked more than once a second.
++    pub announce_interval: Duration,
+ }
+ 
++/// The shortest [`Options::announce_interval`].
++pub const MIN_ANNOUNCE_INTERVAL: Duration = Duration::from_secs(1);
++
+ impl Default for Options {
+     fn default() -> Self {
+         Options {
+@@ -105,6 +112,7 @@ impl Default for Options {
+             idle_timeout: NETWORK_IDLE_TIMEOUT,
+             handshake_timeout: HANDSHAKE_TIMEOUT,
+             prepare_timeout: max_prepare_timeout(),
++            announce_interval: discovery::ANNOUNCE_INTERVAL,
+         }
+     }
+ }
+@@ -141,6 +149,10 @@ impl Options {
+     fn prepare_timeout(&self) -> Duration {
+         self.prepare_timeout.min(max_prepare_timeout())
+     }
++
++    fn announce_interval(&self) -> Duration {
++        self.announce_interval.max(MIN_ANNOUNCE_INTERVAL)
++    }
+ }
+ 
+ /// The adapter, as the hub uses it.
+@@ -176,6 +188,8 @@ pub fn adapter_with(ctx: Arc<Ctx>, opts: Options) -> Arc<LocalSend> {
+             receiving: AtomicBool::new(false),
+             discovering: AtomicBool::new(false),
+             peers: Mutex::new(Peers::default()),
++            leads: Mutex::new(Leads::default()),
++            claims: Mutex::new(Claims::default()),
+             outgoing: Mutex::new(HashMap::new()),
+             multicast: Mutex::new(None),
+         }),
+@@ -209,6 +223,12 @@ pub(crate) struct Shared {
+     /// The port we tell peers our server is on.
+     port: AtomicU16,
+     peers: Mutex<Peers>,
++    /// Servers the HTTP register fallback registers with. Kept across
++    /// discovery sessions, unlike `peers`.
++    leads: Mutex<Leads>,
++    /// The budget announcements are answered from, and what each server
++    /// showed (S7).
++    claims: Mutex<Claims>,
+     /// Sends in flight, so a receiver's `POST /cancel` can reach them.
+     outgoing: Mutex<HashMap<TransferId, OutgoingSend>>,
+     /// The current multicast handle, for announcing.
+@@ -296,15 +316,25 @@ impl Shared {
+         }
+     }
+ 
+-    /// A peer proved its fingerprint; list it while discovering.
++    /// A peer proved its fingerprint: list it while discovering. When not
++    /// discovering, or when the table has no room for it, keep it as a lead
++    /// for the fallback, so the next discovery registers with it.
+     fn saw_peer(&self, sighting: &Sighting<'_>) {
+-        if !self.discovering() {
+-            return;
+-        }
+-        let found = lock(&self.peers).upsert(sighting, Instant::now());
+-        if let Some(peer) = found {
+-            self.ctx.emit(Event::PeerFound { peer });
++        let now = Instant::now();
++        if self.discovering() {
++            let upsert = lock(&self.peers).upsert(sighting, now);
++            if let Some(peer) = upsert.lost {
++                self.ctx.emit(Event::PeerLost { peer });
++            }
++            if let Some(peer) = upsert.found {
++                self.ctx.emit(Event::PeerFound { peer });
++            }
++            if upsert.listed {
++                lock(&self.leads).settle(sighting.addr, sighting.fingerprint);
++                return;
++            }
+         }
++        lock(&self.leads).add(sighting.addr, sighting.fingerprint, true, now);
+     }
+ 
+     fn expire_peers(&self) {
+@@ -314,9 +344,18 @@ impl Shared {
+         }
+     }
+ 
++    /// Forgets every peer; each stays a lead, so the next discovery asks
++    /// them first (F-LS1's fallback).
+     fn clear_peers(&self) {
+         let lost = lock(&self.peers).clear();
+-        for peer in lost {
++        let now = Instant::now();
++        {
++            let mut leads = lock(&self.leads);
++            for (_, target) in &lost {
++                leads.add(target.addr, &target.fingerprint, true, now);
++            }
++        }
++        for (peer, _) in lost {
+             self.ctx.emit(Event::PeerLost { peer });
+         }
+     }
+@@ -469,6 +508,7 @@ pub fn from_peer(
+         };
+         Peers::default()
+             .upsert(&sighting, Instant::now())
++            .found
+             .map(|peer| FromPeer::Peer { peer, port })
+     };
+     match kind {
+@@ -591,6 +631,10 @@ impl LocalSend {
+     /// address (LocalSend's "favourites"). The certificate is trusted on
+     /// first use and pinned from then on. Returns the peer id.
+     ///
++    /// No command reaches this; discovery finds peers by multicast and the
++    /// HTTP register fallback. It is kept for the tests that set up a peer
++    /// by address, as a favourite would be.
++    ///
+     /// # Errors
+     ///
+     /// Not discovering, the address is not permitted (S7), or the device did
+@@ -654,15 +698,14 @@ impl Adapter for LocalSend {
+         Box::pin(async move {
+             let identity = self.identity().await?;
+             let mut state = self.state.lock().await;
+-            match state.server.as_ref() {
+-                Some(server) if !server.stopped() => server.resume(),
+-                _ => {
+-                    if let Some(old) = state.server.take() {
+-                        old.wait().await;
+-                    }
+-                    state.server =
+-                        Some(Server::start(self.shared.clone(), identity.clone()).await?);
++            // A draining server takes offers again, unless it stopped --
++            // decided in one step, since its last session can end at any
++            // moment (`Server::resume`).
++            if !state.server.as_ref().is_some_and(Server::resume) {
++                if let Some(old) = state.server.take() {
++                    old.wait().await;
+                 }
++                state.server = Some(Server::start(self.shared.clone(), identity.clone()).await?);
+             }
+             self.shared.receiving.store(true, Ordering::Release);
+             self.update_multicast(&mut state, &identity).await;
+@@ -698,10 +741,11 @@ impl Adapter for LocalSend {
+             self.update_multicast(&mut state, &identity).await;
+             if state.discovery.is_none() {
+                 let cancel = self.shared.ctx.shutdown_token().child_token();
+-                let task = self
+-                    .shared
+-                    .tasks
+-                    .spawn(discovery::run(self.shared.clone(), cancel.clone()));
++                let task = self.shared.tasks.spawn(discovery::run(
++                    self.shared.clone(),
++                    identity.clone(),
++                    cancel.clone(),
++                ));
+                 state.discovery = Some((cancel, task));
+             }
+             Ok(())
+@@ -798,17 +842,47 @@ pub(crate) mod tests {
+         (dir, adapter.shared.clone())
+     }
+ 
++    /// An adapter over a throwaway context that answers loopback, with the
++    /// pre-made identity `pair` and [`Options::hermetic`] with short
++    /// timeouts.
++    pub(crate) fn seeded_adapter(pair: usize) -> (tempfile::TempDir, Arc<LocalSend>) {
++        let dir = tempfile::tempdir().unwrap();
++        let store = Store::open(&dir.path().join("data")).unwrap();
++        identity::tests::seed(&store, pair, pair);
++        let inbox = Inbox::open(&dir.path().join("dl")).unwrap();
++        let consent = ConsentBroker::new(Arc::new(|_| {}));
++        let ctx = Arc::new(Ctx::new(
++            Settings::default(),
++            "Test".into(),
++            store,
++            inbox,
++            consent,
++            ReachPolicy {
++                allow_loopback: true,
++            },
++            Arc::new(|_| {}),
++        ));
++        let opts = Options {
++            idle_timeout: Duration::from_secs(5),
++            handshake_timeout: Duration::from_secs(5),
++            ..Options::hermetic()
++        };
++        (dir, adapter_with(ctx, opts))
++    }
++
+     #[test]
+     fn timeouts_never_exceed_the_spec() {
+         let o = Options {
+             idle_timeout: Duration::from_secs(3600),
+             handshake_timeout: Duration::from_secs(3600),
+             prepare_timeout: Duration::from_secs(3600),
++            announce_interval: Duration::ZERO,
+             ..Options::default()
+         };
+         assert_eq!(o.idle_timeout(), NETWORK_IDLE_TIMEOUT);
+         assert_eq!(o.handshake_timeout(), HANDSHAKE_TIMEOUT);
+         assert_eq!(o.prepare_timeout(), max_prepare_timeout());
++        assert_eq!(o.announce_interval(), MIN_ANNOUNCE_INTERVAL);
+     }
+ 
+     #[test]
+diff --git a/crates/sukkula-engine/src/localsend/peers.rs b/crates/sukkula-engine/src/localsend/peers.rs
+index e92f3ee..43bd270 100644
+--- a/crates/sukkula-engine/src/localsend/peers.rs
++++ b/crates/sukkula-engine/src/localsend/peers.rs
+@@ -1,13 +1,27 @@
+-//! The peers discovery found (F-LS1), at most [`MAX_PEERS`] of them.
++//! The peers discovery found (F-LS1), at most [`MAX_PEERS`] of them, and the
++//! leads its HTTP fallback registers with.
+ //!
+ //! A peer is keyed by its certificate fingerprint, which it has proven by
+ //! completing a TLS handshake with it -- announcements alone never put a peer
+-//! here. When the table is full a new peer is not admitted until a stale one
+-//! expires: evicting on arrival would let a flood of fresh certificates push
+-//! out the phone the user is about to send to.
++//! here. The addresses a table holds are the peers' own: we connected to
++//! them, or they connected to us. So one address may hold at most
++//! [`MAX_PEERS_PER_IP`] entries, and when the table is full a newcomer
++//! replaces the stalest entry of the address holding the most, if that
++//! address holds at least two more than the newcomer's ([`make_room`]).
++//! One address -- one attacker minting certificates -- can then never push
++//! out a peer at another address, and pushing out a peer at all takes
++//! [`MAX_PEERS`] addresses. Plain first-come, as this once was, let one
++//! address fill the table with certificates of its own and keep every
++//! device that came later off the list.
++//!
++//! [`Leads`] are servers to register with in the fallback's rounds: peers
++//! found before, peers that registered with us, announcements that could
++//! not be answered at once. Leads a handshake proved rank above leads that
++//! only an announcement named: those are unauthenticated datagrams, and a
++//! flood of them must not push out a peer that proved itself.
+ 
+ use std::collections::HashMap;
+-use std::net::SocketAddr;
++use std::net::{IpAddr, SocketAddr};
+ use std::time::{Duration, Instant};
+ 
+ use sukkula_core::Protocol;
+@@ -20,6 +34,23 @@ use crate::api::{DeviceType, Peer};
+ /// re-announces well within this, and every peer that answers is refreshed.
+ pub(super) const PEER_TTL: Duration = Duration::from_secs(100);
+ 
++/// Peers listed from one address at once. More than one, for a computer
++/// running LocalSend twice; few, so one address cannot fill the list.
++pub(super) const MAX_PEERS_PER_IP: usize = 4;
++
++/// Leads kept at once.
++pub(super) const MAX_LEADS: usize = 32;
++
++/// Leads kept for one address at once.
++pub(super) const MAX_LEADS_PER_IP: usize = 4;
++
++/// Rounds a lead is tried without an answer before it is dropped.
++pub(super) const MAX_LEAD_TRIES: u8 = 3;
++
++/// How long a lead is kept, answered or not: the phone moves between
++/// networks, and an address on the last one means nothing on this one.
++pub(super) const LEAD_TTL: Duration = Duration::from_secs(600);
++
+ /// Everything needed to send to a peer.
+ #[derive(Clone, Debug, PartialEq, Eq)]
+ pub(super) struct Target {
+@@ -53,11 +84,21 @@ pub(super) struct Sighting<'a> {
+     pub(super) device_type: DeviceType,
+ }
+ 
++/// What [`Peers::upsert`] did.
++#[derive(Debug, Default, PartialEq, Eq)]
++pub(super) struct Upsert {
++    /// The peer is in the table now.
++    pub(super) listed: bool,
++    /// The peer to announce with `PeerFound`: new, or changed in what the
++    /// UI shows.
++    pub(super) found: Option<Peer>,
++    /// The id of the peer it replaced, to announce with `PeerLost`.
++    pub(super) lost: Option<String>,
++}
++
+ impl Peers {
+-    /// Adds or refreshes a peer. Returns the peer to announce with
+-    /// `PeerFound` when it is new or changed; `None` when nothing the UI
+-    /// shows changed, or when the table is full.
+-    pub(super) fn upsert(&mut self, s: &Sighting<'_>, now: Instant) -> Option<Peer> {
++    /// Adds or refreshes a peer.
++    pub(super) fn upsert(&mut self, s: &Sighting<'_>, now: Instant) -> Upsert {
+         let peer = Peer {
+             id: wire::peer_id(s.fingerprint),
+             protocol: Protocol::LocalSend,
+@@ -71,17 +112,38 @@ impl Peers {
+             name: peer.name.clone(),
+         };
+         if let Some(entry) = self.by_fingerprint.get_mut(s.fingerprint) {
++            // A peer that moved keeps its entry: the certificate is the
++            // identity, and only its holder can prove it from anywhere.
+             entry.seen = now;
+             entry.target = target;
+-            if entry.peer == peer {
+-                return None;
+-            }
+-            entry.peer = peer.clone();
+-            return Some(peer);
+-        }
+-        if self.by_fingerprint.len() >= MAX_PEERS {
+-            return None;
++            let found = (entry.peer != peer).then(|| peer.clone());
++            entry.peer = peer;
++            return Upsert {
++                listed: true,
++                found,
++                lost: None,
++            };
+         }
++        let victim = {
++            let slots: Vec<Slot<'_, String>> = self
++                .by_fingerprint
++                .iter()
++                .map(|(key, e)| Slot {
++                    key,
++                    ip: e.target.addr.ip(),
++                    rank: 0,
++                    seen: e.seen,
++                })
++                .collect();
++            match make_room(&slots, s.addr.ip(), 0, MAX_PEERS, MAX_PEERS_PER_IP) {
++                Room::Free => None,
++                Room::Replace(key) => Some(key.clone()),
++                Room::Full => return Upsert::default(),
++            }
++        };
++        let lost = victim
++            .and_then(|key| self.by_fingerprint.remove(&key))
++            .map(|e| e.peer.id);
+         self.by_fingerprint.insert(
+             s.fingerprint.to_owned(),
+             Entry {
+@@ -90,7 +152,11 @@ impl Peers {
+                 seen: now,
+             },
+         );
+-        Some(peer)
++        Upsert {
++            listed: true,
++            found: Some(peer),
++            lost,
++        }
+     }
+ 
+     /// Removes peers not seen for [`PEER_TTL`]; returns their ids.
+@@ -106,11 +172,21 @@ impl Peers {
+         lost
+     }
+ 
+-    /// Forgets everyone; returns their ids.
+-    pub(super) fn clear(&mut self) -> Vec<String> {
++    /// Forgets everyone; returns their ids and where they were.
++    pub(super) fn clear(&mut self) -> Vec<(String, Target)> {
+         self.by_fingerprint
+             .drain()
+-            .map(|(_, e)| e.peer.id)
++            .map(|(_, e)| (e.peer.id, e.target))
++            .collect()
++    }
++
++    /// Peers not heard from for `age`: where they are and the certificate
++    /// to pin, for the fallback to register with again.
++    pub(super) fn quiet(&self, now: Instant, age: Duration) -> Vec<(SocketAddr, String)> {
++        self.by_fingerprint
++            .values()
++            .filter(|e| now.saturating_duration_since(e.seen) >= age)
++            .map(|e| (e.target.addr, e.target.fingerprint.clone()))
+             .collect()
+     }
+ 
+@@ -129,18 +205,201 @@ impl Peers {
+     }
+ }
+ 
++/// A LocalSend server the fallback registers with.
++#[derive(Debug)]
++struct Lead {
++    /// A handshake proved the fingerprint: a peer found before, or one that
++    /// registered with us. Otherwise only an announcement named it.
++    proven: bool,
++    /// Rounds it was tried in without an answer.
++    tries: u8,
++    /// When it was first kept; it goes [`LEAD_TTL`] after.
++    since: Instant,
++}
++
++/// The leads, keyed by address and the fingerprint to pin there.
++#[derive(Debug, Default)]
++pub(super) struct Leads {
++    by_key: HashMap<(SocketAddr, String), Lead>,
++}
++
++impl Leads {
++    /// Keeps `fingerprint` at `addr` to register with. False when there is
++    /// no room for it ([`make_room`]).
++    pub(super) fn add(
++        &mut self,
++        addr: SocketAddr,
++        fingerprint: &str,
++        proven: bool,
++        now: Instant,
++    ) -> bool {
++        let key = (addr, fingerprint.to_owned());
++        if let Some(lead) = self.by_key.get_mut(&key) {
++            // Not a fresh start: a lead named again keeps its age and its
++            // failures, so repeating it cannot keep it alive.
++            lead.proven |= proven;
++            return true;
++        }
++        let victim = {
++            let slots: Vec<Slot<'_, (SocketAddr, String)>> = self
++                .by_key
++                .iter()
++                .map(|(key, lead)| Slot {
++                    key,
++                    ip: key.0.ip(),
++                    rank: u8::from(lead.proven),
++                    seen: lead.since,
++                })
++                .collect();
++            let rank = u8::from(proven);
++            match make_room(&slots, addr.ip(), rank, MAX_LEADS, MAX_LEADS_PER_IP) {
++                Room::Free => None,
++                Room::Replace(key) => Some(key.clone()),
++                Room::Full => return false,
++            }
++        };
++        if let Some(victim) = victim {
++            self.by_key.remove(&victim);
++        }
++        self.by_key.insert(
++            key,
++            Lead {
++                proven,
++                tries: 0,
++                since: now,
++            },
++        );
++        true
++    }
++
++    /// Every lead for this round, after dropping those past [`LEAD_TTL`].
++    pub(super) fn due(&mut self, now: Instant) -> Vec<(SocketAddr, String)> {
++        self.by_key
++            .retain(|_, lead| now.saturating_duration_since(lead.since) < LEAD_TTL);
++        self.by_key.keys().cloned().collect()
++    }
++
++    /// The server at `addr` proved `fingerprint`, or showed another: either
++    /// way there is nothing left to try there under that fingerprint.
++    pub(super) fn settle(&mut self, addr: SocketAddr, fingerprint: &str) {
++        self.by_key.remove(&(addr, fingerprint.to_owned()));
++    }
++
++    /// No answer this round; dropped after [`MAX_LEAD_TRIES`].
++    pub(super) fn missed(&mut self, addr: SocketAddr, fingerprint: &str) {
++        let key = (addr, fingerprint.to_owned());
++        if let Some(lead) = self.by_key.get_mut(&key) {
++            lead.tries = lead.tries.saturating_add(1);
++            if lead.tries >= MAX_LEAD_TRIES {
++                self.by_key.remove(&key);
++            }
++        }
++    }
++
++    /// How many leads are kept.
++    #[cfg(test)]
++    pub(super) fn len(&self) -> usize {
++        self.by_key.len()
++    }
++
++    /// Whether this lead is kept.
++    #[cfg(test)]
++    pub(super) fn has(&self, addr: SocketAddr, fingerprint: &str) -> bool {
++        self.by_key.contains_key(&(addr, fingerprint.to_owned()))
++    }
++}
++
++/// One entry of a bounded table, as [`make_room`] weighs it.
++struct Slot<'a, K> {
++    key: &'a K,
++    /// The address the entry is for: its own, never one it claimed.
++    ip: IpAddr,
++    /// How well it is proven; a newcomer never replaces a better one.
++    rank: u8,
++    /// Its age: the stalest goes first.
++    seen: Instant,
++}
++
++/// Where a newcomer goes.
++#[derive(Debug, PartialEq, Eq)]
++enum Room<'a, K> {
++    /// There is room.
++    Free,
++    /// It replaces this entry.
++    Replace(&'a K),
++    /// It is not admitted.
++    Full,
++}
++
++/// Room for a newcomer from `ip` of `rank`, in a table of at most `cap`
++/// entries and at most `per_ip` for one address.
++///
++/// - An address at its share replaces its own stalest entry -- never
++///   someone else's, and never a better-proven one.
++/// - A full table gives up its weakest, stalest entry of the address that
++///   holds the most, when that entry ranks below the newcomer, or ranks the
++///   same and its address holds at least two more entries than the
++///   newcomer's. Otherwise the newcomer is refused: among addresses that
++///   share the table evenly, first come stays, so a flood of fresh
++///   certificates cannot push out the phone the user is about to send to.
++fn make_room<'a, K>(
++    slots: &[Slot<'a, K>],
++    ip: IpAddr,
++    rank: u8,
++    cap: usize,
++    per_ip: usize,
++) -> Room<'a, K> {
++    let own = slots.iter().filter(|s| s.ip == ip);
++    let held = own.clone().count();
++    if held >= per_ip {
++        return own
++            .filter(|s| s.rank <= rank)
++            .min_by_key(|s| s.seen)
++            .map_or(Room::Full, |s| Room::Replace(s.key));
++    }
++    if slots.len() < cap {
++        return Room::Free;
++    }
++    let mut counts: HashMap<IpAddr, usize> = HashMap::new();
++    for s in slots {
++        let n = counts.entry(s.ip).or_insert(0);
++        *n = n.saturating_add(1);
++    }
++    let count = |ip: &IpAddr| counts.get(ip).copied().unwrap_or(0);
++    slots
++        .iter()
++        .filter(|s| s.rank < rank || (s.rank == rank && count(&s.ip) >= held.saturating_add(2)))
++        .min_by(|a, b| {
++            a.rank
++                .cmp(&b.rank)
++                .then_with(|| count(&b.ip).cmp(&count(&a.ip)))
++                .then_with(|| a.seen.cmp(&b.seen))
++        })
++        .map_or(Room::Full, |s| Room::Replace(s.key))
++}
++
+ #[cfg(test)]
++#[allow(clippy::arithmetic_side_effects)] // Test scenes count and add times.
+ mod tests {
+     use super::*;
++    use std::net::Ipv4Addr;
+ 
+     fn fp(i: usize) -> String {
+         format!("{i:064X}")
+     }
+ 
++    fn at(host: u8) -> SocketAddr {
++        SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, host)), 53317)
++    }
++
+     fn sighting<'a>(fingerprint: &'a str, alias: &'a str) -> Sighting<'a> {
++        from(fingerprint, alias, at(9))
++    }
++
++    fn from<'a>(fingerprint: &'a str, alias: &'a str, addr: SocketAddr) -> Sighting<'a> {
+         Sighting {
+             fingerprint,
+-            addr: "192.168.1.9:53317".parse().unwrap(),
++            addr,
+             alias,
+             model: Some("\u{202E}Model"),
+             device_type: DeviceType::Phone,
+@@ -154,16 +413,18 @@ mod tests {
+         let f = fp(1);
+         let found = peers
+             .upsert(&sighting(&f, "Pekka\u{200B}\u{202E}"), t0)
++            .found
+             .unwrap();
+         assert_eq!(found.id, format!("ls:{f}"));
+         assert_eq!(found.name, "Pekka");
+         assert_eq!(found.model.as_deref(), Some("Model"));
+-        assert!(
+-            peers.upsert(&sighting(&f, "Pekka"), t0).is_none(),
+-            "unchanged"
+-        );
++        let again = peers.upsert(&sighting(&f, "Pekka"), t0);
++        assert!(again.listed && again.found.is_none(), "unchanged");
+         assert_eq!(
+-            peers.upsert(&sighting(&f, "Liisa"), t0).map(|p| p.name),
++            peers
++                .upsert(&sighting(&f, "Liisa"), t0)
++                .found
++                .map(|p| p.name),
+             Some("Liisa".to_owned())
+         );
+         assert_eq!(peers.get(&found.id).unwrap().fingerprint, f);
+@@ -175,16 +436,166 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn the_table_is_bounded_and_keeps_who_it_has() {
++    fn one_address_cannot_fill_the_table() {
+         let mut peers = Peers::default();
+         let t0 = Instant::now();
+         let fps: Vec<String> = (0..MAX_PEERS + 10).map(fp).collect();
+-        for f in &fps {
+-            peers.upsert(&sighting(f, "x"), t0);
++        // One address minting certificates keeps only its share, replacing
++        // its own stalest each time.
++        for (i, f) in fps.iter().enumerate() {
++            let s = Duration::from_secs(u64::try_from(i).unwrap());
++            let u = peers.upsert(&from(f, "x", at(66)), t0 + s);
++            assert!(u.listed);
++            if i >= MAX_PEERS_PER_IP {
++                assert_eq!(u.lost, Some(format!("ls:{}", fps[i - MAX_PEERS_PER_IP])));
++            }
++        }
++        assert_eq!(peers.len(), MAX_PEERS_PER_IP);
++        // Everyone else still gets in.
++        let honest = fp(1000);
++        assert!(peers.upsert(&from(&honest, "Pekka", at(10)), t0).listed);
++        assert_eq!(peers.clear().len(), MAX_PEERS_PER_IP + 1);
++    }
++
++    #[test]
++    fn a_full_table_makes_room_from_the_address_holding_most() {
++        let mut peers = Peers::default();
++        let t0 = Instant::now();
++        let mut n: usize = 0;
++        // Sixteen addresses with four peers each: the table is full.
++        for host in 0..16u8 {
++            for _ in 0..MAX_PEERS_PER_IP {
++                let s = Duration::from_millis(u64::try_from(n).unwrap());
++                assert!(
++                    peers
++                        .upsert(&from(&fp(n), "x", at(100 + host)), t0 + s)
++                        .listed
++                );
++                n += 1;
++            }
+         }
+         assert_eq!(peers.len(), MAX_PEERS);
+-        assert!(peers.get(&format!("ls:{}", fps[0])).is_some());
+-        assert!(peers.get(&format!("ls:{}", fps[MAX_PEERS])).is_none());
+-        assert_eq!(peers.clear().len(), MAX_PEERS);
++        // A newcomer from a fresh address replaces the stalest peer of the
++        // addresses that hold most: the first one listed.
++        let later = t0 + Duration::from_secs(60);
++        let honest = fp(5000);
++        let u = peers.upsert(&from(&honest, "Pekka", at(1)), later);
++        assert!(u.listed);
++        assert_eq!(u.lost, Some(format!("ls:{}", fp(0))));
++        assert_eq!(peers.len(), MAX_PEERS);
++        // Sixteen more newcomers each take a place from the addresses that
++        // hold the most; the address holding one place keeps it.
++        for i in 0..16usize {
++            let u = peers.upsert(
++                &from(&fp(6000 + i), "y", at(2 + u8::try_from(i).unwrap())),
++                later,
++            );
++            assert!(u.listed, "{i}");
++        }
++        assert!(peers.get(&format!("ls:{honest}")).is_some());
++    }
++
++    #[test]
++    fn among_equals_first_come_stays() {
++        let mut peers = Peers::default();
++        let t0 = Instant::now();
++        // As many addresses as places, one peer each.
++        for i in 0..MAX_PEERS {
++            let host = u8::try_from(i).unwrap();
++            assert!(peers.upsert(&from(&fp(i), "x", at(host)), t0).listed);
++        }
++        let u = peers.upsert(&from(&fp(999), "late", at(200)), t0);
++        assert_eq!(u, Upsert::default(), "no one is pushed out");
++        assert!(peers.get(&format!("ls:{}", fp(0))).is_some());
++    }
++
++    #[test]
++    fn a_moved_peer_keeps_its_entry() {
++        let mut peers = Peers::default();
++        let t0 = Instant::now();
++        let f = fp(7);
++        peers.upsert(&from(&f, "x", at(1)), t0);
++        let u = peers.upsert(&from(&f, "x", at(2)), t0);
++        assert!(u.listed && u.found.is_none() && u.lost.is_none());
++        assert_eq!(peers.get(&format!("ls:{f}")).unwrap().addr, at(2));
++        assert_eq!(peers.quiet(t0 + PEER_TTL, PEER_TTL), vec![(at(2), f)]);
++        assert!(peers.quiet(t0, PEER_TTL).is_empty());
++    }
++
++    #[test]
++    fn announced_leads_never_push_out_proven_ones() {
++        let mut leads = Leads::default();
++        let t0 = Instant::now();
++        // Proven leads, spread over addresses, fill every place.
++        for i in 0..MAX_LEADS {
++            let host = u8::try_from(i / 2).unwrap();
++            assert!(leads.add(at(host), &fp(i), true, t0));
++        }
++        // A flood of announcements naming any address gets nowhere.
++        for i in 0..1000 {
++            let host = u8::try_from(i % 250).unwrap();
++            assert!(!leads.add(at(host), &fp(10_000 + i), false, t0));
++        }
++        assert_eq!(leads.len(), MAX_LEADS);
++        assert!(leads.has(at(0), &fp(0)));
++
++        // Announced leads fill what proven ones leave, and give way to them.
++        let mut leads = Leads::default();
++        for i in 0..MAX_LEADS {
++            let host = u8::try_from(i).unwrap();
++            assert!(leads.add(at(host), &fp(i), false, t0));
++        }
++        assert!(leads.add(at(200), &fp(99), true, t0 + Duration::from_secs(1)));
++        assert!(leads.has(at(200), &fp(99)));
++        assert_eq!(leads.len(), MAX_LEADS);
++    }
++
++    #[test]
++    fn one_address_gets_its_share_of_leads() {
++        let mut leads = Leads::default();
++        let t0 = Instant::now();
++        for i in 0..100 {
++            let s = Duration::from_millis(u64::try_from(i).unwrap());
++            assert!(leads.add(at(66), &fp(i), false, t0 + s));
++        }
++        assert_eq!(leads.len(), MAX_LEADS_PER_IP);
++        // A proven lead from that address takes a place from its announced
++        // ones; announced ones then cannot take it back.
++        assert!(leads.add(at(66), &fp(500), true, t0 + Duration::from_secs(1)));
++        for i in 0..MAX_LEADS_PER_IP {
++            leads.add(at(66), &fp(600 + i), false, t0 + Duration::from_secs(2));
++        }
++        assert!(leads.has(at(66), &fp(500)));
++        assert!(
++            leads.add(at(67), &fp(1), false, t0),
++            "another address has room"
++        );
++    }
++
++    #[test]
++    fn leads_are_tried_a_few_times_and_expire() {
++        let mut leads = Leads::default();
++        let t0 = Instant::now();
++        let f = fp(1);
++        assert!(leads.add(at(1), &f, false, t0));
++        for _ in 1..MAX_LEAD_TRIES {
++            leads.missed(at(1), &f);
++            // Named again, it keeps its failures.
++            leads.add(at(1), &f, false, t0);
++            assert!(leads.has(at(1), &f));
++        }
++        leads.missed(at(1), &f);
++        assert!(
++            !leads.has(at(1), &f),
++            "dropped after {MAX_LEAD_TRIES} misses"
++        );
++
++        assert!(leads.add(at(2), &f, true, t0));
++        assert_eq!(leads.due(t0 + LEAD_TTL / 2), vec![(at(2), f.clone())]);
++        assert!(leads.due(t0 + LEAD_TTL).is_empty());
++
++        assert!(leads.add(at(3), &f, false, t0));
++        leads.settle(at(3), &f);
++        assert_eq!(leads.len(), 0);
+     }
+ }
+diff --git a/crates/sukkula-engine/src/localsend/server.rs b/crates/sukkula-engine/src/localsend/server.rs
+index 273a3c4..07d0766 100644
+--- a/crates/sukkula-engine/src/localsend/server.rs
++++ b/crates/sukkula-engine/src/localsend/server.rs
+@@ -13,7 +13,10 @@
+ //!    deadline.
+ //! 3. **HTTP/1.1 head**: at most [`MAX_BUF_BYTES`] and [`MAX_HEADERS`], read
+ //!    within the handshake timeout; an idle keep-alive connection ends on
+-//!    the same timer.
++//!    the same timer. A response that cannot be written for the idle
++//!    timeout ends the connection ([`WriteDeadline`]), and a connection
++//!    that carries no offer or session of its own ends after
++//!    [`lifetime`], however busy it keeps.
+ //! 4. **Routing**: the v2 endpoints only. Every other path is a 404 whose
+ //!    body is never read.
+ //! 5. **JSON bodies** (S4, S6): at most 64 KiB, with an idle timeout and an
+@@ -28,9 +31,12 @@
+ 
+ use std::collections::HashMap;
+ use std::convert::Infallible;
++use std::future::Future;
+ use std::net::{IpAddr, SocketAddr};
++use std::pin::Pin;
+ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
++use std::task::{Context, Poll};
+ use std::time::{Duration, Instant};
+ 
+ use bytes::Bytes;
+@@ -52,6 +58,7 @@ use sukkula_core::consent::Refusal;
+ use sukkula_core::limits::RATE_LIMIT_ENTRIES;
+ use sukkula_core::offer::{OfferFile, RawFile, RawOffer};
+ use sukkula_core::reach::RateLimiter;
++use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+ use tokio::net::{TcpListener, TcpStream};
+ use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
+ use tokio_rustls::TlsAcceptor;
+@@ -211,22 +218,7 @@ impl Server {
+             .map_err(|_| ErrorInfo::new(ErrorCode::Network, "the LocalSend port is not available"))?
+             .port();
+         shared.set_port(port);
+-        let stop = shared.ctx.shutdown_token().child_token();
+-        let inner = Arc::new(Inner {
+-            shared: shared.clone(),
+-            identity,
+-            acceptor: TlsAcceptor::from(config),
+-            accepting: AtomicBool::new(true),
+-            drain: Mutex::new(CancellationToken::new()),
+-            closing: stop.child_token(),
+-            stop,
+-            slot: Mutex::new(Slot::Free),
+-            per_ip: Mutex::new(HashMap::new()),
+-            connect_limiter: Mutex::new(RateLimiter::new(CONNECT_BURST, CONNECT_WINDOW)),
+-            permits: Arc::new(Semaphore::new(MAX_CONNECTIONS)),
+-            pins: Mutex::new(PinFailures::default()),
+-            next_pending: AtomicU64::new(0),
+-        });
++        let inner = Arc::new(Inner::new(shared.clone(), identity, config));
+         let task = shared.tasks.spawn(accept_loop(inner.clone(), listener));
+         Ok(Server { inner, task })
+     }
+@@ -241,10 +233,10 @@ impl Server {
+         self.inner.closing.is_cancelled()
+     }
+ 
+-    /// Takes offers again after [`drain`](Self::drain).
+-    pub(super) fn resume(&self) {
+-        *lock(&self.inner.drain) = CancellationToken::new();
+-        self.inner.accepting.store(true, Ordering::Release);
++    /// Takes offers again after [`drain`](Self::drain). False when the
++    /// server has stopped, or stops meanwhile: then start a new one.
++    pub(super) fn resume(&self) -> bool {
++        self.inner.resume()
+     }
+ 
+     /// Stops taking offers: a pending offer is declined, every connection
+@@ -252,10 +244,65 @@ impl Server {
+     /// running and the server has stopped; otherwise it stops by itself when
+     /// the session ends.
+     pub(super) fn drain(&self) -> bool {
+-        self.inner.accepting.store(false, Ordering::Release);
+-        lock(&self.inner.drain).cancel();
++        self.inner.drain()
++    }
++
++    /// Waits for the listener to close.
++    pub(super) async fn wait(self) {
++        let _ = self.task.await;
++    }
++}
++
++impl Inner {
++    fn new(
++        shared: Arc<Shared>,
++        identity: Arc<Identity>,
++        config: Arc<rustls::ServerConfig>,
++    ) -> Inner {
++        let stop = shared.ctx.shutdown_token().child_token();
++        Inner {
++            shared,
++            identity,
++            acceptor: TlsAcceptor::from(config),
++            accepting: AtomicBool::new(true),
++            drain: Mutex::new(CancellationToken::new()),
++            closing: stop.child_token(),
++            stop,
++            slot: Mutex::new(Slot::Free),
++            per_ip: Mutex::new(HashMap::new()),
++            connect_limiter: Mutex::new(RateLimiter::new(CONNECT_BURST, CONNECT_WINDOW)),
++            permits: Arc::new(Semaphore::new(MAX_CONNECTIONS)),
++            pins: Mutex::new(PinFailures::default()),
++            next_pending: AtomicU64::new(0),
++        }
++    }
++
++    /// See [`Server::resume`].
++    ///
++    /// A draining server stops itself when its last session or pending
++    /// offer ends and it is not accepting: [`Inner::release`] and
++    /// [`PendingGuard`]'s drop decide that under the slot lock. So this
++    /// decides under it too: either they see `accepting` and leave the
++    /// server running, or this sees it stopped and says so. Checking
++    /// `stopped` first and storing `accepting` after, as this once did, let
++    /// a session end in between: Receive reported on, the listener closed
++    /// (F-C1).
++    fn resume(&self) -> bool {
++        // A fresh token first: harmless if the server turns out stopped.
++        *lock(&self.drain) = CancellationToken::new();
++        let _slot = lock(&self.slot);
++        if self.closing.is_cancelled() {
++            return false;
++        }
++        self.accepting.store(true, Ordering::Release);
++        true
++    }
++
++    /// See [`Server::drain`].
++    fn drain(&self) -> bool {
+         let idle = {
+-            let slot = lock(&self.inner.slot);
++            let slot = lock(&self.slot);
++            self.accepting.store(false, Ordering::Release);
+             match &*slot {
+                 Slot::Free => true,
+                 Slot::Pending { cancel, .. } => {
+@@ -265,16 +312,12 @@ impl Server {
+                 Slot::Active(_) => false,
+             }
+         };
++        lock(&self.drain).cancel();
+         if idle {
+-            self.inner.closing.cancel();
++            self.closing.cancel();
+         }
+         idle
+     }
+-
+-    /// Waits for the listener to close.
+-    pub(super) async fn wait(self) {
+-        let _ = self.task.await;
+-    }
+ }
+ 
+ async fn accept_loop(inner: Arc<Inner>, listener: TcpListener) {
+@@ -326,6 +369,20 @@ async fn accept_loop(inner: Arc<Inner>, listener: TcpListener) {
+     }
+ }
+ 
++/// How long a connection lives that carries no offer or session of its
++/// own: time for a request's head and body (the handshake timeout) and
++/// its answer (the idle timeout).
++///
++/// hyper's header timer bounds the wait for each request head, and
++/// [`WriteDeadline`] each stalled write, but neither bounds a connection
++/// that makes a little progress now and then: a request just before every
++/// header timeout, or responses read just fast enough to keep a write
++/// moving. Either held a connection slot for as long as the peer liked,
++/// and four addresses held all [`MAX_CONNECTIONS`].
++fn lifetime(opts: &super::Options) -> Duration {
++    opts.handshake_timeout().saturating_add(opts.idle_timeout())
++}
++
+ async fn serve(
+     inner: Arc<Inner>,
+     tcp: TcpStream,
+@@ -336,6 +393,8 @@ async fn serve(
+ ) {
+     let _ = tcp.set_nodelay(true);
+     let handshake = inner.shared.opts.handshake_timeout();
++    let idle = inner.shared.opts.idle_timeout();
++    let lifetime = lifetime(&inner.shared.opts);
+     let tls = tokio::select! {
+         () = inner.closing.cancelled() => return,
+         tls = tokio::time::timeout(handshake, inner.acceptor.accept(tcp)) => tls,
+@@ -356,9 +415,10 @@ async fn serve(
+     };
+     let caller = Arc::new(Caller { ip, fingerprint });
+     let svc_inner = inner.clone();
++    let svc_caller = caller.clone();
+     let service = service_fn(move |req| {
+         let inner = svc_inner.clone();
+-        let caller = caller.clone();
++        let caller = svc_caller.clone();
+         async move { Ok::<_, Infallible>(route(&inner, &caller, req).await) }
+     });
+     let mut builder = hyper::server::conn::http1::Builder::new();
+@@ -368,8 +428,11 @@ async fn serve(
+         .max_buf_size(MAX_BUF_BYTES)
+         .max_headers(MAX_HEADERS)
+         .keep_alive(true);
+-    let conn = builder.serve_connection(TokioIo::new(tls), service);
++    let io = TokioIo::new(WriteDeadline::new(tls, idle));
++    let conn = builder.serve_connection(io, service);
+     tokio::pin!(conn);
++    let retire = tokio::time::sleep(lifetime);
++    tokio::pin!(retire);
+     let mut spared = false;
+     let mut closing = false;
+     loop {
+@@ -382,7 +445,24 @@ async fn serve(
+                 closing = true;
+                 conn.as_mut().graceful_shutdown();
+             }
+-            () = tokio::time::sleep(handshake), if closing => break,
++            () = &mut retire, if !closing => {
++                // The sender of the pending offer or the running session
++                // keeps its connections for as long as that takes; anyone
++                // else finishes what it asked and goes.
++                if inner.is_party(&caller) {
++                    retire.set(tokio::time::sleep(lifetime));
++                } else {
++                    closing = true;
++                    conn.as_mut().graceful_shutdown();
++                }
++            }
++            () = tokio::time::sleep(handshake), if closing => {
++                // An offer that arrived as the connection was retired may
++                // be waiting for the user now; it ends with its answer.
++                if !inner.is_party(&caller) {
++                    break;
++                }
++            }
+             () = drain.cancelled(), if !spared && !closing => {
+                 if inner.is_session_sender(ip) {
+                     spared = true;
+@@ -394,6 +474,100 @@ async fn serve(
+     }
+ }
+ 
++/// A stream whose writes fail after `limit` without progress (S6).
++///
++/// hyper times out a request head, and the handlers time out every body
++/// they read, but nothing timed out a response that could not be written. A
++/// peer that sent requests (pipelined, or one after another on a
++/// keep-alive connection) and then stopped reading filled the socket's,
++/// rustls's and hyper's buffers; hyper then waits for the flush and arms no
++/// timer, and Linux keeps probing a zero window for as long as the peer
++/// acknowledges -- so the connection was held for ever, with no traffic.
++struct WriteDeadline<T> {
++    io: T,
++    limit: Duration,
++    /// Armed by the first write that could not go on, disarmed by the next
++    /// that did.
++    stalled: Option<Pin<Box<tokio::time::Sleep>>>,
++}
++
++impl<T> WriteDeadline<T> {
++    fn new(io: T, limit: Duration) -> Self {
++        WriteDeadline {
++            io,
++            limit,
++            stalled: None,
++        }
++    }
++
++    fn progress<R>(
++        &mut self,
++        cx: &mut Context<'_>,
++        polled: Poll<std::io::Result<R>>,
++    ) -> Poll<std::io::Result<R>> {
++        if polled.is_ready() {
++            self.stalled = None;
++            return polled;
++        }
++        let limit = self.limit;
++        let stalled = self
++            .stalled
++            .get_or_insert_with(|| Box::pin(tokio::time::sleep(limit)));
++        match stalled.as_mut().poll(cx) {
++            Poll::Ready(()) => Poll::Ready(Err(std::io::ErrorKind::TimedOut.into())),
++            Poll::Pending => Poll::Pending,
++        }
++    }
++}
++
++impl<T: AsyncRead + Unpin> AsyncRead for WriteDeadline<T> {
++    fn poll_read(
++        self: Pin<&mut Self>,
++        cx: &mut Context<'_>,
++        buf: &mut ReadBuf<'_>,
++    ) -> Poll<std::io::Result<()>> {
++        Pin::new(&mut self.get_mut().io).poll_read(cx, buf)
++    }
++}
++
++impl<T: AsyncWrite + Unpin> AsyncWrite for WriteDeadline<T> {
++    fn poll_write(
++        self: Pin<&mut Self>,
++        cx: &mut Context<'_>,
++        buf: &[u8],
++    ) -> Poll<std::io::Result<usize>> {
++        let this = self.get_mut();
++        let polled = Pin::new(&mut this.io).poll_write(cx, buf);
++        this.progress(cx, polled)
++    }
++
++    fn poll_write_vectored(
++        self: Pin<&mut Self>,
++        cx: &mut Context<'_>,
++        bufs: &[std::io::IoSlice<'_>],
++    ) -> Poll<std::io::Result<usize>> {
++        let this = self.get_mut();
++        let polled = Pin::new(&mut this.io).poll_write_vectored(cx, bufs);
++        this.progress(cx, polled)
++    }
++
++    fn is_write_vectored(&self) -> bool {
++        self.io.is_write_vectored()
++    }
++
++    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
++        let this = self.get_mut();
++        let polled = Pin::new(&mut this.io).poll_flush(cx);
++        this.progress(cx, polled)
++    }
++
++    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
++        let this = self.get_mut();
++        let polled = Pin::new(&mut this.io).poll_shutdown(cx);
++        this.progress(cx, polled)
++    }
++}
++
+ /// The endpoints served. Everything else is a 404.
+ enum Endpoint {
+     Info,
+@@ -937,6 +1111,15 @@ impl Inner {
+         matches!(&*lock(&self.slot), Slot::Active(a) if a.sender.ip == ip)
+     }
+ 
++    /// Whether `caller` made the pending offer or the running session.
++    fn is_party(&self, caller: &Caller) -> bool {
++        match &*lock(&self.slot) {
++            Slot::Free => false,
++            Slot::Pending { sender, .. } => sender.is(caller),
++            Slot::Active(a) => a.sender.is(caller),
++        }
++    }
++
+     /// Frees the slot after the session `session_id`; stops a draining
+     /// server.
+     fn release(&self, session_id: &str) {
+@@ -1167,6 +1350,88 @@ mod tests {
+         assert_eq!(p.check(fresh, Some("1234"), "1234", t0), PinCheck::Locked);
+     }
+ 
++    #[tokio::test]
++    async fn a_write_that_makes_no_progress_fails() {
++        use tokio::io::{AsyncReadExt, AsyncWriteExt};
++        let limit = Duration::from_millis(300);
++        let (near, mut far) = tokio::io::duplex(64);
++        let mut w = WriteDeadline::new(near, limit);
++        // The peer reads, slowly: a write longer than the limit in all, but
++        // never stalled that long, goes through.
++        let reader = tokio::spawn(async move {
++            let mut buf = [0u8; 64];
++            for _ in 0..10 {
++                far.read_exact(&mut buf).await.unwrap();
++                tokio::time::sleep(Duration::from_millis(60)).await;
++            }
++            far
++        });
++        let start = Instant::now();
++        w.write_all(&[1; 640]).await.unwrap();
++        w.flush().await.unwrap();
++        assert!(start.elapsed() > limit);
++        let far = reader.await.unwrap();
++        // The peer stops reading: the write fails at the limit, not never.
++        let start = Instant::now();
++        let stuck = tokio::time::timeout(Duration::from_secs(10), w.write_all(&[2; 1024])).await;
++        assert!(
++            matches!(&stuck, Ok(Err(e)) if e.kind() == std::io::ErrorKind::TimedOut),
++            "{stuck:?}"
++        );
++        assert!(start.elapsed() < Duration::from_secs(5));
++        drop(far);
++    }
++
++    /// Receive switched back on just as a draining server's last session
++    /// ends. `resume` once checked `stopped` and then stored `accepting`, so
++    /// a session ending in between closed the listener with Receive
++    /// reported on. The test holds the drain lock to stop `resume` in its
++    /// first step -- where the old one had already checked -- and ends the
++    /// session there.
++    #[test]
++    fn receive_switched_on_as_the_last_session_ends_is_never_left_closed() {
++        let (_dir, shared) = crate::localsend::tests::shared_for_tests(true);
++        let identity = Arc::new(super::super::identity::tests::pair(0));
++        let config = tls::server_config(&identity).unwrap();
++        let inner = Arc::new(Inner::new(shared, identity, config));
++        let (uploads, _rx) = mpsc::channel(1);
++        *lock(&inner.slot) = Slot::Active(Active {
++            session_id: "s".into(),
++            sender: Party {
++                ip: "192.168.1.2".parse().unwrap(),
++                fingerprint: "F".into(),
++            },
++            uploads,
++            cancel: CancellationToken::new(),
++        });
++        // Receive off with the session running: the server drains.
++        assert!(!inner.drain());
++        assert!(!inner.closing.is_cancelled());
++
++        let held = lock(&inner.drain);
++        let resumer = std::thread::spawn({
++            let inner = inner.clone();
++            move || inner.resume()
++        });
++        std::thread::sleep(Duration::from_millis(200));
++        // The last file arrives: the session ends, and a server that is not
++        // accepting stops.
++        inner.release("s");
++        drop(held);
++        let resumed = resumer.join().unwrap();
++
++        let accepting = inner.accepting.load(Ordering::Acquire);
++        let stopped = inner.closing.is_cancelled();
++        assert!(
++            !(accepting && stopped),
++            "Receive reported on with the listener closed"
++        );
++        // Whichever won, the adapter is told the truth: resumed, or start
++        // a new server.
++        assert_eq!(resumed, !stopped);
++        assert_eq!(resumed, accepting);
++    }
++
+     #[test]
+     fn pin_memory_is_bounded() {
+         let mut p = PinFailures::default();
+diff --git a/crates/sukkula-engine/tests/localsend_hostile.rs b/crates/sukkula-engine/tests/localsend_hostile.rs
+index 2c864ac..22fe7f1 100644
+--- a/crates/sukkula-engine/tests/localsend_hostile.rs
++++ b/crates/sukkula-engine/tests/localsend_hostile.rs
+@@ -28,8 +28,9 @@
+ mod localsend_support;
+ 
+ use std::collections::HashMap;
+-use std::net::Ipv4Addr;
++use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+ use std::sync::Arc;
++use std::sync::atomic::{AtomicUsize, Ordering};
+ use std::time::{Duration, Instant};
+ 
+ use localsend_support::*;
+@@ -495,6 +496,218 @@ async fn slow_handshakes_heads_and_bodies_are_cut_off() {
+     an_honest_transfer_still_works(&b).await;
+ }
+ 
++/// A peer that pipelines requests for 404s from `source` and never reads an
++/// answer, with a receive buffer as small as the kernel allows: the
++/// server's answers back up until it cannot write. The task holds the
++/// connection until it is aborted.
++async fn stops_reading(port: u16, source: Option<Ipv4Addr>) -> tokio::task::JoinHandle<()> {
++    let socket = tokio::net::TcpSocket::new_v4().unwrap();
++    socket.set_recv_buffer_size(1024).unwrap();
++    socket
++        .bind(SocketAddr::new(IpAddr::V4(source.unwrap()), 0))
++        .unwrap();
++    let tcp = socket
++        .connect(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), port))
++        .await
++        .unwrap();
++    let mut s = tokio_rustls::TlsConnector::from(raw_client_config(Some(EVE)))
++        .connect(
++            rustls::pki_types::ServerName::IpAddress(Ipv4Addr::LOCALHOST.into()),
++            tcp,
++        )
++        .await
++        .unwrap();
++    tokio::spawn(async move {
++        // About 1 MiB of answers; far more than every buffer between.
++        let requests = b"GET /x HTTP/1.1\r\nHost: x\r\n\r\n".repeat(8000);
++        let _ = s.write_all(&requests).await;
++        std::future::pending::<()>().await;
++    })
++}
++
++/// The server-side twin of `a_receiver_that_stops_reading_times_out`.
++/// Nothing timed out a response that could not be written: four addresses
++/// with eight such connections each held every connection the server has,
++/// for as long as they liked, and every honest peer was turned away.
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn a_sender_that_stops_reading_is_cut_off() {
++    let b = receiver();
++    let port = b.receive().await;
++    let listening = b.ls.tasks_running();
++    let mut held = Vec::new();
++    for a in 0..4 {
++        for _ in 0..8 {
++            held.push(stops_reading(port, src(90 + a)).await);
++        }
++    }
++    assert!(b.ls.tasks_running() > listening, "the connections are up");
++    // Every one ends once its answers stop moving.
++    wait("the stalled connections to be cut off", || {
++        (b.ls.tasks_running() <= listening).then_some(())
++    })
++    .await;
++    an_honest_transfer_still_works(&b).await;
++    for h in held {
++        h.abort();
++    }
++}
++
++/// hyper's header timer is armed for each request anew, so a request just
++/// before every timeout kept a connection -- and its slot -- for ever.
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn a_connection_kept_busy_is_retired() {
++    let b = receiver();
++    let port = b.receive().await;
++    let mut s = tls_from(port, src(94)).await;
++    let start = Instant::now();
++    let closed = loop {
++        match exchange(&mut s, "GET /x HTTP/1.1\r\nHost: x\r\n\r\n", b"").await {
++            None => break true,
++            Some(r) => assert_eq!(r.status, 404),
++        }
++        if start.elapsed() > Duration::from_secs(15) {
++            break false;
++        }
++        // Well within the 2 s header timeout.
++        tokio::time::sleep(Duration::from_secs(1)).await;
++    };
++    assert!(closed, "a busy connection lives only so long");
++    // The handshake and idle timeouts, and the grace to finish an answer.
++    assert!(start.elapsed() < Duration::from_secs(12));
++    an_honest_transfer_still_works(&b).await;
++}
++
++/// A registration from `source` as pool identity `id`, whose server is at
++/// `port`.
++async fn register_as(
++    to: u16,
++    id: usize,
++    source: Option<Ipv4Addr>,
++    port: u16,
++) -> Option<RawResponse> {
++    let body = serde_json::to_vec(&json!({
++        "alias": format!("Eve{id}"), "version": "2.2", "deviceType": "mobile",
++        "fingerprint": identity(id).fingerprint, "port": port, "protocol": "https"
++    }))
++    .unwrap();
++    let mut s = raw_tls(to, Some(id), source).await.ok()?;
++    exchange(&mut s, &post(REGISTER, body.len()), &body).await
++}
++
++fn found(b: &Node) -> Vec<String> {
++    b.events
++        .lock()
++        .unwrap()
++        .iter()
++        .filter_map(|e| match e {
++            Event::PeerFound { peer } => Some(peer.id.clone()),
++            _ => None,
++        })
++        .collect()
++}
++
++/// clove's `one_destination_cannot_monopolise_the_peer_table`, for
++/// LocalSend: the peer list once filled first come, first served, so one
++/// address with certificates enough kept every later device off it.
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn one_address_cannot_fill_the_peer_list() {
++    let b = receiver();
++    let port = b.receive().await;
++    b.ls.start_discovery().await.unwrap();
++    // Every certificate one address has: one over its share.
++    for id in [0, 2, 3, 4, 5] {
++        assert_eq!(
++            register_as(port, id, src(96), 4000).await.unwrap().status,
++            200
++        );
++    }
++    let first = format!("ls:{}", identity(0).fingerprint);
++    b.wait_event("the stalest of them to make way", |e| match e {
++        Event::PeerLost { peer } if *peer == first => Some(()),
++        _ => None,
++    })
++    .await;
++    assert_eq!(found(&b).len(), 5);
++    // Another address is listed as ever.
++    assert_eq!(
++        register_as(port, 0, src(97), 4000).await.unwrap().status,
++        200
++    );
++    wait("a peer at another address listed", || {
++        (found(&b).len() == 6).then_some(())
++    })
++    .await;
++    an_honest_transfer_still_works(&b).await;
++}
++
++/// A TLS server with pool identity `id` that counts connections, and
++/// requests that got past the handshake.
++async fn counting_server(id: usize) -> (u16, Arc<AtomicUsize>, Arc<AtomicUsize>) {
++    use rustls::pki_types::pem::PemObject;
++    use rustls::pki_types::{CertificateDer, PrivateKeyDer};
++    let id = identity(id);
++    let config = rustls::ServerConfig::builder_with_provider(Arc::new(
++        rustls::crypto::ring::default_provider(),
++    ))
++    .with_safe_default_protocol_versions()
++    .unwrap()
++    .with_no_client_auth()
++    .with_single_cert(
++        vec![CertificateDer::from_pem_slice(id.certificate_pem.as_bytes()).unwrap()],
++        PrivateKeyDer::from_pem_slice(id.private_key_pem.as_bytes()).unwrap(),
++    )
++    .unwrap();
++    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
++    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
++        .await
++        .unwrap();
++    let port = listener.local_addr().unwrap().port();
++    let connections = Arc::new(AtomicUsize::new(0));
++    let requests = Arc::new(AtomicUsize::new(0));
++    let (c, r) = (connections.clone(), requests.clone());
++    tokio::spawn(async move {
++        while let Ok((tcp, _)) = listener.accept().await {
++            c.fetch_add(1, Ordering::SeqCst);
++            let acceptor = acceptor.clone();
++            let r = r.clone();
++            tokio::spawn(async move {
++                let Ok(mut s) = acceptor.accept(tcp).await else {
++                    return;
++                };
++                let mut byte = [0u8; 1];
++                if s.read(&mut byte).await.unwrap_or(0) > 0 {
++                    r.fetch_add(1, Ordering::SeqCst);
++                }
++            });
++        }
++    });
++    (port, connections, requests)
++}
++
++/// F-LS3 for the HTTP register fallback: a lead is registered with only
++/// under the certificate it was known by. Here a peer registers as one
++/// identity and names, as its server, a port where another certificate
++/// answers.
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn the_fallback_sends_nothing_to_another_certificate() {
++    let mut cfg = NodeConfig::new(0, "Alice");
++    cfg.rounds = Duration::from_secs(1);
++    let a = Node::new(&cfg);
++    let port = a.receive().await;
++    let (other, connections, requests) = counting_server(2).await;
++    assert_eq!(register_as(port, 4, None, other).await.unwrap().status, 200);
++    a.ls.start_discovery().await.unwrap();
++    wait("the fallback to try the lead", || {
++        (connections.load(Ordering::SeqCst) > 0).then_some(())
++    })
++    .await;
++    // Rounds go by; the lead was dropped at the mismatch, not retried.
++    tokio::time::sleep(Duration::from_millis(3500)).await;
++    assert_eq!(connections.load(Ordering::SeqCst), 1);
++    assert_eq!(requests.load(Ordering::SeqCst), 0, "not a byte of HTTP");
++    assert!(found(&a).is_empty());
++}
++
+ #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+ async fn uploads_without_consent_or_the_right_token_are_refused_unread() {
+     let b = receiver();
+diff --git a/crates/sukkula-engine/tests/localsend_loopback.rs b/crates/sukkula-engine/tests/localsend_loopback.rs
+index a30fdca..a95d710 100644
+--- a/crates/sukkula-engine/tests/localsend_loopback.rs
++++ b/crates/sukkula-engine/tests/localsend_loopback.rs
+@@ -404,6 +404,133 @@ async fn discovery_lists_registrations_and_forgets_on_stop() {
+     assert_eq!(e.code, ErrorCode::NotFound);
+ }
+ 
++/// Registers with Sukkula at `to` the way upstream LocalSend does -- its
++/// reference client, as pool identity `id` -- saying its server is at
++/// `port`. This is what the other app's own subnet scan sends when it hears
++/// no multicast.
++async fn upstream_registers(to: u16, pinned: usize, id: usize, port: u16) {
++    use localsend::http::client::LsHttpClientV2;
++    use localsend::http::dto_v2::RegisterDtoV2;
++    use localsend::model::discovery::ProtocolType;
++    let me = identity(id);
++    let client = LsHttpClientV2::try_new(
++        &me.private_key_pem,
++        &me.certificate_pem,
++        Some(identity(pinned).fingerprint.clone()),
++        None,
++    )
++    .unwrap();
++    let info = RegisterDtoV2 {
++        alias: "Bob".into(),
++        version: "2.2".into(),
++        device_model: None,
++        device_type: None,
++        fingerprint: me.fingerprint.clone(),
++        port,
++        protocol: ProtocolType::Https,
++        download: false,
++    };
++    client
++        .register(ProtocolType::Https, "127.0.0.1", to, info)
++        .await
++        .unwrap();
++}
++
++fn peers_found(node: &Node, id: &str) -> usize {
++    node.events
++        .lock()
++        .unwrap()
++        .iter()
++        .filter(|e| matches!(e, Event::PeerFound { peer } if peer.id == id))
++        .count()
++}
++
++/// F-LS1's HTTP register fallback, with no multicast anywhere and no
++/// `discover_at`: Bob's app registers with Alice while she is not looking
++/// for anyone; when she opens the Send page, discovery registers back with
++/// him, pinned to the certificate he registered with -- and does so again
++/// each time discovery starts.
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn discovery_registers_with_peers_it_knows_without_multicast() {
++    let a = Node::new(&NodeConfig::new(0, "Alice"));
++    let b = Node::new(&NodeConfig::new(1, "Bob"));
++    let a_port = a.receive().await;
++    let b_port = b.receive().await;
++    b.ls.start_discovery().await.unwrap();
++    upstream_registers(a_port, 0, 1, b_port).await;
++    tokio::time::sleep(Duration::from_millis(100)).await;
++    assert!(!a.events_json().contains("peer_found"), "not looking yet");
++
++    a.ls.start_discovery().await.unwrap();
++    let bob = format!("ls:{}", identity(1).fingerprint);
++    let listed = a
++        .wait_event("Bob listed", |e| match e {
++            Event::PeerFound { peer } if peer.id == bob => Some(peer.clone()),
++            _ => None,
++        })
++        .await;
++    assert_eq!(listed.name, "Bob");
++    // The exchange runs both ways: Bob lists Alice from her registration.
++    let alice = format!("ls:{}", identity(0).fingerprint);
++    b.wait_event("Alice listed", |e| match e {
++        Event::PeerFound { peer } if peer.id == alice => Some(()),
++        _ => None,
++    })
++    .await;
++    // A peer found this way is one to send to.
++    let id =
++        a.ls.send(target(&bob), vec![Outgoing::Text("hi".into())])
++            .await
++            .unwrap();
++    let (offer, _) = b.offer().await;
++    b.answer(offer, true);
++    assert_eq!(a.finished(id).await.0, Outcome::Done);
++
++    // Discovery closes and opens again: Bob is asked first, and listed
++    // again, with nothing new heard from him.
++    a.ls.stop_discovery().await;
++    a.wait_event("Bob forgotten", |e| match e {
++        Event::PeerLost { peer } if *peer == bob => Some(()),
++        _ => None,
++    })
++    .await;
++    a.ls.start_discovery().await.unwrap();
++    wait("Bob listed again", || {
++        (peers_found(&a, &bob) == 2).then_some(())
++    })
++    .await;
++}
++
++/// A lead whose server did not answer is tried again in the next rounds.
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn a_peer_that_did_not_answer_is_asked_again() {
++    let mut cfg = NodeConfig::new(0, "Alice");
++    cfg.rounds = Duration::from_secs(2);
++    let a = Node::new(&cfg);
++    let a_port = a.receive().await;
++    // Where Bob will listen, before he does.
++    let b_port = std::net::TcpListener::bind("127.0.0.1:0")
++        .unwrap()
++        .local_addr()
++        .unwrap()
++        .port();
++    upstream_registers(a_port, 0, 1, b_port).await;
++    a.ls.start_discovery().await.unwrap();
++    // The first round finds nobody there.
++    tokio::time::sleep(Duration::from_secs(1)).await;
++    assert!(!a.events_json().contains("peer_found"));
++    let mut bcfg = NodeConfig::new(1, "Bob");
++    bcfg.port = b_port;
++    let b = Node::new(&bcfg);
++    assert_eq!(b.receive().await, b_port);
++    let bob = format!("ls:{}", identity(1).fingerprint);
++    a.wait_event("Bob listed by a later round", |e| match e {
++        Event::PeerFound { peer } if peer.id == bob => Some(()),
++        _ => None,
++    })
++    .await;
++}
++
+ #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+ async fn a_file_that_changed_after_it_was_chosen_is_not_sent() {
+     use sukkula_engine::adapter::OutgoingFile;
+diff --git a/crates/sukkula-engine/tests/localsend_support/mod.rs b/crates/sukkula-engine/tests/localsend_support/mod.rs
+index c00c12f..2f92290 100644
+--- a/crates/sukkula-engine/tests/localsend_support/mod.rs
++++ b/crates/sukkula-engine/tests/localsend_support/mod.rs
+@@ -47,7 +47,7 @@ use tokio_rustls::client::TlsStream;
+ pub const DEADLINE: Duration = Duration::from_secs(20);
+ 
+ /// Identities in the pool.
+-const POOL: usize = 5;
++const POOL: usize = 6;
+ 
+ /// Pre-made identities; index them per role so peers in one test differ.
+ pub fn identity(i: usize) -> &'static SelfSignedCert {
+@@ -74,6 +74,8 @@ pub struct NodeConfig {
+     pub idle: Duration,
+     pub handshake: Duration,
+     pub prepare: Duration,
++    /// How often discovery announces and runs a fallback round.
++    pub rounds: Duration,
+ }
+ 
+ impl NodeConfig {
+@@ -88,6 +90,9 @@ impl NodeConfig {
+             idle: Duration::from_secs(5),
+             handshake: Duration::from_secs(5),
+             prepare: Duration::from_secs(15),
++            // The adapter's own: no fallback round but the first, at the
++            // start of discovery, within a test.
++            rounds: Options::default().announce_interval,
+         }
+     }
+ }
+@@ -152,6 +157,7 @@ impl Node {
+                 idle_timeout: cfg.idle,
+                 handshake_timeout: cfg.handshake,
+                 prepare_timeout: cfg.prepare,
++                announce_interval: cfg.rounds,
+             },
+         );
+         Node {
+-- 
+2.43.0
+

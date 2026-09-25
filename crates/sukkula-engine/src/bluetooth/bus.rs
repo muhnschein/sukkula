@@ -124,6 +124,15 @@ impl fmt::Debug for Bus {
 impl Bus {
     /// Connects to `address` and says `Hello`, within `timeout`.
     ///
+    /// The one way this engine connects to a bus. libdbus starts a process
+    /// for some addresses -- `unixexec:` forks and execs, `autolaunch:`
+    /// runs `dbus-launch` -- and the dbus crate's `new_session`,
+    /// `new_system` and `get_private` let libdbus pick the address itself,
+    /// falling back to `autolaunch:` (S8). So the address is always ours,
+    /// from [`session_address_from_env`] or [`system_address_from_env`] or
+    /// a test, and is checked here, right before the only call that opens
+    /// a connection.
+    ///
     /// libdbus connects the socket synchronously (a local Unix socket, so
     /// at once or not at all); authentication and `Hello` then run through
     /// [`call`](Self::call)'s bounded loop, not libdbus's own blocking
@@ -134,6 +143,9 @@ impl Bus {
         cancel: Option<&CancellationToken>,
     ) -> Result<Bus, BusError> {
         check_address(address)?;
+        // S8: the ban on libdbus's connection constructors is lifted here
+        // alone, behind the check above.
+        #[allow(clippy::disallowed_methods)]
         let channel = Channel::open_private(address).map_err(|_| BusError::Unreachable)?;
         let mut bus = Bus { channel };
         let hello = method_call(DBUS_NAME, DBUS_PATH, DBUS_IFACE, "Hello")?;
@@ -150,10 +162,35 @@ impl Bus {
         cancel: Option<&CancellationToken>,
         signals: &mut dyn FnMut(&Message),
     ) -> Result<Message, BusError> {
-        let serial = self
-            .channel
-            .send(msg)
-            .map_err(|()| BusError::Disconnected)?;
+        let serial = self.send(msg, cancel)?;
+        self.wait_reply(serial, timeout, cancel, signals)
+    }
+
+    /// Puts `msg` on the wire and returns its serial; nothing is sent once
+    /// `cancel` is cancelled. A cancel that lands while the previous
+    /// call's reply is being read is seen here, before the next call
+    /// starts something it would then abandon -- a `CreateSession` whose
+    /// session nobody would remove.
+    pub(super) fn send(
+        &mut self,
+        msg: Message,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<u32, BusError> {
+        if cancel.is_some_and(CancellationToken::is_cancelled) {
+            return Err(BusError::Cancelled);
+        }
+        self.channel.send(msg).map_err(|()| BusError::Disconnected)
+    }
+
+    /// Waits up to `timeout` for the reply to the call sent as `serial`.
+    /// Signals that arrive while waiting are handed to `signals`, in order.
+    pub(super) fn wait_reply(
+        &mut self,
+        serial: u32,
+        timeout: Duration,
+        cancel: Option<&CancellationToken>,
+        signals: &mut dyn FnMut(&Message),
+    ) -> Result<Message, BusError> {
         let deadline = deadline_after(timeout);
         loop {
             while let Some(mut m) = self.channel.pop_message() {
@@ -305,8 +342,9 @@ fn is_local_disconnect(m: &Message) -> bool {
 /// `autolaunch:` (spawns `dbus-launch`: S8), `tcp:` and `nonce-tcp:` (a bus
 /// across the network) and `launchd:`. None of them has any business in a
 /// phone app's bus address, and the address comes from the environment, so
-/// it is checked like any other input.
-pub(super) fn check_address(address: &str) -> Result<(), BusError> {
+/// it is checked like any other input. Private to this module: only
+/// [`Bus::connect`] needs it, right before it connects.
+fn check_address(address: &str) -> Result<(), BusError> {
     if address.is_empty() || address.len() > MAX_ADDRESS_BYTES || address.contains('\0') {
         return Err(BusError::Unreachable);
     }

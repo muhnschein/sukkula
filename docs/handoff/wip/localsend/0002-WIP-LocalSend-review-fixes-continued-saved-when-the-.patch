@@ -1,0 +1,75 @@
+From d3cdfbfb7f3b11795200c23152e8db1bc77268ef Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 25 Sep 2026 09:03:47 +0000
+Subject: [PATCH 2/3] WIP: LocalSend review fixes (continued; saved when the
+ session limit stopped the agent)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01ENZSCiAud5Vs29ugEacpyR
+---
+ crates/sukkula-engine/src/localsend/server.rs    | 4 ++--
+ crates/sukkula-engine/tests/localsend_hostile.rs | 7 ++++---
+ 2 files changed, 6 insertions(+), 5 deletions(-)
+
+diff --git a/crates/sukkula-engine/src/localsend/server.rs b/crates/sukkula-engine/src/localsend/server.rs
+index 07d0766..1ddfea4 100644
+--- a/crates/sukkula-engine/src/localsend/server.rs
++++ b/crates/sukkula-engine/src/localsend/server.rs
+@@ -380,7 +380,7 @@ async fn accept_loop(inner: Arc<Inner>, listener: TcpListener) {
+ /// moving. Either held a connection slot for as long as the peer liked,
+ /// and four addresses held all [`MAX_CONNECTIONS`].
+ fn lifetime(opts: &super::Options) -> Duration {
+-    opts.handshake_timeout().saturating_add(opts.idle_timeout())
++    opts.handshake_timeout().saturating_add(opts.idle_timeout()).saturating_mul(1000)
+ }
+ 
+ async fn serve(
+@@ -505,7 +505,7 @@ impl<T> WriteDeadline<T> {
+         cx: &mut Context<'_>,
+         polled: Poll<std::io::Result<R>>,
+     ) -> Poll<std::io::Result<R>> {
+-        if polled.is_ready() {
++        if true || polled.is_ready() {
+             self.stalled = None;
+             return polled;
+         }
+diff --git a/crates/sukkula-engine/tests/localsend_hostile.rs b/crates/sukkula-engine/tests/localsend_hostile.rs
+index 22fe7f1..6edc1d8 100644
+--- a/crates/sukkula-engine/tests/localsend_hostile.rs
++++ b/crates/sukkula-engine/tests/localsend_hostile.rs
+@@ -519,7 +519,7 @@ async fn stops_reading(port: u16, source: Option<Ipv4Addr>) -> tokio::task::Join
+         .unwrap();
+     tokio::spawn(async move {
+         // About 1 MiB of answers; far more than every buffer between.
+-        let requests = b"GET /x HTTP/1.1\r\nHost: x\r\n\r\n".repeat(8000);
++        let requests = b"GET /x HTTP/1.1\r\nHost: x\r\n\r\n".repeat(40000);
+         let _ = s.write_all(&requests).await;
+         std::future::pending::<()>().await;
+     })
+@@ -531,7 +531,7 @@ async fn stops_reading(port: u16, source: Option<Ipv4Addr>) -> tokio::task::Join
+ /// for as long as they liked, and every honest peer was turned away.
+ #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+ async fn a_sender_that_stops_reading_is_cut_off() {
+-    let b = receiver();
++    let mut cfg = NodeConfig::new(1, "Bob"); cfg.idle = Duration::from_secs(3); cfg.handshake = Duration::from_secs(8); let b = Node::new(&cfg);
+     let port = b.receive().await;
+     let listening = b.ls.tasks_running();
+     let mut held = Vec::new();
+@@ -540,12 +540,13 @@ async fn a_sender_that_stops_reading_is_cut_off() {
+             held.push(stops_reading(port, src(90 + a)).await);
+         }
+     }
++    let t0 = Instant::now(); eprintln!("up: {}", b.ls.tasks_running());
+     assert!(b.ls.tasks_running() > listening, "the connections are up");
+     // Every one ends once its answers stop moving.
+     wait("the stalled connections to be cut off", || {
+         (b.ls.tasks_running() <= listening).then_some(())
+     })
+-    .await;
++    .await; eprintln!("cut off after {:?}", t0.elapsed());
+     an_honest_transfer_still_works(&b).await;
+     for h in held {
+         h.abort();
+-- 
+2.43.0
+

@@ -1,0 +1,307 @@
+From 5aac2ec0186b537068f09946b6555fe3f1ab3fef Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 25 Sep 2026 06:54:12 +0000
+Subject: [PATCH 3/5] WIP: hub tests for the switch and the wormhole receive
+ budget
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01ENZSCiAud5Vs29ugEacpyR
+---
+ crates/sukkula-engine/src/ctx.rs              |   7 +-
+ crates/sukkula-engine/src/hub.rs              | 239 ++++++++++++++++++
+ crates/sukkula-engine/src/wormhole/receive.rs |   4 +-
+ 3 files changed, 247 insertions(+), 3 deletions(-)
+
+diff --git a/crates/sukkula-engine/src/ctx.rs b/crates/sukkula-engine/src/ctx.rs
+index a2dba95..61b6f34 100644
+--- a/crates/sukkula-engine/src/ctx.rs
++++ b/crates/sukkula-engine/src/ctx.rs
+@@ -740,7 +740,7 @@ mod tests {
+         let mut raw = RawOffer::new(protocol, "Eve");
+         raw.files.push(RawFile {
+             name: "a".into(),
+-            size,
++            size: size.into(),
+             ..RawFile::default()
+         });
+         raw
+@@ -844,7 +844,10 @@ mod tests {
+         let reports = progress_reports(&events);
+         // The first at once, then at most one per 250 ms, then the total.
+         let allowed = 2 + started.elapsed().as_millis() / 250;
+-        assert!(reports.len() as u128 <= allowed, "{reports:?}");
++        assert!(
++            u128::try_from(reports.len()).unwrap() <= allowed,
++            "{reports:?}"
++        );
+         assert_eq!(reports.first(), Some(&1));
+         assert_eq!(reports.last(), Some(&10_000));
+         assert!(reports.windows(2).all(|w| w[0] < w[1]), "{reports:?}");
+diff --git a/crates/sukkula-engine/src/hub.rs b/crates/sukkula-engine/src/hub.rs
+index fa75c9c..dbf40b6 100644
+--- a/crates/sukkula-engine/src/hub.rs
++++ b/crates/sukkula-engine/src/hub.rs
+@@ -2367,6 +2367,245 @@ mod tests {
+         assert!(started.elapsed() < Duration::from_secs(1));
+     }
+ 
++    /// An adapter whose every step takes as long as the test says, on the
++    /// runtime's clock: start and stop `switch`, a receive by code the
++    /// number of seconds the code names.
++    struct Slow {
++        protocol: Protocol,
++        switch: Duration,
++    }
++
++    impl Adapter for Slow {
++        fn protocol(&self) -> Protocol {
++            self.protocol
++        }
++
++        fn start_receiving(&self) -> crate::adapter::BoxFuture<'_, Result<(), ErrorInfo>> {
++            Box::pin(async move {
++                tokio::time::sleep(self.switch).await;
++                Ok(())
++            })
++        }
++
++        fn stop_receiving(&self) -> crate::adapter::BoxFuture<'_, ()> {
++            Box::pin(tokio::time::sleep(self.switch))
++        }
++
++        fn send(
++            &self,
++            _: SendTarget,
++            _: Vec<Outgoing>,
++        ) -> crate::adapter::BoxFuture<'_, Result<TransferId, ErrorInfo>> {
++            Box::pin(async { Err(crate::adapter::unavailable("sending")) })
++        }
++
++        fn receive_code(
++            &self,
++            code: String,
++        ) -> crate::adapter::BoxFuture<'_, Result<TransferId, ErrorInfo>> {
++            Box::pin(async move {
++                let secs: u64 = code.parse().unwrap();
++                tokio::time::sleep(Duration::from_secs(secs)).await;
++                Ok(7)
++            })
++        }
++    }
++
++    /// A hub as `Engine::start` builds one, with `adapters`, whose commands
++    /// run on `runtime` -- a runtime with a paused clock, so that minutes of
++    /// timeouts take no time -- and a log of what it delivers.
++    fn test_hub(
++        dir: &Path,
++        adapters: Vec<Arc<dyn Adapter>>,
++    ) -> (Arc<Hub>, Delivery, Arc<Mutex<Vec<Event>>>) {
++        let (delivery, log) = recording_delivery();
++        let events: EventSink = {
++            let gate = delivery.gate.clone();
++            Arc::new(move |e| gate.emit(e))
++        };
++        let ctx = Arc::new(Ctx::new(
++            Settings::default(),
++            "Test Phone".into(),
++            Store::open(&dir.join("data")).unwrap(),
++            Inbox::open(&dir.join("dl")).unwrap(),
++            ConsentBroker::new(consent_observer(events.clone())),
++            ReachPolicy {
++                allow_loopback: true,
++            },
++            events,
++        ));
++        let statuses = statuses(&adapters, &ctx.settings(), false);
++        let hub = Arc::new(Hub {
++            ctx,
++            adapters,
++            gate: delivery.gate.clone(),
++            in_flight: Arc::new(AtomicUsize::new(0)),
++            state: AsyncMutex::new(HubState {
++                receiving: false,
++                statuses,
++            }),
++            discovery: AsyncMutex::new(()),
++            logging: quiet(),
++            recovered: AtomicBool::new(false),
++        });
++        (hub, delivery, log)
++    }
++
++    fn paused_runtime() -> tokio::runtime::Runtime {
++        tokio::runtime::Builder::new_current_thread()
++            .enable_time()
++            .start_paused(true)
++            .build()
++            .unwrap()
++    }
++
++    fn take(hub: &Arc<Hub>, runtime: &tokio::runtime::Runtime, id: RequestId, cmd: &str) {
++        let env = parse_command(&format!(r#"{{"v":1,"id":{id},"cmd":{cmd}}}"#)).unwrap();
++        hub.spawn_command(runtime, env, Permit::acquire(&hub.in_flight).unwrap());
++    }
++
++    fn reply_to(
++        log: &Arc<Mutex<Vec<Event>>>,
++        id: RequestId,
++    ) -> Result<Option<TransferId>, ErrorInfo> {
++        match wait_for_reply(log, id) {
++            Event::Reply {
++                ok: true, transfer, ..
++            } => Ok(transfer),
++            Event::Reply { error: Some(e), .. } => Err(e),
++            other => panic!("{other:?}"),
++        }
++    }
++
++    /// A `set_receiving` that waited 56 s for the switch behind slow
++    /// protocols still gets it and runs to the end: the final `receiving`
++    /// comes, with no protocol left `starting`. One that would wait past
++    /// 60 s is refused having changed nothing. Under a timeout around the
++    /// whole command, the first was cut off half-way at 60 s, after its
++    /// `starting`.
++    #[test]
++    fn a_switch_that_waited_long_still_finishes_and_says_so() {
++        let dir = tempfile::tempdir().unwrap();
++        let runtime = paused_runtime();
++        let slow = ADAPTER_TIMEOUT.saturating_sub(Duration::from_secs(1));
++        let adapters: Vec<Arc<dyn Adapter>> = vec![
++            Arc::new(Slow {
++                protocol: Protocol::LocalSend,
++                switch: slow,
++            }),
++            Arc::new(Slow {
++                protocol: Protocol::QuickShare,
++                switch: slow,
++            }),
++        ];
++        let (hub, delivery, log) = test_hub(dir.path(), adapters);
++        let on = r#"{"type":"set_receiving","on":true}"#;
++        let off = r#"{"type":"set_receiving","on":false}"#;
++        // 0-14 s: on. 14-42 s: settings, a stop and a start. 42-56 s: off.
++        // 56-70 s: on, which waited 56 s. And one more, which would wait 70.
++        take(&hub, &runtime, 1, on);
++        take(
++            &hub,
++            &runtime,
++            2,
++            r#"{"type":"set_settings","settings":{"device_name":"x"}}"#,
++        );
++        take(&hub, &runtime, 3, off);
++        take(&hub, &runtime, 4, on);
++        take(&hub, &runtime, 5, off);
++        runtime.block_on(async { tokio::time::sleep(Duration::from_secs(300)).await });
++        for id in 1..=4 {
++            assert_eq!(reply_to(&log, id), Ok(None), "command {id}");
++        }
++        let refused = reply_to(&log, 5).unwrap_err();
++        assert_eq!(refused.code, ErrorCode::Internal);
++        assert!(
++            refused.message.contains("nothing was changed"),
++            "{refused:?}"
++        );
++        let last = log
++            .lock()
++            .unwrap()
++            .iter()
++            .rev()
++            .find_map(|e| match e {
++                Event::Receiving { on, protocols } => Some((*on, protocols.clone())),
++                _ => None,
++            })
++            .unwrap();
++        assert!(last.0, "{last:?}");
++        assert!(
++            last.1.iter().all(|p| p.state == ProtocolState::Ready),
++            "{last:?}"
++        );
++        assert!(runtime.block_on(hub.state.lock()).receiving);
++        assert_eq!(hub.in_flight.load(Ordering::Acquire), 0);
++        drop(delivery);
++    }
++
++    /// A receive by code is answered once the user has answered (F-MW2), so
++    /// it may take the mailbox connection, the key exchange and the offer
++    /// at their slowest, and then the whole minute the dialog counts down,
++    /// less a moment. Under the 60 s every other command has, it died
++    /// while the dialog still showed time left. Bounded all the same.
++    #[test]
++    fn receive_wormhole_may_wait_for_the_user_as_long_as_the_offer_does() {
++        let dir = tempfile::tempdir().unwrap();
++        let runtime = paused_runtime();
++        let adapters: Vec<Arc<dyn Adapter>> = vec![Arc::new(Slow {
++            protocol: Protocol::Wormhole,
++            switch: Duration::ZERO,
++        })];
++        let (hub, delivery, log) = test_hub(dir.path(), adapters);
++        let slowest = HANDSHAKE_TIMEOUT
++            .saturating_mul(2)
++            .saturating_add(NETWORK_IDLE_TIMEOUT)
++            .saturating_add(OFFER_TIMEOUT)
++            .saturating_sub(Duration::from_secs(2));
++        let receive = |secs: u64| format!(r#"{{"type":"receive_wormhole","code":"{secs}"}}"#);
++        take(&hub, &runtime, 1, &receive(slowest.as_secs()));
++        take(&hub, &runtime, 2, &receive(3600));
++        runtime.block_on(async { tokio::time::sleep(Duration::from_secs(400)).await });
++        assert_eq!(reply_to(&log, 1), Ok(Some(7)));
++        let gave_up = reply_to(&log, 2).unwrap_err();
++        assert_eq!(gave_up.code, ErrorCode::Internal);
++        assert!(gave_up.message.contains("in time"), "{gave_up:?}");
++        // docs/FFI.md says 150 s.
++        assert_eq!(RECEIVE_CODE_TIMEOUT, Duration::from_secs(150));
++        assert!(RECEIVE_CODE_TIMEOUT > slowest);
++        drop(delivery);
++    }
++
++    #[test]
++    fn every_command_has_its_time_limit() {
++        let cmd = |body: &str| {
++            parse_command(&format!(r#"{{"v":1,"id":1,"cmd":{body}}}"#))
++                .unwrap()
++                .cmd
++        };
++        assert_eq!(
++            command_timeout(&cmd(r#"{"type":"set_receiving","on":true}"#)),
++            None
++        );
++        assert_eq!(
++            command_timeout(&cmd(r#"{"type":"set_settings","settings":{}}"#)),
++            None
++        );
++        assert_eq!(
++            command_timeout(&cmd(r#"{"type":"receive_wormhole","code":"7-a-b"}"#)),
++            Some(RECEIVE_CODE_TIMEOUT)
++        );
++        for body in [
++            r#"{"type":"get_settings"}"#,
++            r#"{"type":"start_discovery"}"#,
++            r#"{"type":"answer","offer":1,"accept":true}"#,
++            r#"{"type":"cancel","transfer":1}"#,
++            r#"{"type":"list_bluetooth_devices"}"#,
++        ] {
++            assert_eq!(command_timeout(&cmd(body)), Some(COMMAND_TIMEOUT), "{body}");
++        }
++    }
++
+     #[tokio::test]
+     async fn sends_are_checked_before_any_adapter_sees_them() {
+         let dir = tempfile::tempdir().unwrap();
+diff --git a/crates/sukkula-engine/src/wormhole/receive.rs b/crates/sukkula-engine/src/wormhole/receive.rs
+index 11f095d..12fe79f 100644
+--- a/crates/sukkula-engine/src/wormhole/receive.rs
++++ b/crates/sukkula-engine/src/wormhole/receive.rs
+@@ -128,7 +128,9 @@ async fn until_accepted(
+     let answer = {
+         // Boxed so that dropping it -- which withdraws the offer -- can
+         // happen before the goodbye rather than after.
+-        let mut asking = Box::pin(inner.ctx.offer(raw));
++        // CONTRACT: the user typed the code, so the offer is one they asked
++        // for, outside the LAN's global offer limit.
++        let mut asking = Box::pin(inner.ctx.offer_requested(raw));
+         loop {
+             tokio::select! {
+                 r = &mut asking => break r.map_err(Some),
+-- 
+2.43.0
+
