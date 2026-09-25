@@ -13,7 +13,9 @@
 # upstream does not have and fails. So the crate is tested from a copy:
 #
 #   1. third_party/rqs_lib is copied to a temporary directory, without any
-#      target/ or Cargo.lock a local run may have left there;
+#      target/ or Cargo.lock a local run may have left there, and beside it
+#      the vendored crates it depends on by path (CONTRACT: mdns-sd, added
+#      by the Quick Share fix round; `../mdns-sd` from rqs_lib);
 #   2. the root Cargo.lock goes next to it, and cargo prunes it to
 #      rqs_lib's graph. Every package that remains must be in the root
 #      lock at the same version and checksum -- the resolution may drop
@@ -30,6 +32,8 @@ set -euo pipefail
 
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 src="$root/third_party/rqs_lib"
+# CONTRACT: the vendored crates rqs_lib names by path, copied alongside.
+siblings=(mdns-sd)
 target_dir=${RQS_LIB_TARGET_DIR:-$root/target/rqs-lib-tests}
 
 fail() { echo "rqs-lib-tests: FAIL $*" >&2; exit 1; }
@@ -38,8 +42,8 @@ command -v cargo >/dev/null 2>&1 || fail "cargo not found"
 [[ -f "$src/Cargo.toml" ]] || fail "third_party/rqs_lib/Cargo.toml is missing"
 [[ -f "$root/Cargo.lock" ]] || fail "Cargo.lock is missing"
 
-# What third_party/rqs_lib holds before, to prove it is untouched after.
-listing() { (cd "$src" && find . -print | LC_ALL=C sort); }
+# What third_party/ holds before, to prove it is untouched after.
+listing() { (cd "$root/third_party" && find . -print | LC_ALL=C sort); }
 before=$(listing)
 
 work=$(mktemp -d)
@@ -47,6 +51,12 @@ trap 'rm -rf "$work"' EXIT
 crate="$work/rqs_lib"
 mkdir "$crate"
 (cd "$src" && tar -cf - --exclude=./target --exclude=./Cargo.lock .) | (cd "$crate" && tar -xf -)
+for sibling in "${siblings[@]}"; do
+    [[ -f "$root/third_party/$sibling/Cargo.toml" ]] || fail "third_party/$sibling/Cargo.toml is missing"
+    mkdir "$work/$sibling"
+    (cd "$root/third_party/$sibling" && tar -cf - --exclude=./target --exclude=./Cargo.lock .) |
+        (cd "$work/$sibling" && tar -xf -)
+done
 cp "$root/Cargo.lock" "$crate/Cargo.lock"
 
 cd "$root"
@@ -75,5 +85,5 @@ echo "rqs-lib-tests: $(packages "$crate/Cargo.lock" | wc -l) packages, all as Ca
 
 CARGO_TARGET_DIR="$target_dir" cargo test --locked --manifest-path "$crate/Cargo.toml" "$@"
 
-[[ "$(listing)" == "$before" ]] || fail "third_party/rqs_lib changed while its tests ran"
+[[ "$(listing)" == "$before" ]] || fail "third_party/ changed while rqs_lib's tests ran"
 echo "rqs-lib-tests: ok"

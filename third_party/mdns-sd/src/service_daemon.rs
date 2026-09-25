@@ -1232,6 +1232,15 @@ impl Wanted {
         }
     }
 
+    /// `instance` was replaced within this response: nothing of it is
+    /// wanted any more.
+    fn forget(&mut self, instance: &str) {
+        if let Some(instances) = self.instances.as_mut() {
+            instances.remove(instance);
+        }
+        self.hosts = None;
+    }
+
     /// The instances of the browsed types.
     fn instances(&mut self, zc: &Zeroconf) -> &HashSet<String> {
         self.instances.get_or_insert_with(|| {
@@ -1883,19 +1892,7 @@ impl Zeroconf {
             // instances that are gone: `resolved` used to keep every
             // instance name it ever saw.
             if now >= self.next_sweep {
-                self.next_sweep = now + CACHE_CHECK_MILLIS;
-                let queriers = &self.service_queriers;
-                let resolvers = &self.hostname_resolvers;
-                self.cache.sweep(
-                    now,
-                    self.accept_unsolicited,
-                    |ty| queriers.contains_key(ty),
-                    |host| resolvers.contains_key(host),
-                );
-                let live = self.cache.instance_names();
-                self.resolved.retain(|instance| live.contains(instance));
-                self.pending_resolves
-                    .retain(|instance| live.contains(instance));
+                self.sweep_cache(now);
             }
 
             // Send out probing queries.
@@ -2046,6 +2043,30 @@ impl Zeroconf {
                 service_info.remove_ipaddr(addr);
             }
         }
+    }
+
+    /// Drops from the cache what nothing leads to any more
+    /// (`DnsCache::sweep`), and forgets the resolutions of instances that are
+    /// gone, with their retries: `resolved` used to keep every instance name
+    /// it ever saw.
+    fn sweep_cache(&mut self, now: u64) {
+        self.next_sweep = now + CACHE_CHECK_MILLIS;
+        let queriers = &self.service_queriers;
+        let resolvers = &self.hostname_resolvers;
+        self.cache.sweep(
+            now,
+            self.accept_unsolicited,
+            |ty| queriers.contains_key(ty),
+            |host| resolvers.contains_key(host),
+        );
+        let live = self.cache.instance_names();
+        self.resolved.retain(|instance| live.contains(instance));
+        self.pending_resolves
+            .retain(|instance| live.contains(instance));
+        self.retransmissions.retain(|rerun| match &rerun.command {
+            Command::Resolve(instance, _) => live.contains(instance),
+            _ => true,
+        });
     }
 
     fn add_timer(&mut self, next_time: u64) {
@@ -3391,6 +3412,11 @@ impl Zeroconf {
             _ => 2,
         });
         let mut wanted = Wanted::default();
+        // Short of room: sweep now rather than at the next second, so that
+        // what nothing leads to any more never keeps new records out.
+        if MAX_CACHED_RECORDS.saturating_sub(self.cache.total_records()) < MAX_CACHED_RECORDS / 4 {
+            self.sweep_cache(now);
+        }
         let mut room = MAX_CACHED_RECORDS.saturating_sub(self.cache.total_records());
         let mut replaced: HashMap<String, HashSet<String>> = HashMap::new();
 
@@ -3418,6 +3444,10 @@ impl Zeroconf {
                 match self.cache.make_room_for_ptr(&record, src) {
                     Ok(None) => {}
                     Ok(Some(instance)) => {
+                        let resolvers = &self.hostname_resolvers;
+                        self.cache
+                            .forget_instance(&instance, |host| resolvers.contains_key(host));
+                        wanted.forget(&instance);
                         replaced
                             .entry(record.get_name().to_string())
                             .or_default()
@@ -3473,12 +3503,17 @@ impl Zeroconf {
             }
         }
 
-        // Instances replaced to make room are gone, as if they had expired.
+        // Instances replaced to make room are gone, as if they had expired,
+        // and so are their pending resolutions and the retries of those.
         for instances in replaced.values() {
             for instance in instances {
                 self.resolved.remove(instance);
                 self.pending_resolves.remove(instance);
             }
+            self.retransmissions.retain(|rerun| match &rerun.command {
+                Command::Resolve(instance, _) => !instances.contains(instance),
+                _ => true,
+            });
         }
         if !replaced.is_empty() {
             self.notify_service_removal(replaced);
@@ -4328,6 +4363,12 @@ impl Zeroconf {
     }
 
     fn exec_command_resolve(&mut self, instance: String, try_count: u16) {
+        // An instance no longer pending -- resolved, or not cached any more
+        // (replaced, swept) -- is not queried for again. Its retries used to
+        // go on regardless, four queries for every name a neighbour made up.
+        if !self.pending_resolves.contains(&instance) {
+            return;
+        }
         let pending_query = self.query_unresolved(&instance);
         if pending_query && try_count < RESOLVE_MAX_TRY {
             // Note that if the current try already succeeds, the next retransmission

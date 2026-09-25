@@ -1,0 +1,321 @@
+F-QS1: announce under a .local. host name, and report a refusal
+
+The receiver's announcement never went out. build_service gave the
+service its bare instance name as host name: that suited the mdns-sd
+fork upstream used, but since 0.11.0 mdns-sd's `register()` refuses any
+host name that does not end in ".local." (service_daemon.rs:539-541,
+4712-4714), and patch 0007 moved to 0.21. `run()` called `register()?`
+before its loop, so the task ended with an error at once; the embedding
+application, which had spawned it, saw nothing, and no Android phone ever
+listed the device as a receiver.
+
+The host name is now `<instance>.local.`. The service is registered in
+`MDnsServer::new`, so that a refusal is the caller's error to report
+(Sukkula reports it as Quick Share failing to start); `run()` announces
+until cancelled and says goodbye. A daemon whose setup fails part-way is
+shut down instead of left running. `with_port` (hidden) makes either
+daemon on another UDP port, for tests, which must not announce anything
+on the network they run on.
+
+tests/mdns.rs registers a service on loopback and a second mDNS daemon
+resolves it: port, host name, address, and the endpoint info in the `n`
+record, then the goodbye. Without the host-name fix, `new` fails with
+"Hostname must end with '.local.'".
+
+Findings: Sukkula review 2026-09-25 kept[0].
+---
+ src/hdl/mdns.rs           |  70 ++++++++++++++++++------
+ src/hdl/mdns_discovery.rs |  33 ++++++++----
+ tests/mdns.rs             | 108 ++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 186 insertions(+), 25 deletions(-)
+
+diff --git a/src/hdl/mdns.rs b/src/hdl/mdns.rs
+index 67b6d88..e16be59 100644
+--- a/src/hdl/mdns.rs
++++ b/src/hdl/mdns.rs
+@@ -1,6 +1,6 @@
+ use std::time::Duration;
+ 
+-use mdns_sd::{IfKind, IfPredicate, ServiceDaemon, ServiceInfo};
++use mdns_sd::{IfKind, IfPredicate, MDNS_PORT, ServiceDaemon, ServiceInfo};
+ use tokio_util::sync::CancellationToken;
+ 
+ use super::mdns_discovery::{AddrFilter, shutdown_daemon};
+@@ -16,9 +16,10 @@ pub const SERVICE_TYPE: &str = "_FC9F5ED42C8A._tcp.local.";
+ /// goodbye that did not make it only means peers forget us a little later.
+ const UNREGISTER_WAIT: Duration = Duration::from_millis(500);
+ 
+-/// Announces this device as a Quick Share receiver for as long as
+-/// [`MDnsServer::run`] runs. Whether to announce at all (visibility) is the
+-/// embedding application's decision: it simply does not run one.
++/// Announces this device as a Quick Share receiver from when it is made
++/// until [`MDnsServer::run`] returns or it is dropped. Whether to announce
++/// at all (visibility) is the embedding application's decision: it simply
++/// does not make one.
+ pub struct MDnsServer {
+     daemon: ServiceDaemon,
+     service_info: ServiceInfo,
+@@ -28,34 +29,69 @@ impl MDnsServer {
+     /// Announces on the IPv4 interfaces whose address `filter` accepts --
+     /// the embedding application's reach policy -- and nowhere else: not on
+     /// a mobile-data or VPN interface with a public address.
++    ///
++    /// # Errors
++    ///
++    /// When the daemon cannot start, or refuses the service. The service is
++    /// registered here, not in [`MDnsServer::run`], so that a refusal is
++    /// the caller's to report: it used to end the spawned task with an
++    /// error nobody saw, and the device was never announced.
+     pub fn new(
+         endpoint_id: [u8; 4],
+         service_port: u16,
+         device_name: &str,
+         device_type: DeviceType,
+         filter: AddrFilter,
++    ) -> Result<Self, anyhow::Error> {
++        Self::with_port(
++            MDNS_PORT,
++            endpoint_id,
++            service_port,
++            device_name,
++            device_type,
++            filter,
++        )
++    }
++
++    /// [`MDnsServer::new`] on another UDP port than mDNS's own: for tests,
++    /// so that they never announce anything on the network they run on.
++    #[doc(hidden)]
++    pub fn with_port(
++        mdns_port: u16,
++        endpoint_id: [u8; 4],
++        service_port: u16,
++        device_name: &str,
++        device_type: DeviceType,
++        filter: AddrFilter,
+     ) -> Result<Self, anyhow::Error> {
+         let service_info =
+             Self::build_service(endpoint_id, service_port, device_name, device_type)?;
+ 
+-        let daemon = ServiceDaemon::new()?;
++        // Made first, so that an error below drops it and stops its thread.
++        let server = Self {
++            daemon: ServiceDaemon::new_with_port(mdns_port)?,
++            service_info,
++        };
+         // Quick Share peers resolve us over IPv4 only (the fork this used to
+         // depend on published A records only).
+-        daemon.disable_interface(IfKind::All)?;
+-        daemon.enable_interface(IfKind::Predicate(IfPredicate::new(move |intf| {
+-            intf.ip().is_ipv4() && filter(intf.ip())
+-        })))?;
++        server.daemon.disable_interface(IfKind::All)?;
++        server
++            .daemon
++            .enable_interface(IfKind::Predicate(IfPredicate::new(move |intf| {
++                intf.ip().is_ipv4() && filter(intf.ip())
++            })))?;
++        server.daemon.register(server.service_info.clone())?;
++        Ok(server)
++    }
+ 
+-        Ok(Self {
+-            daemon,
+-            service_info,
+-        })
++    /// The full name of the announced service instance.
++    pub fn fullname(&self) -> &str {
++        self.service_info.get_fullname()
+     }
+ 
+     pub async fn run(&mut self, ctk: CancellationToken) -> Result<(), anyhow::Error> {
+         info!("{INNER_NAME}: service starting");
+         let monitor = self.daemon.monitor()?;
+-        self.daemon.register(self.service_info.clone())?;
+ 
+         let result = loop {
+             tokio::select! {
+@@ -96,10 +132,14 @@ impl MDnsServer {
+         let endpoint_info = gen_mdns_endpoint_info(device_type as u8, device_name);
+ 
+         let properties = [("n", endpoint_info)];
++        // The host name has to be a .local. name: mdns-sd refuses any other
++        // (since 0.11), and so would a peer resolving it. The mdns-sd fork
++        // this code was written for took the bare instance name.
++        let host_name = format!("{name}.local.");
+         let si = ServiceInfo::new(
+             SERVICE_TYPE,
+             &name,
+-            &name, // Needs to be ASCII?
++            &host_name,
+             "",
+             service_port,
+             &properties[..],
+diff --git a/src/hdl/mdns_discovery.rs b/src/hdl/mdns_discovery.rs
+index 9f857f9..98c612a 100644
+--- a/src/hdl/mdns_discovery.rs
++++ b/src/hdl/mdns_discovery.rs
+@@ -3,7 +3,7 @@ use std::net::IpAddr;
+ use std::sync::Arc;
+ use std::time::Duration;
+ 
+-use mdns_sd::{IfKind, IfPredicate, ServiceDaemon, ServiceEvent};
++use mdns_sd::{IfKind, IfPredicate, MDNS_PORT, ServiceDaemon, ServiceEvent};
+ use tokio::sync::broadcast;
+ use tokio_util::sync::CancellationToken;
+ 
+@@ -48,18 +48,31 @@ impl MDnsDiscovery {
+         sender: broadcast::Sender<EndpointInfo>,
+         filter: AddrFilter,
+     ) -> Result<Self, anyhow::Error> {
+-        let daemon = ServiceDaemon::new()?;
+-        let intf_filter = filter.clone();
+-        daemon.disable_interface(IfKind::All)?;
+-        daemon.enable_interface(IfKind::Predicate(IfPredicate::new(move |intf| {
+-            intf.ip().is_ipv4() && intf_filter(intf.ip())
+-        })))?;
++        Self::with_port(MDNS_PORT, sender, filter)
++    }
+ 
+-        Ok(Self {
+-            daemon,
++    /// [`MDnsDiscovery::new`] on another UDP port than mDNS's own: for
++    /// tests, so that they never browse the network they run on.
++    #[doc(hidden)]
++    pub fn with_port(
++        mdns_port: u16,
++        sender: broadcast::Sender<EndpointInfo>,
++        filter: AddrFilter,
++    ) -> Result<Self, anyhow::Error> {
++        let intf_filter = filter.clone();
++        // Made first, so that an error below drops it and stops its thread.
++        let discovery = Self {
++            daemon: ServiceDaemon::new_with_port(mdns_port)?,
+             sender,
+             filter,
+-        })
++        };
++        discovery.daemon.disable_interface(IfKind::All)?;
++        discovery
++            .daemon
++            .enable_interface(IfKind::Predicate(IfPredicate::new(move |intf| {
++                intf.ip().is_ipv4() && intf_filter(intf.ip())
++            })))?;
++        Ok(discovery)
+     }
+ 
+     pub async fn run(self, ctk: CancellationToken) -> Result<(), anyhow::Error> {
+diff --git a/tests/mdns.rs b/tests/mdns.rs
+new file mode 100644
+index 0000000..14532b8
+--- /dev/null
++++ b/tests/mdns.rs
+@@ -0,0 +1,108 @@
++//! mDNS for real: the daemons on the loopback interface and a UDP port of
++//! the test's own instead of 5353, so nothing is announced on, or read
++//! from, the network the tests run on.
++
++use std::net::{IpAddr, Ipv4Addr};
++use std::sync::Arc;
++use std::time::Duration;
++
++use mdns_sd::{IfKind, Receiver, ResolvedService, ServiceDaemon, ServiceEvent};
++use rqs_lib::hdl::{AddrFilter, SERVICE_TYPE};
++use rqs_lib::utils::{parse_mdns_endpoint_info, parse_mdns_name};
++use rqs_lib::{DeviceType, MDnsServer};
++use tokio_util::sync::CancellationToken;
++
++/// How long anything here may take: registration probes for 750 ms first.
++const WAIT: Duration = Duration::from_secs(10);
++
++/// A port no other test uses at the same time, most likely.
++fn test_port() -> u16 {
++    rand::random_range(20_000..60_000)
++}
++
++/// The reach policy, as the tests' embedding application gives it: loopback.
++fn loopback() -> AddrFilter {
++    Arc::new(|ip: IpAddr| ip.is_loopback())
++}
++
++/// Another mDNS daemon, on loopback and `port`: the peer that looks for us.
++fn browser(port: u16) -> ServiceDaemon {
++    let daemon = ServiceDaemon::new_with_port(port).unwrap();
++    daemon.disable_interface(IfKind::All).unwrap();
++    daemon.enable_interface(IfKind::LoopbackV4).unwrap();
++    daemon
++}
++
++/// Waits for `fullname` to be resolved on `events`.
++async fn resolved(events: &Receiver<ServiceEvent>, fullname: &str) -> ResolvedService {
++    let found = async {
++        loop {
++            if let ServiceEvent::ServiceResolved(info) = events.recv_async().await.unwrap() {
++                if info.get_fullname() == fullname {
++                    return *info;
++                }
++            }
++        }
++    };
++    tokio::time::timeout(WAIT, found)
++        .await
++        .unwrap_or_else(|_| panic!("{fullname} was not resolved within {WAIT:?}"))
++}
++
++/// Waits for `fullname` to be reported gone on `events`.
++async fn removed(events: &Receiver<ServiceEvent>, fullname: &str) {
++    let gone = async {
++        loop {
++            if let ServiceEvent::ServiceRemoved(_, name) = events.recv_async().await.unwrap() {
++                if name == fullname {
++                    return;
++                }
++            }
++        }
++    };
++    tokio::time::timeout(WAIT, gone)
++        .await
++        .unwrap_or_else(|_| panic!("{fullname} was not removed within {WAIT:?}"));
++}
++
++// F-QS1, F-QS4: the announcement that makes the device visible as a
++// receiver. It used to be refused by mdns-sd (a host name not ending in
++// ".local."), silently, so no peer ever saw it.
++#[tokio::test]
++async fn the_announcement_registers_and_another_daemon_resolves_it() {
++    let port = test_port();
++    let peer = browser(port);
++    let events = peer.browse(SERVICE_TYPE).unwrap();
++
++    let mut server = MDnsServer::with_port(
++        port,
++        *b"Ab3z",
++        4242,
++        "Test laptop",
++        DeviceType::Laptop,
++        loopback(),
++    )
++    .expect("the service is registered");
++    let fullname = server.fullname().to_string();
++    assert_eq!(parse_mdns_name(&fullname), Some(*b"Ab3z"));
++    let ctk = CancellationToken::new();
++    let task = tokio::spawn({
++        let ctk = ctk.clone();
++        async move { server.run(ctk).await }
++    });
++
++    let info = resolved(&events, &fullname).await;
++    assert_eq!(info.get_port(), 4242);
++    assert!(info.get_hostname().ends_with(".local."), "{}", info.get_hostname());
++    assert!(info.get_addresses_v4().contains(&Ipv4Addr::LOCALHOST));
++    let n = info.get_property_val_str("n").expect("the endpoint info");
++    let (device_type, name) = parse_mdns_endpoint_info(n).unwrap();
++    assert_eq!(device_type, DeviceType::Laptop);
++    assert_eq!(name, "Test laptop");
++
++    // Stopping says goodbye: the peer forgets us at once, not at expiry.
++    ctk.cancel();
++    tokio::time::timeout(WAIT, task).await.unwrap().unwrap().unwrap();
++    removed(&events, &fullname).await;
++    peer.shutdown().unwrap();
++}

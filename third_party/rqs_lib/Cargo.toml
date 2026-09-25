@@ -27,8 +27,11 @@ hmac = "0.12"
 # Only to tell our own addresses from a peer's; mdns-sd uses the same crate.
 if-addrs = "0.15"
 log = "0.4"
-# crates.io release instead of an unpinned git branch of a fork.
-mdns-sd = "0.21"
+# The crates.io release, as Sukkula vendors it with its own patches
+# (third_party/mdns-sd, upstream plus third_party/mdns-sd.patches): the
+# cache, the timers and the replies bounded, only the local link read,
+# the announcing source reported.
+mdns-sd = { version = "0.21.4", path = "../mdns-sd" }
 num-bigint = "0.4"
 p256 = { version = "0.13", features = ["ecdh"] }
 prost = "0.13"
@@ -38,3 +41,9 @@ sha2 = "0.10"
 # The embedding application's runtime; the library spawns nothing.
 tokio = { version = "1.43", features = ["macros", "rt", "net", "sync", "time", "io-util"] }
 tokio-util = "0.7"
+
+[dev-dependencies]
+# tests/mdns.rs plays hostile hosts on the link: packets from a source
+# address and port of its choosing, next to the daemons' own sockets. The
+# version mdns-sd uses, so nothing new is built.
+socket2 = { version = "0.6", features = ["all"] }

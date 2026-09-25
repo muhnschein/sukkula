@@ -1,0 +1,715 @@
+S7, S4: mdns-sd as Sukkula patches it; sources filtered, and counted
+
+Two changes in how this crate uses mdns-sd, which Sukkula now vendors
+with patches of its own (third_party/mdns-sd.patches: a bounded cache,
+no timer per record, capped TTLs, only the local link read, unicast
+replies limited, the announcing source reported):
+
+- Both daemons get the embedding application's reach policy as a source
+  filter (`ServiceDaemon::new_with_source_filter`): a packet from an
+  address the policy refuses is dropped unread, so the responder never
+  answers one -- a legacy-unicast query from outside the LAN used to get
+  a reply sent straight back to it -- and discovery never caches one.
+- The discovery cache was first come, first served: once 64 services
+  were remembered, nobody new was, for as long as the first comers kept
+  announcing -- one host with 64 instance names was enough. Now one
+  source (the packets' source address, `EndpointInfo::source`, not the
+  address an announcement names) keeps at most 4, a new one replacing
+  its own oldest, and a newcomer at a full cache takes the place of the
+  oldest service of the source holding the most, if that source keeps
+  more than the newcomer then has. Services replaced are reported gone.
+
+tests/mdns.rs: a responder whose policy admits one address answers a
+legacy-unicast query from it, and not from another loopback address,
+and a burst of twelve gets at most four replies; a host announcing 1500
+devices at TTL 2^32-1 plus records for names nobody browses leaves at
+most four of its services listed and a handful of records and timers in
+the daemon, and a phone announcing itself afterwards is listed, with
+its own source.
+
+Findings: Sukkula review 2026-09-25 kept[15], kept[1], kept[6].
+---
+ Cargo.toml                |  13 +-
+ src/hdl/mdns.rs           |   9 +-
+ src/hdl/mdns_discovery.rs | 208 ++++++++++++++++++++++---
+ tests/mdns.rs             | 309 +++++++++++++++++++++++++++++++++++++-
+ 4 files changed, 508 insertions(+), 31 deletions(-)
+
+diff --git a/Cargo.toml b/Cargo.toml
+index 136a2bd..b92c972 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -27,8 +27,11 @@ hmac = "0.12"
+ # Only to tell our own addresses from a peer's; mdns-sd uses the same crate.
+ if-addrs = "0.15"
+ log = "0.4"
+-# crates.io release instead of an unpinned git branch of a fork.
+-mdns-sd = "0.21"
++# The crates.io release, as Sukkula vendors it with its own patches
++# (third_party/mdns-sd, upstream plus third_party/mdns-sd.patches): the
++# cache, the timers and the replies bounded, only the local link read,
++# the announcing source reported.
++mdns-sd = { version = "0.21.4", path = "../mdns-sd" }
+ num-bigint = "0.4"
+ p256 = { version = "0.13", features = ["ecdh"] }
+ prost = "0.13"
+@@ -38,3 +41,9 @@ sha2 = "0.10"
+ # The embedding application's runtime; the library spawns nothing.
+ tokio = { version = "1.43", features = ["macros", "rt", "net", "sync", "time", "io-util"] }
+ tokio-util = "0.7"
++
++[dev-dependencies]
++# tests/mdns.rs plays hostile hosts on the link: packets from a source
++# address and port of its choosing, next to the daemons' own sockets. The
++# version mdns-sd uses, so nothing new is built.
++socket2 = { version = "0.6", features = ["all"] }
+diff --git a/src/hdl/mdns.rs b/src/hdl/mdns.rs
+index e16be59..ddb968e 100644
+--- a/src/hdl/mdns.rs
++++ b/src/hdl/mdns.rs
+@@ -3,7 +3,7 @@ use std::time::Duration;
+ use mdns_sd::{IfKind, IfPredicate, MDNS_PORT, ServiceDaemon, ServiceInfo};
+ use tokio_util::sync::CancellationToken;
+ 
+-use super::mdns_discovery::{AddrFilter, shutdown_daemon};
++use super::mdns_discovery::{AddrFilter, shutdown_daemon, source_filter};
+ use crate::utils::{DeviceType, gen_mdns_endpoint_info, gen_mdns_name};
+ 
+ const INNER_NAME: &str = "MDnsServer";
+@@ -28,7 +28,10 @@ pub struct MDnsServer {
+ impl MDnsServer {
+     /// Announces on the IPv4 interfaces whose address `filter` accepts --
+     /// the embedding application's reach policy -- and nowhere else: not on
+-    /// a mobile-data or VPN interface with a public address.
++    /// a mobile-data or VPN interface with a public address. Answers only
++    /// queries from sources it accepts (S7): mdns-sd drops any other packet
++    /// unread, so no reply, legacy unicast included, goes to an address
++    /// outside the policy, and replies by unicast are limited per address.
+     ///
+     /// # Errors
+     ///
+@@ -69,7 +72,7 @@ impl MDnsServer {
+ 
+         // Made first, so that an error below drops it and stops its thread.
+         let server = Self {
+-            daemon: ServiceDaemon::new_with_port(mdns_port)?,
++            daemon: ServiceDaemon::new_with_source_filter(mdns_port, source_filter(&filter))?,
+             service_info,
+         };
+         // Quick Share peers resolve us over IPv4 only (the fork this used to
+diff --git a/src/hdl/mdns_discovery.rs b/src/hdl/mdns_discovery.rs
+index 98c612a..ba02415 100644
+--- a/src/hdl/mdns_discovery.rs
++++ b/src/hdl/mdns_discovery.rs
+@@ -3,7 +3,7 @@ use std::net::IpAddr;
+ use std::sync::Arc;
+ use std::time::Duration;
+ 
+-use mdns_sd::{IfKind, IfPredicate, MDNS_PORT, ServiceDaemon, ServiceEvent};
++use mdns_sd::{IfKind, IfPredicate, MDNS_PORT, ServiceDaemon, ServiceEvent, SourcePredicate};
+ use tokio::sync::broadcast;
+ use tokio_util::sync::CancellationToken;
+ 
+@@ -14,13 +14,28 @@ use crate::utils::{is_not_self_ip, parse_mdns_endpoint_info, parse_mdns_name};
+ /// and every announcement used to add an entry, without limit.
+ pub const MAX_DISCOVERED_ENDPOINTS: usize = 64;
+ 
++/// Most services remembered from one source: the address of the packets
++/// that announced them, as mdns-sd reports it -- not the address an
++/// announcement names, which is the announcer's to choose. Past this, and
++/// when the cache is full, the rule in [`make_room`] applies.
++pub const MAX_ENDPOINTS_PER_SOURCE: usize = 4;
++
+ /// How long stopping waits for the mDNS daemon thread to acknowledge.
+ const SHUTDOWN_WAIT: Duration = Duration::from_millis(500);
+ 
+-/// Which addresses a service may be reached at, and which interfaces the
+-/// daemon listens on: the embedding application's reach policy.
++/// Which addresses a service may be reached at, which interfaces the
++/// daemon listens on, and which sources it reads packets from at all: the
++/// embedding application's reach policy.
+ pub type AddrFilter = Arc<dyn Fn(IpAddr) -> bool + Send + Sync>;
+ 
++/// The reach policy as mdns-sd's source filter (S7): a packet from an
++/// address it refuses is dropped unread, neither answered nor cached --
++/// which, for a legacy-unicast query, also means no reply sent there.
++pub(crate) fn source_filter(filter: &AddrFilter) -> SourcePredicate {
++    let filter = filter.clone();
++    SourcePredicate::new(move |ip| filter(*ip))
++}
++
+ #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+ pub struct EndpointInfo {
+     pub fullname: String,
+@@ -33,6 +48,64 @@ pub struct EndpointInfo {
+     pub rtype: Option<DeviceType>,
+     /// `Some(true)` when found, `Some(false)` when it went away.
+     pub present: Option<bool>,
++    /// Where the announcement came from: the source address of its
++    /// packets. Unlike `ip`, which the announcer writes as it likes, this is
++    /// what to count or rate-limit an announcer by.
++    pub source: Option<IpAddr>,
++}
++
++/// A service remembered: what was reported, where it came from, and when
++/// it was first seen (a count, for telling the oldest).
++struct Remembered {
++    info: EndpointInfo,
++    source: Option<IpAddr>,
++    seq: u64,
++}
++
++/// Which remembered service a new one from `source` is to replace:
++/// `Ok(None)` when there is room, `Err(())` when it is refused.
++///
++/// A source keeps at most [`MAX_ENDPOINTS_PER_SOURCE`]: a new one replaces
++/// its own oldest. When the cache holds [`MAX_DISCOVERED_ENDPOINTS`], a
++/// newcomer replaces the oldest service of the source holding the most, if
++/// that source would still hold more than the newcomer's; otherwise it is
++/// refused. So whoever fills the cache first cannot keep a device with
++/// fewer services out -- first come used to be first served, for as long
++/// as it kept re-announcing -- and only as many distinct sources as there
++/// are places could. mdns-sd's cache below, as patched, keeps the same
++/// rule.
++fn make_room(
++    cache: &HashMap<String, Remembered>,
++    source: Option<IpAddr>,
++) -> Result<Option<String>, ()> {
++    let from_source = cache.values().filter(|r| r.source == source).count();
++    let evict_from: Vec<Option<IpAddr>> = if from_source >= MAX_ENDPOINTS_PER_SOURCE {
++        vec![source]
++    } else if cache.len() >= MAX_DISCOVERED_ENDPOINTS {
++        let mut per_source: HashMap<Option<IpAddr>, usize> = HashMap::new();
++        for r in cache.values() {
++            let n = per_source.entry(r.source).or_default();
++            *n = n.saturating_add(1);
++        }
++        let most = per_source.values().copied().max().unwrap_or(0);
++        if most <= from_source.saturating_add(1) {
++            return Err(());
++        }
++        // Of the sources holding the most, the one with the oldest service.
++        per_source
++            .into_iter()
++            .filter(|(_, n)| *n == most)
++            .map(|(s, _)| s)
++            .collect()
++    } else {
++        return Ok(None);
++    };
++    cache
++        .iter()
++        .filter(|(_, r)| evict_from.contains(&r.source))
++        .min_by_key(|(_, r)| r.seq)
++        .map(|(name, _)| Some(name.clone()))
++        .ok_or(())
+ }
+ 
+ pub struct MDnsDiscovery {
+@@ -42,8 +115,9 @@ pub struct MDnsDiscovery {
+ }
+ 
+ impl MDnsDiscovery {
+-    /// Browses on the interfaces whose address `filter` accepts, and reports
+-    /// only services at addresses it accepts.
++    /// Browses on the interfaces whose address `filter` accepts, reads only
++    /// packets from sources it accepts, and reports only services at
++    /// addresses it accepts.
+     pub fn new(
+         sender: broadcast::Sender<EndpointInfo>,
+         filter: AddrFilter,
+@@ -62,7 +136,7 @@ impl MDnsDiscovery {
+         let intf_filter = filter.clone();
+         // Made first, so that an error below drops it and stops its thread.
+         let discovery = Self {
+-            daemon: ServiceDaemon::new_with_port(mdns_port)?,
++            daemon: ServiceDaemon::new_with_source_filter(mdns_port, source_filter(&filter))?,
+             sender,
+             filter,
+         };
+@@ -80,8 +154,9 @@ impl MDnsDiscovery {
+ 
+         let receiver = self.daemon.browse(super::SERVICE_TYPE)?;
+ 
+-        // Map with fullname as key and EndpointInfo as value
+-        let mut cache: HashMap<String, EndpointInfo> = HashMap::new();
++        // By full name. Bounded, and fair to sources: see `make_room`.
++        let mut cache: HashMap<String, Remembered> = HashMap::new();
++        let mut seq: u64 = 0;
+ 
+         loop {
+             tokio::select! {
+@@ -103,9 +178,15 @@ impl MDnsDiscovery {
+                     match event {
+                         ServiceEvent::ServiceResolved(info) => {
+                             let fullname = info.get_fullname().to_string();
+-                            if !cache.contains_key(&fullname)
+-                                && cache.len() >= MAX_DISCOVERED_ENDPOINTS
+-                            {
++                            let source = info.get_source();
++                            // S7 once more: mdns-sd reads no packet from a
++                            // source the policy refuses.
++                            if source.is_some_and(|src| !(self.filter)(src)) {
++                                continue;
++                            }
++                            let known = cache.get(&fullname).map(|r| r.seq);
++                            if known.is_none() && make_room(&cache, source).is_err() {
++                                debug!("ServiceResolved: no room for another service");
+                                 continue;
+                             }
+                             let port = info.get_port();
+@@ -147,22 +228,38 @@ impl MDnsDiscovery {
+                                 port: Some(port.to_string()),
+                                 rtype: Some(dt),
+                                 present: Some(true),
++                                source,
+                             };
+                             debug!("ServiceResolved: a {:?} at {:?}", ei.rtype, ei.id);
+-                            cache.insert(fullname, ei.clone());
++                            let first_seen = match known {
++                                Some(first_seen) => first_seen,
++                                None => {
++                                    // Checked above, and nothing changed since.
++                                    if let Ok(Some(old)) = make_room(&cache, source) {
++                                        if let Some(r) = cache.remove(&old) {
++                                            debug!("ServiceResolved: one replaced to make room");
++                                            let _ = self.sender.send(gone(r));
++                                        }
++                                    }
++                                    seq = seq.wrapping_add(1);
++                                    seq
++                                }
++                            };
++                            cache.insert(
++                                fullname,
++                                Remembered {
++                                    info: ei.clone(),
++                                    source,
++                                    seq: first_seen,
++                                },
++                            );
+                             let _ = self.sender.send(ei);
+                         }
+                         ServiceEvent::ServiceRemoved(_, fullname) => {
+                             trace!("ServiceRemoved");
+-                            if let Some(ei) = cache.remove(&fullname) {
++                            if let Some(r) = cache.remove(&fullname) {
+                                 debug!("ServiceRemoved: forgetting a service");
+-                                let _ = self.sender.send(EndpointInfo {
+-                                    fullname: ei.fullname,
+-                                    id: ei.id,
+-                                    endpoint_id: ei.endpoint_id,
+-                                    present: Some(false),
+-                                    ..Default::default()
+-                                });
++                                let _ = self.sender.send(gone(r));
+                             }
+                         }
+                         _ => {}
+@@ -185,9 +282,80 @@ impl Drop for MDnsDiscovery {
+     }
+ }
+ 
++/// What is reported for a service that went away.
++fn gone(r: Remembered) -> EndpointInfo {
++    EndpointInfo {
++        fullname: r.info.fullname,
++        id: r.info.id,
++        endpoint_id: r.info.endpoint_id,
++        present: Some(false),
++        source: r.source,
++        ..Default::default()
++    }
++}
++
+ /// Stops the daemon thread and waits, briefly, until it has.
+ pub(crate) async fn shutdown_daemon(daemon: &ServiceDaemon) {
+     if let Ok(status) = daemon.shutdown() {
+         let _ = tokio::time::timeout(SHUTDOWN_WAIT, status.recv_async()).await;
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn src(i: usize) -> Option<IpAddr> {
++        Some(IpAddr::from([192, 168, (i / 250) as u8, (i % 250) as u8 + 1]))
++    }
++
++    /// Adds `name` from `source` the way `run` does; false when refused.
++    fn add(cache: &mut HashMap<String, Remembered>, seq: &mut u64, name: &str, source: Option<IpAddr>) -> bool {
++        match make_room(cache, source) {
++            Err(()) => return false,
++            Ok(Some(old)) => {
++                cache.remove(&old);
++            }
++            Ok(None) => {}
++        }
++        *seq += 1;
++        let info = EndpointInfo { fullname: name.to_string(), ..Default::default() };
++        cache.insert(name.to_string(), Remembered { info, source, seq: *seq });
++        true
++    }
++
++    #[test]
++    fn one_source_keeps_a_few_and_its_newest() {
++        let (mut cache, mut seq) = (HashMap::new(), 0);
++        for i in 0..MAX_ENDPOINTS_PER_SOURCE + 3 {
++            assert!(add(&mut cache, &mut seq, &format!("s{i}"), src(0)));
++        }
++        assert_eq!(cache.len(), MAX_ENDPOINTS_PER_SOURCE);
++        assert!(cache.contains_key(&format!("s{}", MAX_ENDPOINTS_PER_SOURCE + 2)));
++        assert!(!cache.contains_key("s0"));
++    }
++
++    #[test]
++    fn a_full_cache_takes_a_source_with_fewer_but_not_one_that_takes_a_last_place() {
++        let (mut cache, mut seq) = (HashMap::new(), 0);
++        let sources = MAX_DISCOVERED_ENDPOINTS / MAX_ENDPOINTS_PER_SOURCE;
++        for s in 0..sources {
++            for i in 0..MAX_ENDPOINTS_PER_SOURCE {
++                assert!(add(&mut cache, &mut seq, &format!("s{s}i{i}"), src(s)));
++            }
++        }
++        assert_eq!(cache.len(), MAX_DISCOVERED_ENDPOINTS);
++        assert!(add(&mut cache, &mut seq, "honest", src(999)));
++        assert_eq!(cache.len(), MAX_DISCOVERED_ENDPOINTS);
++        // The oldest of those holding the most went; everyone still has some.
++        assert!(!cache.contains_key("s0i0"));
++        assert!(cache.contains_key("s0i1"));
++
++        let (mut cache, mut seq) = (HashMap::new(), 0);
++        for s in 0..MAX_DISCOVERED_ENDPOINTS {
++            assert!(add(&mut cache, &mut seq, &format!("s{s}"), src(s)));
++        }
++        assert!(!add(&mut cache, &mut seq, "late", src(999)));
++        assert_eq!(cache.len(), MAX_DISCOVERED_ENDPOINTS);
++    }
++}
+diff --git a/tests/mdns.rs b/tests/mdns.rs
+index 14532b8..0769076 100644
+--- a/tests/mdns.rs
++++ b/tests/mdns.rs
+@@ -2,14 +2,17 @@
+ //! the test's own instead of 5353, so nothing is announced on, or read
+ //! from, the network the tests run on.
+ 
+-use std::net::{IpAddr, Ipv4Addr};
++use std::collections::HashMap;
++use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
+ use std::sync::Arc;
+-use std::time::Duration;
++use std::time::{Duration, Instant};
+ 
+-use mdns_sd::{IfKind, Receiver, ResolvedService, ServiceDaemon, ServiceEvent};
+-use rqs_lib::hdl::{AddrFilter, SERVICE_TYPE};
+-use rqs_lib::utils::{parse_mdns_endpoint_info, parse_mdns_name};
+-use rqs_lib::{DeviceType, MDnsServer};
++use mdns_sd::{IfKind, Receiver, ResolvedService, ServiceDaemon, ServiceEvent, SourcePredicate};
++use rqs_lib::hdl::{AddrFilter, MAX_ENDPOINTS_PER_SOURCE, SERVICE_TYPE};
++use rqs_lib::utils::{gen_mdns_endpoint_info, gen_mdns_name, parse_mdns_endpoint_info, parse_mdns_name};
++use rqs_lib::{DeviceType, EndpointInfo, MDnsDiscovery, MDnsServer};
++use socket2::{Domain, Protocol, Socket, Type};
++use tokio::sync::broadcast;
+ use tokio_util::sync::CancellationToken;
+ 
+ /// How long anything here may take: registration probes for 750 ms first.
+@@ -106,3 +109,297 @@ async fn the_announcement_registers_and_another_daemon_resolves_it() {
+     removed(&events, &fullname).await;
+     peer.shutdown().unwrap();
+ }
++
++/// DNS messages as a peer on the link would send them, built by hand: the
++/// tests choose every byte, which is the point.
++mod wire {
++    pub const PTR: u16 = 12;
++    pub const TXT: u16 = 16;
++    pub const SRV: u16 = 33;
++    pub const A: u16 = 1;
++    const IN: u16 = 1;
++    const FLUSH: u16 = 0x8000;
++
++    pub fn name(out: &mut Vec<u8>, name: &str) {
++        for label in name.trim_end_matches('.').split('.') {
++            out.push(label.len() as u8);
++            out.extend_from_slice(label.as_bytes());
++        }
++        out.push(0);
++    }
++
++    /// One resource record.
++    pub struct Record {
++        pub name: String,
++        pub ty: u16,
++        pub ttl: u32,
++        pub rdata: Vec<u8>,
++    }
++
++    pub fn ptr(ty: &str, instance: &str, ttl: u32) -> Record {
++        let mut rdata = Vec::new();
++        name(&mut rdata, instance);
++        Record { name: ty.to_string(), ty: PTR, ttl, rdata }
++    }
++
++    pub fn srv(instance: &str, host: &str, port: u16, ttl: u32) -> Record {
++        let mut rdata = vec![0, 0, 0, 0];
++        rdata.extend_from_slice(&port.to_be_bytes());
++        name(&mut rdata, host);
++        Record { name: instance.to_string(), ty: SRV, ttl, rdata }
++    }
++
++    pub fn txt(instance: &str, entry: &str, ttl: u32) -> Record {
++        let mut rdata = vec![entry.len() as u8];
++        rdata.extend_from_slice(entry.as_bytes());
++        Record { name: instance.to_string(), ty: TXT, ttl, rdata }
++    }
++
++    pub fn a(host: &str, ip: std::net::Ipv4Addr, ttl: u32) -> Record {
++        Record { name: host.to_string(), ty: A, ttl, rdata: ip.octets().to_vec() }
++    }
++
++    /// A response carrying `records` as answers.
++    pub fn response(records: &[Record]) -> Vec<u8> {
++        let mut out = vec![0, 0, 0x84, 0];
++        out.extend_from_slice(&0u16.to_be_bytes());
++        out.extend_from_slice(&(records.len() as u16).to_be_bytes());
++        out.extend_from_slice(&[0, 0, 0, 0]);
++        for r in records {
++            name(&mut out, &r.name);
++            out.extend_from_slice(&r.ty.to_be_bytes());
++            let class = if r.ty == PTR { IN } else { IN | FLUSH };
++            out.extend_from_slice(&class.to_be_bytes());
++            out.extend_from_slice(&r.ttl.to_be_bytes());
++            out.extend_from_slice(&(r.rdata.len() as u16).to_be_bytes());
++            out.extend_from_slice(&r.rdata);
++        }
++        out
++    }
++
++    /// A one-question PTR query with message id `id`.
++    pub fn ptr_query(ty: &str, id: u16) -> Vec<u8> {
++        let mut out = id.to_be_bytes().to_vec();
++        out.extend_from_slice(&[0, 0, 0, 1, 0, 0, 0, 0, 0, 0]);
++        name(&mut out, ty);
++        out.extend_from_slice(&PTR.to_be_bytes());
++        out.extend_from_slice(&IN.to_be_bytes());
++        out
++    }
++}
++
++/// A host on the link at `ip`, sending from the mDNS port `port` as a
++/// responder does (a response from any other port is ignored), to the
++/// group on the loopback interface, where the daemons under test listen.
++struct Host {
++    socket: Socket,
++    group: SocketAddr,
++}
++
++impl Host {
++    fn new(ip: Ipv4Addr, port: u16) -> Host {
++        let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).unwrap();
++        socket.set_reuse_address(true).unwrap();
++        socket.set_reuse_port(true).unwrap();
++        socket.bind(&SocketAddr::from(SocketAddrV4::new(ip, port)).into()).unwrap();
++        socket.set_multicast_if_v4(&Ipv4Addr::LOCALHOST).unwrap();
++        socket.set_multicast_loop_v4(true).unwrap();
++        let group = SocketAddr::from((Ipv4Addr::new(224, 0, 0, 251), port));
++        Host { socket, group }
++    }
++
++    fn send(&self, packet: &[u8]) {
++        self.socket.send_to(packet, &self.group.into()).unwrap();
++    }
++
++    /// Announces one Quick Share device: endpoint id `id`, at this host's
++    /// address, with every record's TTL `ttl`.
++    fn announce(&self, id: [u8; 4], at: Ipv4Addr, ttl: u32) {
++        let instance = format!("{}.{SERVICE_TYPE}", gen_mdns_name(id));
++        let host = format!("{}.local.", gen_mdns_name(id));
++        let n = format!("n={}", gen_mdns_endpoint_info(DeviceType::Phone as u8, "Phone"));
++        self.send(&wire::response(&[
++            wire::ptr(SERVICE_TYPE, &instance, ttl),
++            wire::srv(&instance, &host, 4000, ttl),
++            wire::txt(&instance, &n, ttl),
++            wire::a(&host, at, ttl),
++        ]));
++    }
++}
++
++/// `n` distinct endpoint ids, letters only.
++fn ids(n: usize) -> Vec<[u8; 4]> {
++    (0..n)
++        .map(|i| {
++            let d = |k: usize| b'a' + ((i / 26usize.pow(k as u32)) % 26) as u8;
++            [b'Z', d(2), d(1), d(0)]
++        })
++        .collect()
++}
++
++/// What `rx` reports until `until` holds of it or `WAIT` is over: the
++/// services present, by full name, with their sources.
++async fn watch(
++    rx: &mut broadcast::Receiver<EndpointInfo>,
++    present: &mut HashMap<String, Option<IpAddr>>,
++    mut until: impl FnMut(&HashMap<String, Option<IpAddr>>) -> bool,
++) -> bool {
++    let deadline = Instant::now() + WAIT;
++    while !until(present) {
++        let left = deadline.saturating_duration_since(Instant::now());
++        match tokio::time::timeout(left, rx.recv()).await {
++            Ok(Ok(ei)) => {
++                if ei.present == Some(true) {
++                    present.insert(ei.fullname, ei.source);
++                } else {
++                    present.remove(&ei.fullname);
++                }
++            }
++            Ok(Err(broadcast::error::RecvError::Lagged(_))) => {}
++            Ok(Err(e)) => panic!("{e}"),
++            Err(_) => return false,
++        }
++    }
++    true
++}
++
++// S7 (kept[15]): the responder answers only the reach policy's sources, and
++// its unicast replies are limited per address. Legacy-unicast replies go to
++// whatever address and port a query came from, so without this any host
++// could make it send its name and port anywhere, as fast as it liked.
++#[tokio::test]
++async fn the_responder_answers_only_the_policy_and_not_without_limit() {
++    let port = test_port();
++    let only_one = Ipv4Addr::LOCALHOST;
++    let filter: AddrFilter = Arc::new(move |ip: IpAddr| ip == IpAddr::V4(only_one));
++    let mut server =
++        MDnsServer::with_port(port, *b"Rspd", 4243, "Responder", DeviceType::Phone, filter)
++            .unwrap();
++    let fullname = server.fullname().to_string();
++    let ctk = CancellationToken::new();
++    let task = tokio::spawn({
++        let ctk = ctk.clone();
++        async move { server.run(ctk).await }
++    });
++    // Once another daemon has resolved it, it is announced and answers.
++    let peer = browser(port);
++    resolved(&peer.browse(SERVICE_TYPE).unwrap(), &fullname).await;
++    // Alone on the port from here on, so a unicast query reaches it.
++    peer.shutdown().unwrap();
++    tokio::time::sleep(Duration::from_millis(300)).await;
++
++    let to = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
++    let answers = |from: Ipv4Addr, queries: u16| {
++        let s = UdpSocket::bind((from, 0)).unwrap();
++        s.set_read_timeout(Some(Duration::from_millis(1500))).unwrap();
++        for id in 0..queries {
++            s.send_to(&wire::ptr_query(SERVICE_TYPE, 0x5000 + id), to).unwrap();
++        }
++        let mut got = 0;
++        let mut buf = [0u8; 9000];
++        while let Ok((len, _)) = s.recv_from(&mut buf) {
++            // A reply: our id, and the answer names the service.
++            assert!(len > 12 && buf[0] == 0x50);
++            got += 1;
++        }
++        got
++    };
++    // From outside the policy: nothing, not even to a reachable address.
++    assert_eq!(answers(Ipv4Addr::new(127, 0, 0, 2), 3), 0);
++    // From inside: answered -- but a burst gets no more than four a second.
++    assert_eq!(answers(only_one, 1), 1);
++    tokio::time::sleep(Duration::from_millis(1100)).await;
++    let burst = answers(only_one, 12);
++    assert!((1..=4).contains(&burst), "{burst} replies to a burst of 12");
++
++    ctk.cancel();
++    tokio::time::timeout(WAIT, task).await.unwrap().unwrap().unwrap();
++}
++
++// kept[1], kept[6]: one host on the link announcing without end -- 1500
++// devices at the longest TTL there is, and records for names nobody asked
++// about -- neither grows what the daemon keeps nor keeps a device it did
++// not announce off the list. The list used to be first come, first
++// served, for as long as the first comer kept announcing, and the cache
++// under it took everything.
++#[tokio::test]
++async fn a_flood_from_one_host_is_bounded_and_keeps_nobody_else_out() {
++    let port = test_port();
++    let (tx, mut rx) = broadcast::channel(1024);
++    let discovery = MDnsDiscovery::with_port(port, tx, loopback()).unwrap();
++    let ctk = CancellationToken::new();
++    let task = tokio::spawn(discovery.run(ctk.clone()));
++    // A second daemon browsing as MDnsDiscovery does, for its counters.
++    let counted = ServiceDaemon::new_with_source_filter(
++        port,
++        SourcePredicate::new(|ip: &IpAddr| ip.is_loopback()),
++    )
++    .unwrap();
++    counted.disable_interface(IfKind::All).unwrap();
++    counted.enable_interface(IfKind::LoopbackV4).unwrap();
++    // Its events are read, or it would stop at the tenth, waiting.
++    let counted_events = counted.browse(SERVICE_TYPE).unwrap();
++    let drain = tokio::spawn(async move { while counted_events.recv_async().await.is_ok() {} });
++    // Both are browsing once their first query has gone out.
++    tokio::time::sleep(Duration::from_millis(500)).await;
++
++    let attacker_ip = Ipv4Addr::new(127, 0, 0, 2);
++    let attacker = Host::new(attacker_ip, port);
++    for (i, id) in ids(1500).into_iter().enumerate() {
++        attacker.announce(id, attacker_ip, u32::MAX);
++        // Records for names no browsed instance leads to.
++        let junk = format!("junk{i}.local.");
++        attacker.send(&wire::response(&[
++            wire::srv(&format!("x{i}._other._tcp.local."), &junk, 1, u32::MAX),
++            wire::txt(&format!("x{i}._other._tcp.local."), "a=b", u32::MAX),
++            wire::a(&junk, attacker_ip, u32::MAX),
++        ]));
++        if i % 100 == 99 {
++            // At the pace a daemon keeps up with; drops by the kernel prove
++            // nothing either way.
++            tokio::time::sleep(Duration::from_millis(20)).await;
++        }
++    }
++    tokio::time::sleep(Duration::from_millis(500)).await;
++
++    // An honest phone on the same link announces itself, the ordinary way.
++    let phone_ip = Ipv4Addr::new(127, 0, 0, 3);
++    let phone = Host::new(phone_ip, port);
++    let phone_id = *b"Hnst";
++    let phone_name = format!("{}.{SERVICE_TYPE}", gen_mdns_name(phone_id));
++    let mut present = HashMap::new();
++    let mut listed = false;
++    for _ in 0..3 {
++        phone.announce(phone_id, phone_ip, 120);
++        if watch(&mut rx, &mut present, |p| p.contains_key(&phone_name)).await {
++            listed = true;
++            break;
++        }
++    }
++    assert!(listed, "the phone was never listed; present: {present:?}");
++    assert_eq!(present[&phone_name], Some(IpAddr::V4(phone_ip)));
++    let from_attacker = present
++        .values()
++        .filter(|s| **s == Some(IpAddr::V4(attacker_ip)))
++        .count();
++    assert!(from_attacker <= MAX_ENDPOINTS_PER_SOURCE, "{from_attacker} listed from one host");
++
++    // What the daemon under it keeps is bounded too: a few instances of the
++    // attacker's and the phone's, their records, and hardly any timers --
++    // not 1500 of each, and not a timer per record per packet.
++    let metrics = tokio::time::timeout(WAIT, counted.get_metrics().unwrap().recv_async())
++        .await
++        .expect("the daemon answers")
++        .unwrap();
++    let get = |k: &str| metrics.get(k).copied().unwrap_or(0);
++    assert!(get("cached-ptr") <= 5, "{metrics:?}");
++    assert!(get("cached-srv") <= 10, "{metrics:?}");
++    assert!(get("cached-txt") <= 10, "{metrics:?}");
++    assert!(get("cached-addr") <= 10, "{metrics:?}");
++    assert!(get("timer") < 64, "{metrics:?}");
++    counted.shutdown().unwrap();
++    let _ = tokio::time::timeout(WAIT, drain).await;
++
++    ctk.cancel();
++    tokio::time::timeout(WAIT, task).await.unwrap().unwrap().unwrap();
++}

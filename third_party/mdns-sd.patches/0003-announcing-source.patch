@@ -14,10 +14,10 @@ on an address the announcer chose).
  2 files changed, 27 insertions(+)
 
 diff --git a/src/service_daemon.rs b/src/service_daemon.rs
-index 3141ea4..b93e98f 100644
+index 53d5fdc..ad313b2 100644
 --- a/src/service_daemon.rs
 +++ b/src/service_daemon.rs
-@@ -3204,6 +3204,17 @@ impl Zeroconf {
+@@ -3225,6 +3225,17 @@ impl Zeroconf {
              port: 0,
              addresses: HashSet::new(),
              txt_properties: TxtProperties::new(),

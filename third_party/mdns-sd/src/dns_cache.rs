@@ -374,10 +374,14 @@ impl DnsCache {
                     _ => None,
                 };
                 if let Some(records) = records {
+                    // The furthest back of the oldest: new ones go in front.
                     let oldest = records
                         .iter()
                         .enumerate()
-                        .min_by_key(|(_, r)| r.record.get_record().get_created())
+                        .min_by(|(i, a), (j, b)| {
+                            let created = |r: &DnsRecordIntf| r.record.get_record().get_created();
+                            created(a).cmp(&created(b)).then(j.cmp(i))
+                        })
                         .map(|(i, _)| i);
                     if let Some(i) = oldest {
                         records.remove(i);
@@ -476,25 +480,36 @@ impl DnsCache {
             return Err(());
         }
         let from_src = records.iter().filter(|r| r.src_addr == src).count();
-        let evict_from = if from_src >= MAX_INSTANCES_PER_SOURCE {
-            src
+        let evict_from: Vec<IpAddr> = if from_src >= MAX_INSTANCES_PER_SOURCE {
+            vec![src]
         } else if records.len() >= MAX_INSTANCES_PER_TYPE {
             let mut per_source: HashMap<IpAddr, usize> = HashMap::new();
             for r in records.iter() {
                 *per_source.entry(r.src_addr).or_default() += 1;
             }
-            match per_source.into_iter().max_by_key(|(_, n)| *n) {
-                Some((top, n)) if n > from_src + 1 => top,
-                _ => return Err(()),
+            let most = per_source.values().copied().max().unwrap_or(0);
+            if most <= from_src + 1 {
+                return Err(());
             }
+            // Of the sources holding the most, the one with the oldest.
+            per_source
+                .into_iter()
+                .filter(|(_, n)| *n == most)
+                .map(|(s, _)| s)
+                .collect()
         } else {
             return Ok(None);
         };
+        // New records go in at the front, so among records made in the same
+        // millisecond the one furthest back is the oldest.
         let oldest = records
             .iter()
             .enumerate()
-            .filter(|(_, r)| r.src_addr == evict_from)
-            .min_by_key(|(_, r)| r.record.get_record().get_created())
+            .filter(|(_, r)| evict_from.contains(&r.src_addr))
+            .min_by(|(i, a), (j, b)| {
+                let created = |r: &DnsRecordIntf| r.record.get_record().get_created();
+                created(a).cmp(&created(b)).then(j.cmp(i))
+            })
             .map(|(i, _)| i);
         let Some(i) = oldest else {
             return Err(());
@@ -505,6 +520,39 @@ impl DnsCache {
             .any()
             .downcast_ref::<DnsPointer>()
             .map(|ptr| ptr.alias().to_string()))
+    }
+
+    /// Forgets what hangs off `instance`, whose PTR record was just replaced
+    /// to make room: its SRV, TXT and NSEC records, its subtype, and the
+    /// addresses of its host, unless another instance's SRV record names
+    /// that host or `is_resolving` wants it. They used to stay until the
+    /// next sweep, and a neighbour churning through instances filled the
+    /// cache with them in between, so that nobody's new records fitted.
+    pub(crate) fn forget_instance(&mut self, instance: &str, is_resolving: impl Fn(&str) -> bool) {
+        let hosts: Vec<String> = self
+            .srv
+            .remove(instance)
+            .into_iter()
+            .flatten()
+            .filter_map(|r| {
+                r.record
+                    .any()
+                    .downcast_ref::<DnsSrv>()
+                    .map(|srv| srv.host().to_lowercase())
+            })
+            .collect();
+        self.txt.remove(instance);
+        self.nsec.remove(instance);
+        self.subtype.remove(instance);
+        if hosts.is_empty() {
+            return;
+        }
+        let still_named = self.host_names(&self.instance_names());
+        for host in hosts {
+            if !still_named.contains(&host) && !is_resolving(&host) {
+                self.addr.remove(&host);
+            }
+        }
     }
 
     /// Drops what nothing needs any more: expired SRV, TXT, NSEC and
@@ -1525,6 +1573,56 @@ mod bounded_cache_tests {
             cache.make_room_for_ptr(&ptr(&format!("x.{TY}"), 1), src(1)),
             Ok(None)
         );
+    }
+
+    #[test]
+    fn a_replaced_instance_takes_its_records_with_it() {
+        let mut cache = DnsCache::new();
+        let mut room = MAX_CACHED_RECORDS;
+        let id = InterfaceId {
+            name: "wlan0".to_string(),
+            index: 3,
+        };
+        let one = src(1);
+        let add = |cache: &mut DnsCache, room: &mut usize, i: usize, host: &str| {
+            let instance = format!("i{i}.{TY}");
+            offer_ptr(cache, &instance, one).unwrap();
+            for r in [
+                DnsSrv::new(&instance, CLASS_IN, 120, 0, 0, 9, host.to_string()).boxed(),
+                DnsTxt::new(&instance, CLASS_IN, 120, vec![1, b'n']).boxed(),
+                DnsAddress::new(
+                    host,
+                    RRType::A,
+                    CLASS_IN,
+                    120,
+                    IpAddr::V4(Ipv4Addr::new(192, 168, 1, i as u8)),
+                    id.clone(),
+                )
+                .boxed(),
+            ] {
+                cache.add_or_update(&intf(), r, &mut Vec::new(), true, one, room);
+            }
+        };
+        // Two instances on one host, the rest on hosts of their own.
+        add(&mut cache, &mut room, 0, "shared.local.");
+        add(&mut cache, &mut room, 1, "shared.local.");
+        for i in 2..MAX_INSTANCES_PER_SOURCE {
+            add(&mut cache, &mut room, i, &format!("h{i}.local."));
+        }
+        let before = cache.total_records();
+        // i0 goes: its SRV and TXT with it, but not the host i1 still names.
+        let gone = cache.make_room_for_ptr(&ptr(&format!("new.{TY}"), 4500), one);
+        assert_eq!(gone, Ok(Some(format!("i0.{TY}"))));
+        cache.forget_instance(&format!("i0.{TY}"), |_| false);
+        assert!(cache.get_srv(&format!("i0.{TY}")).is_none());
+        assert!(cache.txt.get(&format!("i0.{TY}")).is_none());
+        assert!(cache.addr.contains_key("shared.local."));
+        assert_eq!(cache.total_records(), before - 3);
+        // i2's host is its alone, and goes with it -- unless resolved.
+        cache.forget_instance(&format!("i2.{TY}"), |host| host == "h2.local.");
+        assert!(cache.addr.contains_key("h2.local."));
+        cache.forget_instance(&format!("i3.{TY}"), |_| false);
+        assert!(!cache.addr.contains_key("h3.local."));
     }
 
     #[test]
