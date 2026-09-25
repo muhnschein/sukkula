@@ -11,8 +11,10 @@
 # only, but each warning the validator can raise about this package -- an
 # unstripped binary, a missing icon size, a Compatibility permission, a
 # deprecated library -- is either a defect or QA scrutiny at intake, and
-# Sukkula has no reason to carry one. ci/harbour/waivers.conf could excuse
-# a known one with its reason; it is empty (docs/HARBOUR.md).
+# Sukkula has no reason to carry one. An `rpm` line in
+# ci/harbour/waivers.conf could excuse a known one, by severity, subject and
+# message, with its reason (ci/harbour-waivers.sh); it is empty
+# (docs/HARBOUR.md).
 #
 #     ci/harbour-validate-rpm.sh <rpm>
 #     ci/harbour-validate-rpm.sh --log <saved validation log>
@@ -29,6 +31,8 @@ shopt -s extglob
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 upstream_file="$root/ci/harbour/UPSTREAM"
 waivers="$root/ci/harbour/waivers.conf"
+# shellcheck source=ci/harbour-waivers.sh
+. "$root/ci/harbour-waivers.sh"
 validator=${HARBOUR_VALIDATOR:-}
 repo_path=sailfishos/sdk-harbour-rpmvalidator
 
@@ -163,21 +167,36 @@ if [[ -z "$verdict" ]]; then
     exit 1
 fi
 
-# A finding is waived when one waiver's subject glob matches the
-# validator's subject field *and* its message glob matches the message.
-# Both, deliberately: the subject alone would waive every finding the
-# validator could ever raise about a path, when only the one named is
-# known and accepted.
+# This check's waivers: the `rpm` lines of ci/harbour/waivers.conf. A
+# finding is waived when one names its severity exactly and its subject
+# and message by glob -- all three, so a waiver excuses the one finding it
+# names and never every finding about a path. The `source` lines are
+# ci/harbour-check.sh's and excuse nothing here: its check IDs and
+# messages are its own, and none of them is a validator finding.
+declare -a waiver_line=() waiver_kind=() waiver_subject=() waiver_message=()
+declare -A waiver_used=()
+if ! records=$(waiver_records "$waivers"); then
+    echo "harbour-rpm: FAIL ci/harbour/waivers.conf has malformed lines (above)" >&2
+    exit 1
+fi
+while IFS=$'\t' read -r wline wchecker wkind wsubject wmessage; do
+    [[ "${wchecker:-}" = rpm ]] || continue
+    waiver_line+=("$wline")
+    waiver_kind+=("$wkind")
+    waiver_subject+=("$wsubject")
+    waiver_message+=("$wmessage")
+done <<< "$records"
+
 waived_line() {
-    local subject=$1 message=$2 entry wid wsubject wmessage
-    [[ -f "$waivers" ]] || return 1
-    while IFS= read -r entry; do
-        entry=${entry%%#*}
-        read -r wid wsubject wmessage <<< "$entry"
-        { [[ -n "${wid:-}" ]] && [[ -n "${wsubject:-}" ]] && [[ -n "${wmessage:-}" ]]; } || continue
+    local kind=$1 subject=$2 message=$3 i
+    for i in "${!waiver_line[@]}"; do
         # shellcheck disable=SC2053 # unquoted on purpose: they are globs.
-        [[ $subject == $wsubject ]] && [[ $message == $wmessage ]] && return 0
-    done < "$waivers"
+        if [[ "$kind" = "${waiver_kind[$i]}" ]] && [[ $subject == ${waiver_subject[$i]} ]] &&
+            [[ $message == ${waiver_message[$i]} ]]; then
+            waiver_used[${waiver_line[$i]}]=1
+            return 0
+        fi
+    done
     return 1
 }
 
@@ -187,7 +206,7 @@ while IFS= read -r line; do
     kind=$(cut -d'|' -f1 <<< "$line")
     subject=$(cut -d'|' -f2 <<< "$line")
     message=$(cut -d'|' -f3- <<< "$line")
-    if waived_line "$subject" "$message"; then
+    if waived_line "$kind" "$subject" "$message"; then
         echo "harbour-rpm: WAIVED $kind $subject -- $message"
         waived=$((waived + 1))
     else
@@ -196,9 +215,24 @@ while IFS= read -r line; do
     fi
 done < <(grep -E '^(ERROR|WARNING)\|' "$log" || true)
 
+# A waiver that excused nothing in this package is stale: the finding it
+# was written for is gone, and the licence must go with it -- the same rule
+# ci/harbour-check.sh holds its own waivers to.
+stale=0
+for i in "${!waiver_line[@]}"; do
+    [[ -n "${waiver_used[${waiver_line[$i]}]:-}" ]] && continue
+    echo "harbour-rpm: FAIL stale waiver at ci/harbour/waivers.conf:${waiver_line[$i]}" \
+         "('rpm ${waiver_kind[$i]} ${waiver_subject[$i]} ${waiver_message[$i]}') matches nothing; delete it" >&2
+    stale=$((stale + 1))
+done
+
 echo
 if [[ "$findings" -gt 0 ]]; then
     echo "harbour-rpm: FAILED -- $findings finding(s); Sukkula ships with none (docs/HARBOUR.md)" >&2
+    exit 1
+fi
+if [[ "$stale" -gt 0 ]]; then
+    echo "harbour-rpm: FAILED -- $stale stale waiver(s)" >&2
     exit 1
 fi
 # A FAIL verdict with nothing parsed is a validator whose output this

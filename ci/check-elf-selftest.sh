@@ -11,8 +11,10 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 cc=${CC_AARCH64:-aarch64-linux-gnu-gcc}
 strip=${STRIP_AARCH64:-aarch64-linux-gnu-strip}
-command -v "$cc" >/dev/null 2>&1 || { echo "selftest: FAIL $cc not found" >&2; exit 1; }
-command -v "$strip" >/dev/null 2>&1 || { echo "selftest: FAIL $strip not found" >&2; exit 1; }
+ar=${AR_AARCH64:-aarch64-linux-gnu-ar}
+for tool in "$cc" "$strip" "$ar"; do
+    command -v "$tool" >/dev/null 2>&1 || { echo "selftest: FAIL $tool not found" >&2; exit 1; }
+done
 
 cat > "$work/main.c" <<'EOF'
 #include <stdio.h>
@@ -28,6 +30,31 @@ cat > "$work/uses-util.c" <<'EOF'
 int util_stand_in(void);
 __attribute__((visibility("default"))) int main(void) { return util_stand_in(); }
 EOF
+# The leaks --only-main exists for: one of the C ABI's entry points, and a
+# Rust symbol (a mangled name, spelt with an asm label), exported beside
+# main() the way -rdynamic exports them when the archive's symbols are not
+# kept out of .dynsym.
+cat > "$work/exports-ffi.c" <<'EOF'
+__attribute__((visibility("default"))) int sukkula_version(void) { return 1; }
+__attribute__((visibility("default"))) int main(void) { return sukkula_version() - 1; }
+EOF
+cat > "$work/exports-rust.c" <<'EOF'
+__attribute__((visibility("default"))) int rust_fn(void)
+    __asm__("_ZN12sukkula_core4name8sanitize17h0123456789abcdefE");
+int rust_fn(void) { return 0; }
+__attribute__((visibility("default"))) int main(void) { return rust_fn(); }
+EOF
+# The same, but the way the package links: the "Rust" code in a static
+# archive, kept out of .dynsym by --exclude-libs,ALL and a dynamic list of
+# main alone (src/hardening.pri, src/dynamic.list).
+cat > "$work/archived.c" <<'EOF'
+__attribute__((visibility("default"))) int sukkula_version(void) { return 1; }
+EOF
+cat > "$work/uses-archive.c" <<'EOF'
+int sukkula_version(void);
+__attribute__((visibility("default"))) int main(void) { return sukkula_version() - 1; }
+EOF
+printf '{\n    main;\n};\n' > "$work/dynamic.list"
 
 status=0
 cases=0
@@ -40,7 +67,7 @@ build() {
     "$cc" -O2 -o "$work/$name" "$work/$src" "$@" 2>/dev/null &&
         "$strip" --strip-all "$work/$name"
 }
-full="--main-export --stripped --libc-start-main 2.34 --glibc-ceiling 2.39"
+full="--main-export --only-main --stripped --libc-start-main 2.34 --glibc-ceiling 2.39"
 # expect <pass|fail> <what> <binary> [extra check-elf options]
 expect() {
     local want=$1 what=$2 bin=$3 got
@@ -71,6 +98,13 @@ build rpath main.c "${good[@]}" -Wl,-rpath,/opt/lib
 "$cc" -shared -fPIC -Wl,-soname,libutil.so.1 -o "$work/libutil-stand-in.so" "$work/util.c"
 build libutil uses-util.c "${good[@]}" "$work/libutil-stand-in.so"
 build libutil-asneeded main.c "${good[@]}" -Wl,--as-needed -lutil
+build exports-ffi exports-ffi.c "${good[@]}"
+build exports-rust exports-rust.c "${good[@]}"
+"$cc" -O2 -c -fPIC -o "$work/archived.o" "$work/archived.c"
+"$ar" rcs "$work/libarchived.a" "$work/archived.o"
+build archive-leaks uses-archive.c "${good[@]}" "$work/libarchived.a"
+build archive-kept-in uses-archive.c "${good[@]}" -Wl,--dynamic-list="$work/dynamic.list" \
+    -Wl,--exclude-libs,ALL "$work/libarchived.a"
 
 expect pass "a binary built the way the package is" good
 expect fail "a binary that was not stripped" unstripped
@@ -82,6 +116,10 @@ expect fail "an executable stack" execstack
 expect fail "an RPATH" rpath
 expect fail "libutil.so.1, which Harbour does not allow" libutil
 expect pass "-lutil dropped by --as-needed" libutil-asneeded
+expect fail "a sukkula_* entry point exported beside main()" exports-ffi
+expect fail "a Rust symbol exported beside main()" exports-rust
+expect fail "an archive's symbols exported by -rdynamic" archive-leaks
+expect pass "the archive kept out, as src/hardening.pri links" archive-kept-in
 expect fail "a glibc newer than the ceiling" good --glibc-ceiling 2.17
 expect fail "the wrong __libc_start_main version" good --libc-start-main 2.17
 cases=$((cases + 1))

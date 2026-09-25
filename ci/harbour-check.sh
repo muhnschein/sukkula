@@ -31,6 +31,8 @@ shopt -s extglob
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 rules="$root/ci/harbour"
 waivers="$rules/waivers.conf"
+# shellcheck source=ci/harbour-waivers.sh
+. "$root/ci/harbour-waivers.sh"
 
 # The one device architecture (spec §2). rpmvalidation.conf's ICON_SIZES.
 ARCH=aarch64
@@ -63,7 +65,21 @@ qml_module_package() {
 status=0
 findings=0
 skipped=0
+
+# This check's waivers: the `source` lines of ci/harbour/waivers.conf, by
+# line number. The `rpm` lines are ci/harbour-validate-rpm.sh's and are
+# neither used nor stale here -- but every line is parsed, so a malformed
+# one of either kind fails on the pull request that writes it.
+declare -a waiver_line=() waiver_id=() waiver_subject=() waiver_message=()
 declare -A waiver_used=()
+if records=$(waiver_records "$waivers"); then :; else status=1; fi
+while IFS=$'\t' read -r wline wchecker wid wsubject wmessage; do
+    [[ "${wchecker:-}" = source ]] || continue
+    waiver_line+=("$wline")
+    waiver_id+=("$wid")
+    waiver_subject+=("$wsubject")
+    waiver_message+=("$wmessage")
+done <<< "$records"
 
 # HARBOUR_CHECK_STRICT=1 turns "the tool for this check is missing" into a
 # failure. CI sets it, so a check can never quietly stop running there.
@@ -83,13 +99,14 @@ skip() {
     return 0
 }
 
-# A finding is (check id, subject, message). The subject is what the
-# waiver file matches on, so it has to be the stable part -- a path, a
-# dependency, an import -- and never the prose.
+# A finding is (check id, subject, message). The subject has to be the
+# stable part -- a path, a dependency, an import -- so that a waiver's
+# subject glob keeps naming it; the message glob names which of the
+# findings about it is the known one.
 fail() {
     local id=$1 subject=$2 message=$3
     local key
-    if key=$(waived "$id" "$subject"); then
+    if key=$(waived "$id" "$subject" "$message"); then
         waiver_used[$key]=1
         echo "harbour-check: WAIVED [$id] $subject -- $message"
         return 0
@@ -100,24 +117,20 @@ fail() {
     return 0
 }
 
-# ci/harbour/waivers.conf: `<check id> <subject glob> <message glob> # why`.
-# Returns the matched line's key so a waiver that stops matching can be
-# reported.
+# A `source` waiver whose id, subject glob and message glob all match.
+# Prints the waiver's line number, so one that stops matching is reported.
 waived() {
-    local id=$1 subject=$2 line wid wsubject
-    [[ -f "$waivers" ]] || return 1
-    while IFS= read -r line; do
-        line=${line%%#*}
-        read -r wid wsubject _ <<< "$line"
-        [[ -n "${wid:-}" && -n "${wsubject:-}" ]] || continue
-        # Unquoted on purpose: the pattern is a glob, as upstream's own
+    local id=$1 subject=$2 message=$3 i
+    for i in "${!waiver_line[@]}"; do
+        # Unquoted on purpose: the patterns are globs, as upstream's own
         # allow-list matching is.
         # shellcheck disable=SC2053
-        if [[ "$id" = "$wid" ]] && [[ $subject == $wsubject ]]; then
-            echo "$wid $wsubject"
+        if [[ "$id" = "${waiver_id[$i]}" ]] && [[ $subject == ${waiver_subject[$i]} ]] &&
+            [[ $message == ${waiver_message[$i]} ]]; then
+            echo "${waiver_line[$i]}"
             return 0
         fi
-    done < "$waivers"
+    done
     return 1
 }
 
@@ -136,12 +149,83 @@ contained_in() {
     return 1
 }
 
-# Lines of a source file with its comments dropped: what the compiler, and
-# so the binary, actually sees. Line-based and deliberately simple -- `//`,
-# `///`, `//!`, `#` and the ` * ` of a block comment -- which is enough for
-# a grep that must not be fooled by an example in a doc comment.
+# Source files with their comments cut out: what the compiler, and so the
+# binary, actually sees, as `file:line:code` for every line with code left
+# on it. Only real comments go. Every language read here -- Rust, C++, QML,
+# JavaScript -- writes them `//` to the end of the line and `/* ... */`
+# (which may span lines, so the state is carried), and none of them uses
+# `#`: a line starting with `#` is a Rust attribute (`#[error("...")]`, a
+# string that reaches the binary), a C preprocessor line (`#define`), or a
+# JavaScript private field, and is kept, as is a C line starting with `*`
+# outside a comment (`*out = "...";`). The first version dropped every
+# line starting with `#` or `*` (finding "Harbour source gate skips every
+# '#' line").
+#
+# A comment marker inside a string is not one, so strings are tracked:
+# "...", Rust's r#"..."# and its b/c/br/cr forms, and a char literal, whose
+# quote must not open a string ('"'); in QML and JavaScript '...' and
+# `...` are strings instead. A Rust string or a template literal may run
+# over lines. Anything this misreads it misreads towards keeping text, so a
+# hardcoded path is never hidden by the parser -- only a real comment is.
 code_lines() {
-    grep -nHv -E '^[[:space:]]*(//|/\*|\*|#)' "$@" 2>/dev/null || true
+    awk '
+    FNR == 1 { block = 0; instr = ""; raw = ""
+               js = (FILENAME ~ /\.(qml|js)$/); rust = (FILENAME ~ /\.rs$/) }
+    {
+        line = $0; n = length(line); out = ""; i = 1
+        # A plain string ends at its line in C++ and JavaScript; a Rust
+        # string and a template literal carry on.
+        if (instr != "" && !(rust || instr == "`")) instr = ""
+        # Most lines hold no comment or string at all.
+        if (!block && raw == "" && instr == "" && line !~ /[\/"\047`]/) {
+            if (line ~ /[^[:space:]]/) print FILENAME ":" FNR ":" line
+            next
+        }
+        while (i <= n) {
+            c = substr(line, i, 1); c2 = substr(line, i, 2)
+            if (block) {
+                if (c2 == "*/") { block = 0; i += 2; out = out " " } else i++
+                continue
+            }
+            if (raw != "") {
+                if (substr(line, i, length(raw)) == raw) {
+                    out = out raw; i += length(raw); raw = ""
+                } else { out = out c; i++ }
+                continue
+            }
+            if (instr != "") {
+                out = out c
+                if (c == "\\") { out = out substr(line, i + 1, 1); i += 2; continue }
+                if (c == instr) instr = ""
+                i++
+                continue
+            }
+            if (c2 == "//") break
+            if (c2 == "/*") { block = 1; i += 2; continue }
+            if (rust && match(substr(line, i), /^(b|c)?r#*"/) &&
+                (i == 1 || substr(line, i - 1, 1) !~ /[A-Za-z0-9_]/)) {
+                hashes = RLENGTH - 2 - (substr(line, i, 1) != "r")
+                raw = "\""
+                for (h = 0; h < hashes; h++) raw = raw "#"
+                out = out substr(line, i, RLENGTH); i += RLENGTH
+                continue
+            }
+            if (c == "\"" || (js && (c == "\047" || c == "`"))) {
+                instr = c; out = out c; i++
+                continue
+            }
+            # A char literal: an escape, a quote or a slash alone, or up to
+            # four bytes (one UTF-8 character) with neither in them -- so
+            # a lifetime (`&\047a str`) never swallows a string or a comment.
+            if (!js && c == "\047" &&
+                match(substr(line, i), /^\047(\\[^\047]+|"|\/|[^\\\047"\/][^\047"\/]?[^\047"\/]?[^\047"\/]?)\047/)) {
+                out = out substr(line, i, RLENGTH); i += RLENGTH
+                continue
+            }
+            out = out c; i++
+        }
+        if (out ~ /[^[:space:]]/) print FILENAME ":" FNR ":" out
+    }' "$@" 2>/dev/null || true
 }
 
 #
@@ -275,6 +359,59 @@ for f in "$workflow" "$root/.github/workflows/sdk-image.yml" "$root/ci/build-sdk
     done < <(grep -v '^[[:space:]]*#' "$f" | grep -oE '\b[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\b' | sort -u)
 done
 note "[P.3] every SDK version the packaging names is 5.2 or later"
+
+#
+# P.6: the authority runs on every pull request that changes the package.
+# This check reads sources and cannot see what the link and rpm make of
+# them, so rpm.yml runs Jolla's validator on the built RPM for any pull
+# request touching what the package is built from -- the Rust crates and
+# the C++ shell (the binary), the QML (strings(1) reads every shipped
+# file), and the packaging. A pull_request trigger with no `paths:` runs
+# on every pull request, which covers them too. The paths once left out
+# crates/, src/ and qml/, so a home directory in a Rust attribute passed
+# both gates (finding "Harbour source gate skips every '#' line").
+#
+P6_PATHS=("rpm/**" "crates/**" "src/**" "qml/**" "icons/**" "translations/**" "third_party/**"
+          "Cargo.lock" "**/Cargo.toml" "**/build.rs" "rust-toolchain.toml"
+          "$name.pro" "$name.desktop")
+if [[ -f "$workflow" ]]; then
+    # The `on.pull_request` block, as written in this tree: the trigger's
+    # own line, then its `paths:` items (block style, one per line).
+    pr=$(awk '
+        /^on:[[:space:]]*$/ { on = 1; next }
+        on && /^[^[:space:]#]/ { on = 0 }
+        !on { next }
+        /^  pull_request:/ { pr = 1; line = $0; sub(/^  pull_request:[[:space:]]*/, "", line)
+                             sub(/[[:space:]]*#.*/, "", line); print "TRIGGER " line; next }
+        pr && /^  [^[:space:]#]/ { pr = 0 }
+        !pr { next }
+        /^    paths-ignore:/ { print "IGNORE"; paths = 0; next }
+        /^    paths:/ { print "PATHS"; paths = 1; next }
+        /^    [^[:space:]#-]/ { paths = 0 }
+        paths && /^[[:space:]]*- / { item = $0; sub(/^[[:space:]]*- [[:space:]]*/, "", item)
+                                     sub(/[[:space:]]+#.*/, "", item); gsub(/["\047]/, "", item)
+                                     print "PATH " item }
+    ' "$workflow")
+    if ! grep -q '^TRIGGER' <<< "$pr"; then
+        fail P.6 ".github/workflows/rpm.yml" \
+            "no pull_request trigger: Jolla's validator never runs before a change merges"
+    elif grep -qE '^TRIGGER .+' <<< "$pr" || grep -q '^IGNORE' <<< "$pr"; then
+        fail P.6 ".github/workflows/rpm.yml" \
+            "write pull_request's paths as a block list, without paths-ignore, so this check can read them"
+    elif grep -q '^PATHS' <<< "$pr"; then
+        missing=0
+        for want in "${P6_PATHS[@]}"; do
+            grep -qxF "PATH $want" <<< "$pr" && continue
+            missing=1
+            fail P.6 "$want" \
+                "rpm.yml's pull_request paths leave it out, so a change there merges without Jolla's validator"
+        done
+        [[ "$missing" = 1 ]] ||
+            note "[P.6] rpm.yml runs the validator on every pull request that changes the package"
+    else
+        note "[P.6] rpm.yml runs the validator on every pull request"
+    fi
+fi
 
 #
 # 1.2 Installed file layout, and 1.8, all read off the spec
@@ -893,7 +1030,13 @@ fi
 #
 # 2.1 Hardcoded home directories, in everything that is compiled or
 # shipped. The validator runs strings(1) over the package; this reads the
-# sources that become it, comments aside.
+# sources that become it, comments aside (code_lines: real comments only,
+# never a `#[...]` attribute or a `#define`).
+#
+# Every other file under src/ and qml/, and under a crate's src/, is read
+# whole: qmake ships qml/ as it is, and include_str!, include_bytes! and
+# Qt resources put any file there into the binary, where a comment syntax
+# this cannot know is no comment at all.
 #
 sources=()
 for d in src qml crates third_party; do
@@ -908,8 +1051,20 @@ if [[ ${#sources[@]} -gt 0 ]]; then
     if [[ ${#compiled[@]} -gt 0 ]]; then
         hits=$(code_lines "${compiled[@]}" | grep -E '/home/(nemo|defaultuser)(/|")' || true)
     fi
+    whole=()
+    for d in "$root/src" "$root/qml" "$root"/crates/*/src "$root"/third_party/*/src; do
+        [[ -d "$d" ]] && whole+=("$d")
+    done
+    if [[ ${#whole[@]} -gt 0 ]]; then
+        hits+=$'\n'$(find "${whole[@]}" -type f \
+            ! \( -name '*.rs' -o -name '*.cpp' -o -name '*.h' -o -name '*.qml' -o -name '*.js' \) \
+            -not -path '*/tests/*' -not -path '*/target/*' -exec grep -nH -E '/home/(nemo|defaultuser)' {} + || true)
+    fi
 fi
-[[ -f "$desktop" ]] && hits+=$(grep -nH -E '/home/(nemo|defaultuser)' "$desktop" || true)
+# One hit per line: a substitution drops its trailing newline, so each
+# list is joined on one of its own.
+[[ -f "$desktop" ]] && hits+=$'\n'$(grep -nH -E '/home/(nemo|defaultuser)' "$desktop" || true)
+hits=$(grep -v '^[[:space:]]*$' <<< "$hits" || true)
 if [[ -n "$hits" ]]; then
     while IFS= read -r hit; do
         [[ -n "$hit" ]] || continue
@@ -960,19 +1115,17 @@ fi
 
 #
 # Stale waivers. A waiver that no longer matches anything is a rule that
-# was fixed and a licence that outlived it.
+# was fixed and a licence that outlived it. Only this check's own: an `rpm`
+# waiver names a finding only the built package can have, and
+# ci/harbour-validate-rpm.sh holds it to the same rule.
 #
-if [[ -f "$waivers" ]]; then
-    while IFS= read -r line; do
-        line=${line%%#*}
-        read -r wid wsubject _ <<< "$line"
-        [[ -n "${wid:-}" && -n "${wsubject:-}" ]] || continue
-        if [[ -z "${waiver_used["$wid $wsubject"]:-}" ]]; then
-            echo "harbour-check: FAIL stale waiver '$wid $wsubject' in ci/harbour/waivers.conf matches nothing; delete it" >&2
-            status=1
-        fi
-    done < "$waivers"
-fi
+for i in "${!waiver_line[@]}"; do
+    if [[ -z "${waiver_used[${waiver_line[$i]}]:-}" ]]; then
+        echo "harbour-check: FAIL stale waiver at ci/harbour/waivers.conf:${waiver_line[$i]}" \
+             "('source ${waiver_id[$i]} ${waiver_subject[$i]} ${waiver_message[$i]}') matches nothing; delete it" >&2
+        status=1
+    fi
+done
 
 echo
 if [[ "$status" -eq 0 ]]; then

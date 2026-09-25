@@ -100,14 +100,42 @@ t=name_sanitize
 mkdir -p fuzz/corpus/$t
 RUSTUP_TOOLCHAIN=nightly cargo fuzz run --target x86_64-unknown-linux-gnu $t \
     fuzz/corpus/$t fuzz/seeds/$t -- \
-    -max_total_time=60 -dict=fuzz/dicts/$t.dict -timeout=10 -rss_limit_mb=4096 -max_len=4096
+    -max_total_time=60 -dict=fuzz/dicts/$t.dict -timeout=10 -rss_limit_mb=4096 \
+    -max_len=$(scripts/fuzz-smoke.sh --max-len $t)
 ```
 
 Two corpus directories: libFuzzer writes what it finds into the first
 (`fuzz/corpus/`, gitignored) and only reads the second (`fuzz/seeds/`,
 committed). So no copy step is needed, and a run never rewrites a committed
-seed. `text_message` takes `-max_len=70000`, so that the 64 KiB cap is
-reachable; every other target uses 4096.
+seed.
+
+### Input length
+
+`-max_len` is set per target, always. Left unset, libFuzzer uses the larger
+of 4096 and the biggest corpus file, and every committed seed is far below
+4096 -- so for the targets whose assertions sit at a 64 KiB cap, no input
+could ever reach it, and "over 64 KiB is refused" could not fail in CI
+(clove's `ci/fuzz.sh --max-len` found the same of its PEX cap). One table,
+in `scripts/fuzz-smoke.sh` (`max_len_for`); `scripts/fuzz-smoke.sh
+--max-len <target>` prints a target's value, and the command above uses it:
+
+| Target | `-max_len` | Why |
+| --- | ---: | --- |
+| `text_message`, `command_json`, `start_config`, `localsend_prepare_upload` | 69632 | `MAX_MESSAGE_BYTES` (64 KiB) + 4 KiB: the cap on a received text, an FFI command, `sukkula_start`'s JSON and a prepare-upload body, and the room to go past it |
+| `settings_json` | 16384 | `MAX_SETTINGS_BYTES`: every size of settings file the store reads |
+| every other target | 4096 | its caps are reached by a short input, or built by the harness from one (`offer_validate`'s 500 files and 64 KiB text, the Quick Share scripts' sizes) |
+
+Both caps are read from `sukkula-core`'s source, so a changed limit moves
+the lengths with it. A long `-max_len` alone is not enough: libFuzzer grows
+its inputs slowly, and a minute from 60-byte seeds never reaches 64 KiB. So
+for the four 64 KiB targets the smoke adds inputs of exactly 64 KiB and one
+byte more, made from the target's first seed (the JSON padded with
+whitespace, the text repeated), as a third, temporary corpus directory; made
+at run time rather than committed, so they follow the constant too.
+
+One cap is beyond any practical fuzz length: the mailbox guard's 4 MiB per
+connection (`wormhole_mailbox`), which `wormhole/mailbox.rs`'s
+`the_budget_is_per_connection` holds on every `cargo test`.
 
 ## CI: the 60-second smoke per target
 
@@ -123,9 +151,21 @@ Then `scripts/fuzz-smoke.sh 60` runs the smoke (spec §7): it asks `cargo
 fuzz list` for the targets -- so a target added to `Cargo.toml` is fuzzed
 from the pull request that adds it, and zero targets is a failure -- builds
 them all once, and runs each for 60 s from `fuzz/corpus/<t>` and
-`fuzz/seeds/<t>` with `fuzz/dicts/<t>.dict`, a 10 s per-input timeout and a
-2 GiB RSS cap. It sets `RUSTUP_TOOLCHAIN` and `--target` itself, for the
-pitfalls below.
+`fuzz/seeds/<t>` with `fuzz/dicts/<t>.dict`, its `-max_len` (above), a 10 s
+per-input timeout and a 2 GiB RSS cap. It sets `RUSTUP_TOOLCHAIN` and
+`--target` itself, for the pitfalls below.
+
+Before any of that, `ci/check-dicts.sh` (the job runs its `--self-test`
+first; clove's check of the same name is the model) requires of every
+target in `Cargo.toml` a non-empty `fuzz/seeds/<t>/` and a
+`fuzz/dicts/<t>.dict` that libFuzzer's own dictionary grammar accepts, and
+of every dictionary and seed directory a target that still exists. A target
+with neither used to be fuzzed from nothing and reported ok; a dictionary
+line libFuzzer cannot parse used to make it exit before fuzzing, which the
+smoke reported as a crash with no reproducer. Now the first fails the
+check, the second fails it with libFuzzer's own message, and a run that
+fails without writing a reproducer to `fuzz/artifacts/<t>/` is reported as
+a broken run, not a finding.
 
 Sixteen targets at 60 s each is sixteen minutes, plus one ASan build of the
 protocol libraries of about ten; a matrix over the targets would run them in
@@ -150,7 +190,10 @@ Pitfalls, all met on vuo's `fuzz-smoke` job first:
   inside the quotes only `\\`, `\"` and `\xHH`. `\n`, `\r`, `\t` are not
   escapes to libFuzzer; one bad line and it exits before fuzzing anything.
   The dictionaries here were generated with `\xHH` for every byte outside
-  printable ASCII, so they are safe to extend in the same spelling.
+  printable ASCII, so they are safe to extend in the same spelling;
+  `ci/check-dicts.sh` holds every one to the grammar.
+- **Pass `-max_len`** (above): the default quietly caps every input at
+  4 KiB.
 - The build is `--release` with debug assertions on (cargo-fuzz's default),
   so overflow checks are live in `sukkula-core` and the engine, as they are
   on the phone (S10).

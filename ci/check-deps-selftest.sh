@@ -94,6 +94,17 @@ expect pass "bluer with a ship allow entry" \
 expect fail "bluer allowed for tests only but shipped" \
     'pkg bluer >> Cargo.lock; echo "bluer v0.17.0|" >> tree; echo "bluer dev tests only (test)" >> allow'
 expect fail "async-process without an allow entry" 'pkg async-process >> Cargo.lock'
+# S8's other half, no opening: every crate here exists to hand a URL or a
+# file to xdg-open, a browser or a shell (finding "check-deps' S8 denylist
+# lets URL/file-opening and spawning crates into the shipped graph").
+for crate in open opener webbrowser that showfile xdg-utils \
+             duct subprocess xshell cmd_lib portable-pty pty-process nix; do
+    expect fail "$crate in the lockfile without an allow entry" "pkg $crate >> Cargo.lock"
+done
+expect fail "webbrowser in the phone build, allowed for tests only" \
+    'pkg webbrowser >> Cargo.lock; echo "webbrowser v1.0.0|" >> tree; echo "webbrowser dev a test helper (test)" >> allow'
+expect pass "opener in the lockfile for tests only, with a dev entry" \
+    'pkg opener >> Cargo.lock; echo "opener dev a test helper (test)" >> allow'
 expect fail "a dev-only process crate reaching the phone build" 'echo "rusty-fork v0.3.0|" >> tree'
 expect fail "tokio's process feature with no allow entry" 'sed -i "/^tokio\/process/d" allow'
 expect fail "a platform TLS binding in the phone build" 'echo "security-framework v3.7.0|" >> tree'

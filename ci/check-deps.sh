@@ -28,8 +28,14 @@
 #
 #   - Bluetooth stacks (bluer, btleplug): spec §2 reaches BlueZ over raw
 #     D-Bus from our own code;
-#   - process-spawning crates (S8), and tokio's `process` feature in the
-#     shipped graph.
+#   - process-spawning crates and URL- and file-openers (S8: no processes,
+#     no opening), and tokio's `process` feature in the shipped graph. A
+#     name list cannot be complete -- any crate can call
+#     std::process::Command itself, which is what the rqs_lib patches and
+#     the dependency review are for -- but it names every crate whose
+#     reason to exist is starting a process or opening something, so a
+#     dependency bump that pulls one in is a question with an answer
+#     written down, not a line nobody read in Cargo.lock.
 #
 # A `dev` entry is additionally proved absent from sukkula-ffi's aarch64
 # graph; an entry that matches nothing fails, like a stale waiver.
@@ -63,7 +69,15 @@ TLS='openssl openssl-sys openssl-src native-tls tokio-native-tls hyper-tls async
 DBUS='zbus zbus_macros zbus_names zvariant zvariant_derive rustbus'
 RUNTIMES='async-std async-global-executor glommio monoio actix-rt tokio-uring compio'
 BLUETOOTH='bluer btleplug bluez-async bluez-generated'
-SPAWN='async-process duct subprocess command-group process-wrap shared_child rusty-fork wait-timeout'
+# S8. Process runners and their wrappers, pseudo-terminals, fork/exec
+# bindings (nix's unistd and process modules), and the crates that open a
+# URL or a file in another program -- every one of them xdg-open, a
+# browser or a shell under the hood.
+SPAWN='async-process tokio-process duct duct_sh subprocess command-group command-fds
+       process-wrap process_control shared_child spawn-wait rusty-fork wait-timeout
+       xshell xshell-macros cmd_lib cmd_lib_macros execute run_script fork daemonize nix
+       portable-pty pty-process pty ptyprocess expectrl rexpect
+       open opener webbrowser that showfile xdg-utils'
 # Platform TLS and keychain bindings: locked for other targets, and never
 # to reach the aarch64 graph.
 FOREIGN='security-framework security-framework-sys schannel core-foundation'
@@ -123,7 +137,7 @@ for crate in $BLUETOOTH $SPAWN; do
         allow_used[$crate]=1
         echo "check-deps: allowed $crate (${allow_scope[$crate]})"
     else
-        bad "'$crate' is in Cargo.lock and not in ci/deps-allow.conf: Bluetooth stacks and process-spawning crates need a reviewed reason (spec §2, S8)"
+        bad "'$crate' is in Cargo.lock and not in ci/deps-allow.conf: Bluetooth stacks, and crates that spawn processes or open URLs and files, need a reviewed reason (spec §2, S8)"
     fi
 done
 
