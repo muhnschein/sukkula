@@ -491,11 +491,9 @@ mod tests {
 
     /// Holds its thread without yielding, as the library's hashcash mint
     /// does, until released or for three seconds.
-    fn stuck(release: std::sync::mpsc::Receiver<()>) -> impl Future<Output = u8> + Send {
-        async move {
-            let _ = release.recv_timeout(Duration::from_secs(3));
-            7
-        }
+    async fn stuck(release: std::sync::mpsc::Receiver<()>) -> u8 {
+        let _ = release.recv_timeout(Duration::from_secs(3));
+        7
     }
 
     // One test, not several: the thread count is process-wide.
