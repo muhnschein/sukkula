@@ -363,6 +363,10 @@ jobs:
       # Getting that wrong deletes the archive and fails everything, so the
       # rule is proved on a directory of the test's own.
       - run: ./ci/apt-install-selftest.sh
+      # scripts/sonar-report.sh talks to a service no test can reach, and
+      # reports rather than gates (build.yml), so it is proved here instead,
+      # against a stub server that answers SonarQube's four endpoints.
+      - run: ./ci/sonar-report-selftest.sh
 
   # third_party/rqs_lib is open-quickshare's core_lib at the pinned commit
   # plus its patches, and nothing else (spec §5). Its differences are the

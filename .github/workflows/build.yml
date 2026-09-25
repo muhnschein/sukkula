@@ -1,0 +1,120 @@
+# Sends the tree to SonarQube Cloud, which reads it and reports back on the
+# pull request, and then prints what it made of it into the job log.
+#
+# ci.yml is the GATE (spec §7); this is a REPORT. It cannot fail a change
+# on its own findings, and the quality gate it publishes is advice, not
+# intake. That is why it has a workflow of its own: folding it into ci.yml
+# would make a hosted service part of the rule that a green `make check` is
+# a green CI (docs/BUILDING.md).
+#
+# Every action is pinned to a full commit SHA, the version it resolved to
+# named beside it. A tag can be moved by whoever controls the action, and
+# this job is handed a token.
+#
+# The setup follows the sibling projects vuo and piirit.
+name: Build
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+# Reading the tree is all this needs. The scanner authenticates to SonarQube
+# with its own token, and SonarQube writes back to the pull request as its
+# own GitHub App, not through this job's token.
+permissions:
+  contents: read
+
+concurrency:
+  group: sonar-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  sonarqube:
+    name: SonarQube
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # A pull request from a fork gets no secrets, so SONAR_TOKEN would be
+    # empty and the scan would fail with an authentication error that looks
+    # like a broken setup. Skip it instead; the merge is analysed when it
+    # reaches main.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Sonar reads git blame to decide what counts as new code. A shallow
+          # clone makes every line look as though it landed in this commit.
+          fetch-depth: 0
+
+      # The coverage run is ci.yml's `test` job instrumented, so it needs
+      # that job's packages: libdbus-1-dev, which the bluetooth feature links
+      # through pkg-config, and dbus, whose daemon the Bluetooth tests start
+      # with a fake BlueZ on it.
+      - run: ./ci/apt-install.sh dbus libdbus-1-dev pkg-config
+
+      # The toolchain comes from rust-toolchain.toml rather than a second copy
+      # of the pin here: `rustup toolchain install` with no argument installs
+      # whatever that file names. cargo-llvm-cov needs llvm-tools for the
+      # toolchain that actually compiles, which is the pinned one, not
+      # whatever stable the runner image carries.
+      - name: Install the pinned toolchain
+        run: |
+          rustup toolchain install
+          rustup component add llvm-tools-preview
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2.87.10
+        with:
+          tool: cargo-llvm-cov
+
+      # The scanner imports coverage; it does not measure it. Without this
+      # step there is no report to import and the reading is a confident
+      # 0.0%. A target of the Makefile, so what runs here runs on a laptop.
+      - run: make sonar-reports
+
+      # One version, in Cargo.toml. This keeps SonarQube from becoming a
+      # second copy to forget at release time.
+      - name: Read the workspace version
+        id: version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "analysing version $version"
+
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f # v8.2.1
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          # SONAR_HOST_URL is not set: unset means SonarQube Cloud.
+          args: >
+            -Dsonar.projectVersion=${{ steps.version.outputs.version }}
+
+      # The scan uploads a report and exits. The server processes it
+      # afterwards, so without this the run finishes knowing nothing about
+      # its own result -- the gate, the ratings and the issue list stay on a
+      # dashboard, which neither the job log, nor a reviewer, nor anything
+      # whose network policy stops short of sonarcloud.io can reach.
+      #
+      # continue-on-error, and never `sonar.qualitygate.wait`: this reports
+      # and does not gate. A Sonar outage costs a warning here, not a build.
+      - name: What SonarQube made of it
+        if: always()
+        continue-on-error: true
+        env:
+          # Only needed if the project is private; the endpoints are readable
+          # without it on a public one. See the script.
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: ./scripts/sonar-report.sh
+
