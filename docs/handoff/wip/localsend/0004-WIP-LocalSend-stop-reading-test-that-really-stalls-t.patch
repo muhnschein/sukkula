@@ -1,7 +1,7 @@
 From 51d57b5494f2bb2aa2622b32965046ddfce3d22c Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Fri, 25 Sep 2026 09:21:34 +0000
-Subject: [PATCH 4/5] WIP: LocalSend stop-reading test that really stalls the
+Subject: [PATCH 4/6] WIP: LocalSend stop-reading test that really stalls the
  server
 
 The send buffer of the server's connections is capped (every answer is

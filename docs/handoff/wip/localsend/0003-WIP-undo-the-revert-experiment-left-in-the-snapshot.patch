@@ -1,7 +1,7 @@
 From c0c1a146e40fd8da863ce4a18a973f6cf5359f61 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Fri, 25 Sep 2026 09:05:52 +0000
-Subject: [PATCH 3/5] WIP: undo the revert experiment left in the snapshot
+Subject: [PATCH 3/6] WIP: undo the revert experiment left in the snapshot
 
 The snapshot caught a temporary revert of the write deadline and the
 connection lifetime, made to prove the stop-reading test fails without

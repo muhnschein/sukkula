@@ -1,7 +1,7 @@
 From daaec39b2dc8a9ffeb2a9c9e6a26e14b9346e7ea Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Fri, 25 Sep 2026 09:28:01 +0000
-Subject: [PATCH 5/5] WIP: LocalSend rows of SECURITY.md and the L3 row for the
+Subject: [PATCH 5/6] WIP: LocalSend rows of SECURITY.md and the L3 row for the
  review fixes
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

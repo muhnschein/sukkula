@@ -1,0 +1,28 @@
+From 978b808ca67c4af2b6fac1d65287a01d51205a71 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 25 Sep 2026 09:40:46 +0000
+Subject: [PATCH 6/6] WIP: LocalSend: a public doc link that rustdoc resolved
+ to a private method
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01ENZSCiAud5Vs29ugEacpyR
+---
+ crates/sukkula-engine/src/localsend/mod.rs | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/crates/sukkula-engine/src/localsend/mod.rs b/crates/sukkula-engine/src/localsend/mod.rs
+index 2b0bbb9..479a6cb 100644
+--- a/crates/sukkula-engine/src/localsend/mod.rs
++++ b/crates/sukkula-engine/src/localsend/mod.rs
+@@ -100,7 +100,7 @@ pub struct Options {
+     pub announce_interval: Duration,
+ }
+ 
+-/// The shortest [`Options::announce_interval`].
++/// The shortest [`Options`] `announce_interval`.
+ pub const MIN_ANNOUNCE_INTERVAL: Duration = Duration::from_secs(1);
+ 
+ impl Default for Options {
+-- 
+2.43.0
+
