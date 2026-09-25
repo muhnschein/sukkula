@@ -19,9 +19,10 @@
 #                         reads any architecture's ELF)
 #
 # Always checked: every NEEDED library is on Harbour's allowed list
-# (ci/harbour/allowed_libraries.conf), and the link carries the hardening
+# (ci/harbour/allowed_libraries.conf), the link carries the hardening
 # an SDK build of C++ would -- RELRO, BIND_NOW, PIE, no text relocations,
-# a non-executable stack, no RPATH or RUNPATH.
+# a non-executable stack, no RPATH or RUNPATH -- and thread-locals of its
+# own, if it has any, start with the reserve for bionic's TLS slots.
 #
 # Run on two binaries: the probe scripts/cross-build-rust.sh links against
 # the engine (what the engine alone needs from the device), and the real
@@ -216,6 +217,31 @@ if grep -qE '\((RPATH|RUNPATH)\)' <<< "$dynamic"; then
     bad "carries an RPATH/RUNPATH: $(grep -E '\((RPATH|RUNPATH)\)' <<< "$dynamic")"
 else
     ok "no RPATH or RUNPATH"
+fi
+
+# Bionic's TLS slots (src/tls_reserve.c). The phone's GL stack writes the
+# words at tp+16 to tp+63 of the GUI thread, which is where glibc puts an
+# executable's thread-locals; so an executable that has any must start its
+# TLS segment with the array that takes those 48 bytes. Read back here as
+# the first bytes of the TLS initialisation image, which must be that
+# array's marker, in a segment aligned to at most 16 bytes: a larger
+# alignment starts the block past tp+16, and glibc gives the gap to some
+# library's thread-locals instead.
+TLS_RESERVE_MARKER='sukkula: bionic TLS slots 2..7, tp+16 to tp+63.'
+tls=$(awk '$1 == "TLS" { print $2, $5, $NF }' <<< "$segments")
+if [[ -z "$tls" ]]; then
+    ok "no thread-locals of its own (bionic's TLS slots stay clear)"
+else
+    read -r tls_offset tls_filesz tls_align <<< "$tls"
+    want=$(printf '%s\0' "$TLS_RESERVE_MARKER" | od -An -v -tx1 | tr -d ' \n')
+    image=$(od -An -v -tx1 -j "$((tls_offset))" -N 48 "$elf" 2>/dev/null | tr -d ' \n')
+    if (( tls_align > 16 )); then
+        bad "its TLS segment is aligned to $((tls_align)) bytes: the block starts past tp+16 and leaves bionic's slots to a library's thread-locals (src/tls_reserve.c)"
+    elif (( tls_filesz < 48 )) || [[ "$image" != "$want" ]]; then
+        bad "its TLS segment does not start with src/tls_reserve.c's array: its own thread-locals sit in bionic's TLS slots, tp+16 to tp+63, which the GL stack overwrites"
+    else
+        ok "TLS segment starts with the reserve for bionic's slots (tp+16 to tp+63)"
+    fi
 fi
 
 if [[ "$status" -eq 0 ]]; then

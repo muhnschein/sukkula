@@ -27,8 +27,10 @@ SAILFISHAPP_ICONS = 86x86 108x108 128x128 172x172
 
 CONFIG += c++11
 
-HEADERS += src/bridge.h
-SOURCES += src/main.cpp src/bridge.cpp
+HEADERS += src/bridge.h src/tls_reserve.h
+# src/tls_reserve.c first: its thread-local has to be the first in the
+# executable's TLS segment, and the objects are linked in this order.
+SOURCES += src/tls_reserve.c src/main.cpp src/bridge.cpp
 
 INCLUDEPATH += $$PWD/crates/sukkula-ffi/include
 DEPENDPATH += $$PWD/crates/sukkula-ffi/include

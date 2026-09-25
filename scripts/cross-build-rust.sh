@@ -282,8 +282,12 @@ int main(void) {
 }
 EOF
 probe="target/$TRIPLE/release/sukkula-link-probe"
+# src/tls_reserve.c first, as harbour-sukkula.pro links it: the engine's
+# thread-locals go in after the 48 bytes of bionic's TLS slots, which
+# check-elf.sh reads back.
 # shellcheck disable=SC2086 # word lists on purpose
-"$CC" $SYSFLAGS $HARDEN -fPIE -pie -I"$(dirname "$HEADER")" -o "$probe" "$BINDIR/probe.c" \
+"$CC" $SYSFLAGS $HARDEN -fPIE -pie -I"$(dirname "$HEADER")" -I"$ROOT/src" -o "$probe" \
+    "$ROOT/src/tls_reserve.c" "$BINDIR/probe.c" \
     $LINKDIRS -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack -Wl,--as-needed \
     -rdynamic -Wl,--dynamic-list="$ROOT/src/dynamic.list" -Wl,--exclude-libs,ALL \
     "$LIB" $native || fail "the probe does not link against the engine"

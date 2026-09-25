@@ -11,15 +11,29 @@
 #include <QScopedPointer>
 #include <QTranslator>
 
+#include <cstdio>
+#include <cstdlib>
+
 #include <sailfishapp.h>
 
 #include "bridge.h"
+#include "tls_reserve.h"
 
 // Exported: the silica-qt5 booster dlopen()s this binary and looks main()
 // up in its dynamic symbol table (Harbour 1.7). src/dynamic.list puts it
 // there, since the link strips everything else.
 Q_DECL_EXPORT int main(int argc, char *argv[])
 {
+    // Before anything can start the GL stack, which writes into bionic's
+    // TLS slots: a link that put the engine's thread-locals there would
+    // fail later and far from here (src/tls_reserve.c).
+    if (!sukkula_tls_reserved()) {
+        std::fputs("harbour-sukkula: the executable's thread-locals overlap bionic's TLS "
+                   "slots (src/tls_reserve.c); refusing to start\n",
+                   stderr);
+        return EXIT_FAILURE;
+    }
+
     QScopedPointer<QGuiApplication> app(SailfishApp::application(argc, argv));
 
     // Must match [X-Sailjail] in harbour-sukkula.desktop: Sailjail grants

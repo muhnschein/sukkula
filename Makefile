@@ -16,7 +16,7 @@
 #
 # Host packages (Debian/Ubuntu):
 #   dbus libdbus-1-dev pkg-config            the bluetooth feature and its tests
-#   gcc-aarch64-linux-gnu g++-aarch64-linux-gnu binutils-aarch64-linux-gnu
+#   gcc-aarch64-linux-gnu g++-aarch64-linux-gnu binutils-aarch64-linux-gnu qemu-user
 #   qtbase5-dev qtdeclarative5-dev qtdeclarative5-dev-tools g++ make
 #   qml-module-qtquick2 qml-module-qttest
 #   qml-module-qtquick-window2 qml-module-qtquick-layouts qttools5-dev-tools
@@ -128,6 +128,7 @@ ffi-asan:
 
 ## cross: the aarch64 engine. With SYSROOT=<SDK target sysroot> (and the SDK's
 ## /opt/cross), the release route; without, the Ubuntu-GCC smoke CI runs.
+## Either way, then run under qemu-aarch64 against written bionic TLS slots.
 cross:
 	./ci/check-elf-selftest.sh
 ifdef SYSROOT
@@ -135,6 +136,7 @@ ifdef SYSROOT
 else
 	./scripts/cross-build-rust.sh --host
 endif
+	./ci/tls-slots-test.sh
 
 ## qml: qmllint over qml/, and the UI's QML tests offscreen
 qml:

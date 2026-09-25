@@ -270,12 +270,16 @@ jobs:
   # probe linked against it within Harbour's libraries and the glibc every
   # accepted phone has. Ubuntu's cross GCC here; the package itself is
   # built with the SDK's, in rpm.yml (docs/BUILDING.md says why both).
+  # Then that engine run under qemu-aarch64 on a thread whose bionic TLS
+  # slots the GL stack has written (src/tls_reserve.c).
   cross:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: ./ci/apt-install.sh gcc-aarch64-linux-gnu g++-aarch64-linux-gnu binutils-aarch64-linux-gnu pkg-config
+      - run: >-
+          ./ci/apt-install.sh gcc-aarch64-linux-gnu g++-aarch64-linux-gnu binutils-aarch64-linux-gnu
+          pkg-config qemu-user
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: cross-aarch64
@@ -283,6 +287,7 @@ jobs:
       # is proved here, on binaries built wrong one way each.
       - run: ./ci/check-elf-selftest.sh
       - run: ./scripts/cross-build-rust.sh --host
+      - run: ./ci/tls-slots-test.sh
 
   # The QML: every file parses (qmllint), and the UI's own tests load the
   # real pages against the Silica stand-ins in qml-stubs/, offscreen.

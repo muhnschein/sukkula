@@ -88,6 +88,14 @@ elf_checks() { # binary label
     if readelf -SW "$1" | grep -q ' \.symtab '; then
         fail "$2: not stripped"
     fi
+    # Thread-locals start with the reserve for bionic's TLS slots, which is
+    # the order qmake links the objects in (src/tls_reserve.c;
+    # ci/check-elf.sh holds the phone's binary to the rest of the rule).
+    tls=$(readelf -lW "$1" | awk '$1 == "TLS" { print $2 }')
+    if [ -n "$tls" ] && [ "$(dd if="$1" bs=1 skip=$((tls)) count=47 2>/dev/null)" \
+        != "sukkula: bionic TLS slots 2..7, tp+16 to tp+63." ]; then
+        fail "$2: its thread-locals do not start with src/tls_reserve.c's array"
+    fi
     needed=$(readelf -d "$1" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' | sort)
     for lib in $needed; do
         case $lib in

@@ -55,6 +55,28 @@ int sukkula_version(void);
 __attribute__((visibility("default"))) int main(void) { return sukkula_version() - 1; }
 EOF
 printf '{\n    main;\n};\n' > "$work/dynamic.list"
+# Thread-locals of the executable's own (src/tls_reserve.c): the engine's
+# stand-in, one initialised and one not, behind the real reserve; the same
+# linked ahead of it; the same without it; and the reserve beside a
+# thread-local aligned to 64, which moves the whole block off tp+16.
+cp "$root/src/tls_reserve.c" "$root/src/tls_reserve.h" "$work/"
+cat > "$work/engine-tls.c" <<'EOF'
+#include "tls_reserve.h"
+__thread long engine_state = 1;
+__thread long engine_scratch[4];
+__attribute__((visibility("default"))) int main(void) {
+    engine_scratch[0] = engine_state;
+    return !sukkula_tls_reserved();
+}
+EOF
+cat > "$work/engine-tls-only.c" <<'EOF'
+__thread long engine_state = 1;
+__attribute__((visibility("default"))) int main(void) { return (int)engine_state - 1; }
+EOF
+cat > "$work/aligned-tls.c" <<'EOF'
+__thread long wide __attribute__((aligned(64))) = 1;
+long read_wide(void) { return wide; }
+EOF
 
 status=0
 cases=0
@@ -105,6 +127,20 @@ build exports-rust exports-rust.c "${good[@]}"
 build archive-leaks uses-archive.c "${good[@]}" "$work/libarchived.a"
 build archive-kept-in uses-archive.c "${good[@]}" -Wl,--dynamic-list="$work/dynamic.list" \
     -Wl,--exclude-libs,ALL "$work/libarchived.a"
+for obj in tls_reserve engine-tls aligned-tls; do
+    "$cc" -O2 -c -fPIC -fvisibility=hidden -I"$work" -o "$work/$obj.o" "$work/$obj.c"
+done
+# link <name> <objects...>: the objects in this order, then strip.
+link() {
+    local name=$1
+    shift
+    "$cc" -O2 -o "$work/$name" "$@" "${good[@]}" 2>/dev/null &&
+        "$strip" --strip-all "$work/$name"
+}
+link tls-reserved "$work/tls_reserve.o" "$work/engine-tls.o"
+link tls-second "$work/engine-tls.o" "$work/tls_reserve.o"
+build tls-unreserved engine-tls-only.c "${good[@]}"
+link tls-aligned "$work/tls_reserve.o" "$work/engine-tls.o" "$work/aligned-tls.o"
 
 expect pass "a binary built the way the package is" good
 expect fail "a binary that was not stripped" unstripped
@@ -120,6 +156,10 @@ expect fail "a sukkula_* entry point exported beside main()" exports-ffi
 expect fail "a Rust symbol exported beside main()" exports-rust
 expect fail "an archive's symbols exported by -rdynamic" archive-leaks
 expect pass "the archive kept out, as src/hardening.pri links" archive-kept-in
+expect pass "thread-locals behind the reserve for bionic's TLS slots" tls-reserved
+expect fail "thread-locals linked ahead of that reserve" tls-second
+expect fail "thread-locals and no reserve" tls-unreserved
+expect fail "a TLS segment aligned past tp+16" tls-aligned
 expect fail "a glibc newer than the ceiling" good --glibc-ceiling 2.17
 expect fail "the wrong __libc_start_main version" good --libc-start-main 2.17
 cases=$((cases + 1))

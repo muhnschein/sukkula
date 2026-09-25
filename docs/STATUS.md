@@ -51,6 +51,15 @@ On GitHub, in pull request #2 (the first runs of `ci.yml` and `rpm.yml`):
   `ci/check-elf.sh` then refused the RPATH the SDK's `sailfishapp` feature
   adds; `src/hardening.pri` now keeps it out of the link.
 
+On the Jolla Phone 2026, with the first RPM from pull request #2:
+
+- it installed and the UI came up, but the engine failed internally. The
+  GL stack (Android's, under libhybris) had written bionic's TLS slots,
+  `tp+16` to `tp+63`, over the engine's thread-locals, and tokio panicked
+  entering its runtime. `ci/tls-slots-test.sh` reproduces this under
+  qemu-aarch64 and shows `src/tls_reserve.c` fixing it (docs/FFI.md,
+  Linking). The fixed RPM has not been on the phone yet.
+
 `sukkula-core` line coverage was 98 % when last measured.
 
 An adversarial review on 2026-09-25 covered 10 areas, with every finding
@@ -77,6 +86,20 @@ docs; the upstream ones are in `docs/UPSTREAM-QUICKSHARE.md`.
 
 ## Waiting on the owner
 
+- **Starting from the app grid.** `X-Nemo-Application-Type=silica-qt5`
+  has mapplauncherd's booster `dlopen()` the executable. The linker
+  resolves an executable's thread-locals to fixed offsets from the thread
+  pointer, and glibc gives a `dlopen()`ed object none, so the engine's
+  thread-locals would land on the booster's own. Under qemu, a stand-in
+  booster and app corrupted each other exactly so.
+
+  Starting it with `sailjail` directly, as the first phone test did, is
+  not affected. There are two ways out; the choice is the owner's:
+  - `X-Nemo-Application-Type=no-invoker`: the validator warns and accepts
+    it, but Harbour rule 1.3.5 in `docs/HARBOUR.md` asks for `silica-qt5`;
+  - the engine as a private shared library in
+    `/usr/share/harbour-sukkula/lib`, whose thread-locals survive
+    `dlopen()`.
 - **Sending to a PIN-protected LocalSend receiver** is not supported: the
   send command has no PIN field (M-24).
 - **Follow-ups from the fix round**, all small:

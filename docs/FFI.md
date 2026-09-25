@@ -587,6 +587,30 @@ the package would fail validation. Everything else on the list is allowed.
 The release profile keeps `panic = "unwind"`: `catch_unwind` at the
 boundary depends on it.
 
+Link `src/tls_reserve.c` first. The engine's thread-locals end up in the
+executable's TLS segment, and glibc puts that block at the thread
+pointer plus 16. On the phone, those words also belong to Android: EGL
+and GL run under libhybris and write bionic's TLS slots, `tp+16` to
+`tp+63`, on the GUI thread. The first RPM put tokio's runtime context
+there, and the engine panicked entering its runtime ("RefCell already
+borrowed").
+
+The reserve is a 48-byte `.tdata` array that takes those words. The
+executable's TLS segment has to be aligned to at most 16 bytes, so the
+block starts at exactly `tp+16`. Aligning it to 64, as bionic's own
+executables do, would move the engine past the slots too, but glibc
+would then give the 48-byte gap to some library's thread-locals.
+
+The rule is checked in four places:
+
+- `ci/check-elf.sh` reads the array's marker back as the first bytes of the
+  packaged binary's TLS image;
+- `tests/run-cpp-tests.sh` does the same for the host builds of
+  `harbour-sukkula.pro`;
+- `main()` refuses to start if the array is not at `tp+16`;
+- `ci/tls-slots-test.sh` runs the engine under qemu-aarch64 after writing
+  the slots itself.
+
 ## Testing
 
 | What | Where |
@@ -597,6 +621,7 @@ boundary depends on it.
 | Every example on this page | `crates/sukkula-engine/tests/hub_docs.rs` |
 | The hub: delivery, bounds, replies after panics, races, hostile commands | `crates/sukkula-engine/src/hub.rs`, `crates/sukkula-engine/tests/hub.rs` |
 | The same, from C, under AddressSanitizer, UBSan and LeakSanitizer | `ci/ffi-harness/run.sh` |
+| The aarch64 engine starts on a thread whose bionic TLS slots were written first, and leaves them alone; without `src/tls_reserve.c` it fails as the phone did | `ci/tls-slots-test.sh` |
 
 The C harness runs from any directory with
 
