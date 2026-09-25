@@ -103,12 +103,14 @@ lockfile:
 	./ci/check-lockfile.sh
 
 ## fuzz-lint: every target's seeds and dictionary (ci/check-dicts.sh, and its
-## self-test); clippy over the fuzz crate (its own workspace), on the pinned
-## toolchain, so a target that stopped compiling fails before any fuzzing;
-## then the harness's tests (the generated seeds still decode and reach)
+## self-test) and the smoke's lengths and boundary inputs (its self-test);
+## clippy over the fuzz crate (its own workspace), on the pinned toolchain, so
+## a target that stopped compiling fails before any fuzzing; then the
+## harness's tests (the generated seeds still decode and reach)
 fuzz-lint:
 	./ci/check-dicts.sh --self-test
 	./ci/check-dicts.sh
+	./scripts/fuzz-smoke.sh --self-test
 	@echo "== clippy, fuzz/ =="
 	$(CARGO) clippy --manifest-path fuzz/Cargo.toml --all-targets --locked -- -D warnings
 	$(CARGO) test --manifest-path fuzz/Cargo.toml --lib --locked

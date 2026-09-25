@@ -132,6 +132,11 @@ for the four 64 KiB targets the smoke adds inputs of exactly 64 KiB and one
 byte more, made from the target's first seed (the JSON padded with
 whitespace, the text repeated), as a third, temporary corpus directory; made
 at run time rather than committed, so they follow the constant too.
+`scripts/fuzz-smoke.sh --self-test` holds all of this in place without a
+nightly or cargo-fuzz -- every capped target is a real target (a rename
+cannot drop one back to 4096), its length reaches past its cap and is the
+one the run passes, and its boundary inputs are exactly the cap and one
+byte more -- and the fuzz-smoke job and `make fuzz-lint` run it first.
 
 One cap is beyond any practical fuzz length: the mailbox guard's 4 MiB per
 connection (`wormhole_mailbox`), which `wormhole/mailbox.rs`'s
@@ -153,7 +158,8 @@ from the pull request that adds it, and zero targets is a failure -- builds
 them all once, and runs each for 60 s from `fuzz/corpus/<t>` and
 `fuzz/seeds/<t>` with `fuzz/dicts/<t>.dict`, its `-max_len` (above), a 10 s
 per-input timeout and a 2 GiB RSS cap. It sets `RUSTUP_TOOLCHAIN` and
-`--target` itself, for the pitfalls below.
+`--target` itself, for the pitfalls below. `scripts/fuzz-smoke.sh 60
+command_json` runs one target the same way, to reproduce a red job.
 
 Before any of that, `ci/check-dicts.sh` (the job runs its `--self-test`
 first; clove's check of the same name is the model) requires of every

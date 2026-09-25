@@ -164,6 +164,11 @@ jobs:
       # runs the check again, for `make`.)
       - run: ./ci/check-dicts.sh --self-test
       - run: ./ci/check-dicts.sh
+      # Each target's -max_len, its boundary inputs at and one past its cap,
+      # and the finding-or-broken-run verdict, proved offline: without the
+      # length, a 64 KiB cap could never be reached and its assertion never
+      # fail (fuzz/README.md, "Input length").
+      - run: ./scripts/fuzz-smoke.sh --self-test
       # libdbus-1-dev: the Quick Share targets build the engine's
       # quickshare feature, whose BLE nudge links the system libdbus-1.
       - run: ./ci/apt-install.sh libdbus-1-dev pkg-config
