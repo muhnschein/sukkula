@@ -2,7 +2,9 @@
 # Prove that ci/vendor-check.sh still refuses a vendored crate that is not
 # exactly upstream plus its patches -- offline, against an upstream this
 # test makes: a throwaway git repository with a crate in a subdirectory,
-# the shape of open-quickshare's core_lib.
+# the shape of open-quickshare's core_lib, and (CONTRACT, the Quick Share
+# fix round) a published crate archive pinned by its sha256, the shape of
+# mdns-sd's line, fetched from a file:// URL.
 set -u
 
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
@@ -36,12 +38,34 @@ sed -i 's/    s$/    s.max(0)/' "$work/patched2/src/size.rs"
 second=$(cd "$work" && diff -u patched/src/size.rs patched2/src/size.rs |
     sed -e 's|^--- patched/|--- a/|' -e 's|^+++ patched2/|+++ b/|')
 
+# CONTRACT: the published crate: an archive unpacking to demo-0.3.1/, with
+# cargo's extras beside the crate (the normalized manifest's original, VCS
+# info), and one patch.
+crate_src="$work/crate-src/demo-0.3.1"
+mkdir -p "$crate_src/src"
+printf '[package]\nname = "demo"\nversion = "0.3.1"\n' > "$crate_src/Cargo.toml"
+cp "$crate_src/Cargo.toml" "$crate_src/Cargo.toml.orig"
+printf '{"git": {"sha1": "0"}}\n' > "$crate_src/.cargo_vcs_info.json"
+printf 'pub fn ttl(t: u32) -> u32 {\n    t\n}\n' > "$crate_src/src/lib.rs"
+crate_file="$work/demo-0.3.1.crate"
+tar -czf "$crate_file" -C "$work/crate-src" demo-0.3.1
+crate_sha=$(sha256sum "$crate_file" | cut -d' ' -f1)
+crate_patched="$work/crate-patched"
+cp -a "$crate_src" "$crate_patched"
+rm "$crate_patched/Cargo.toml.orig" "$crate_patched/.cargo_vcs_info.json"
+sed -i 's/    t$/    t.min(4500)/' "$crate_patched/src/lib.rs"
+crate_patch=$(cd "$work" && diff -u crate-src/demo-0.3.1/src/lib.rs crate-patched/src/lib.rs |
+    sed -e 's|^--- crate-src/demo-0.3.1/|--- a/|' -e 's|^+++ crate-patched/|+++ b/|')
+
 stage() {
     local dir="$work/tree"
     rm -rf "$dir"
-    mkdir -p "$dir/ci" "$dir/third_party/patches/rqs_lib"
+    mkdir -p "$dir/ci" "$dir/third_party/patches/rqs_lib" "$dir/third_party/demo.patches"
     cp "$root/ci/vendor-check.sh" "$dir/ci/"
     printf 'rqs_lib  file://%s  %s  core_lib  third_party/rqs_lib\n' "$up" "$commit" > "$dir/ci/vendor.conf"
+    printf 'demo  file://%s  %s  demo-0.3.1  third_party/demo\n' "$crate_file" "$crate_sha" >> "$dir/ci/vendor.conf"
+    cp -a "$crate_patched" "$dir/third_party/demo"
+    printf '%s\n' "$crate_patch" > "$dir/third_party/demo.patches/0001-ttl-cap.patch"
     cp -a "$work/patched2" "$dir/third_party/rqs_lib"
     # Not vendored: outside the crate's build.
     rm -rf "$dir/third_party/rqs_lib/examples" "$dir/third_party/rqs_lib/bindings"
@@ -56,7 +80,8 @@ expect() {
     cases=$((cases + 1))
     stage
     ( cd "$tree" && eval "$change" ) || { echo "selftest: FAIL could not apply '$what'" >&2; status=1; return 0; }
-    if out=$(VENDOR_UPSTREAM_DIR='' "$tree/ci/vendor-check.sh" 2>&1); then got=pass; else got=fail; fi
+    # CONTRACT: an empty cargo home, so that no real download cache is read.
+    if out=$(VENDOR_UPSTREAM_DIR='' CARGO_HOME="$work/cargo-home" "$tree/ci/vendor-check.sh" 2>&1); then got=pass; else got=fail; fi
     if [[ "$got" = "$want" ]]; then
         echo "selftest: ok   $what -> $want"
     else
@@ -98,6 +123,17 @@ expect fail "a commit that is not a full id" \
     'sed -i "s/  $commit  / ${commit:0:7} /" ci/vendor.conf'
 expect fail "a vendored crate that is not there" \
     'rm -rf third_party/rqs_lib'
+# CONTRACT: the published-crate line.
+expect fail "a crate archive with another sha256" \
+    'sed -i "s/  $crate_sha  /  $(printf "%064d" 0)  /" ci/vendor.conf'
+expect fail "a stray edit in a vendored crate from an archive" \
+    'printf "// tweak\n" >> third_party/demo/src/lib.rs'
+expect fail "a crate archive that unpacks elsewhere" \
+    'sed -i "s/  demo-0.3.1  /  demo-0.3.2  /" ci/vendor.conf'
+expect fail "a crate archive that cannot be fetched" \
+    'sed -i "s|file://$crate_file|file://$work/gone.crate|" ci/vendor.conf'
+expect pass "a crate archive in cargo's download cache, however the URL reads" \
+    'mkdir -p "$work/cargo-home/registry/cache/x" && cp "$crate_file" "$work/cargo-home/registry/cache/x/" && sed -i "s|file://$crate_file|https://invalid.example/demo-0.3.1.crate|" ci/vendor.conf'
 }
 
 echo
