@@ -191,10 +191,12 @@ export "CARGO_TARGET_${TRIPLE_UPPER}_RUSTFLAGS=${rustflags# }"
 #
 # Only the final crate is cleaned, so rustc runs for it and prints the
 # native libraries the archive needs; the rest of the graph stays cached.
+# Uncoloured whatever CARGO_TERM_COLOR says (CI sets it to always): the
+# escapes would land in the library list read out of the log below.
 cargo clean --release --target "$TRIPLE" -p sukkula-ffi >/dev/null 2>&1 || true
 log="$BINDIR/build.log"
 echo "== cargo rustc --release --locked --target $TRIPLE -p sukkula-ffi --lib --crate-type staticlib"
-if ! cargo rustc --release --locked --target "$TRIPLE" -p sukkula-ffi --lib \
+if ! cargo rustc --release --locked --color never --target "$TRIPLE" -p sukkula-ffi --lib \
         --crate-type staticlib -- --print native-static-libs 2>&1 | tee "$log"; then
     fail "the engine did not build"
 fi

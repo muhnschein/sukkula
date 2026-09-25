@@ -66,9 +66,6 @@ docs; the upstream ones are in `docs/UPSTREAM-QUICKSHARE.md`.
 
 ## Waiting on the owner
 
-- **Sandbox permissions.** Only `Internet;Bluetooth;Downloads` (spec §2).
-  Files outside `~/Downloads`, such as Gallery shares and Documents, are
-  probably unreadable in Sailjail; `UserDirs` would fix it (M-8).
 - **Sending to a PIN-protected LocalSend receiver** is not supported: the
   send command has no PIN field (M-24).
 - **Follow-ups from the fix round**, all small:
@@ -76,5 +73,25 @@ docs; the upstream ones are in `docs/UPSTREAM-QUICKSHARE.md`.
   - switching Wormhole off does not cancel a wormhole transfer already
     running;
   - `docs/UPSTREAM-QUICKSHARE.md` is drafted, not filed.
-- **A base branch for pull requests.** The repository has none yet; only
-  `claude/busy-babbage-7y67po` exists.
+- **The default branch.** `main` exists now; making it the repository's
+  default (Settings, General) is the owner's. Until then Dependabot and
+  `workflow_dispatch` keep using the old branch.
+
+## Later
+
+Wanted, and not in v1.0 because each needs a Sailjail permission that
+spec §2 does not grant. Either is a spec change: the permission goes into
+§2, `harbour-sukkula.desktop` and `POLICY_PERMISSIONS` in
+`ci/harbour-check.sh` in one commit, never a workaround.
+
+- **Sending from the other folders and Gallery.** With only `Downloads`,
+  a photo shared from Gallery (`~/Pictures`) or a file picked in
+  `~/Documents` is probably unreadable inside the sandbox; M-8 records
+  what the phone does. Candidates: `Pictures` and `Videos` for Gallery,
+  `Documents` and `Music` for the rest, or `UserDirs` for all of them.
+  Received files still go to `~/Downloads/Sukkula/` either way.
+- **Scanning a wormhole code as a QR code** (F-MW2). Needs `Camera`, a
+  camera view in QML and a QR decoder. The decoder reads what the lens
+  sees, so it is hostile input: a new dependency with its own review
+  (spec §6), a fuzz target, and the decoded text through the same
+  `code::parse` a typed code goes through.

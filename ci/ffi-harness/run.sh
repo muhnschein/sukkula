@@ -64,9 +64,11 @@ echo "ffi-harness: CC=$CC ($("$CC" --version | head -n 1))"
 
 # The static library, and rustc's own list of what it links against. The
 # artifact path comes from cargo's JSON messages, so a configured target
-# directory is found without guessing; the note is rendered on stderr.
+# directory is found without guessing; the note is rendered on stderr,
+# uncoloured whatever CARGO_TERM_COLOR says (CI sets it to always), or its
+# escapes would hide the line from the sed below.
 # shellcheck disable=SC2086 # FFI_HARNESS_CARGO_ARGS is a list of words.
-if ! cargo rustc --locked -p sukkula-ffi --lib --crate-type staticlib \
+if ! cargo rustc --locked --color never -p sukkula-ffi --lib --crate-type staticlib \
     ${FFI_HARNESS_CARGO_ARGS:-} --message-format=json-render-diagnostics \
     -- --print native-static-libs >"$work/cargo.json" 2>"$work/cargo.log"; then
     cat "$work/cargo.log" >&2
