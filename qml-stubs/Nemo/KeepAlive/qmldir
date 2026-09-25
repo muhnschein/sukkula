@@ -1,0 +1,3 @@
+# A stub of Nemo.KeepAlive for host tests; see qml-stubs/README.md.
+module Nemo.KeepAlive
+KeepAlive 1.2 KeepAlive.qml

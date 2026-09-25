@@ -19,6 +19,7 @@ use sukkula_core::Protocol;
 use sukkula_core::config::Settings;
 use sukkula_core::consent::Closed;
 use sukkula_core::limits::MAX_MESSAGE_BYTES;
+use sukkula_core::text;
 use thiserror::Error;
 
 /// The version of this interface. Bumped on any incompatible change.
@@ -36,6 +37,19 @@ pub type RequestId = u64;
 /// Most files an [`OfferView`] lists by name; the rest are counted in
 /// `more_files`. Keeps an event bounded when an offer carries 500 files.
 pub const MAX_LISTED_FILES: usize = 50;
+
+/// Most commands the engine holds at once, from being taken until their
+/// [`Event::Reply`] has been handed to the UI. One more is refused without
+/// a reply (`SUKKULA_ERR_BUSY` at the C ABI), so a UI stuck in a loop costs
+/// bounded memory rather than an ever longer queue.
+// CONTRACT: new (additive), with SUKKULA_ERR_BUSY in sukkula.h.
+pub const MAX_IN_FLIGHT_COMMANDS: usize = 64;
+
+/// Longest [`ErrorInfo::message`], in characters. Messages are for logs;
+/// the cap keeps a serde error that quotes a 60 KiB command from making
+/// its reply 60 KiB long.
+// CONTRACT: new (additive).
+pub const MAX_ERROR_MESSAGE_CHARS: usize = 256;
 
 /// What the shell passes to `sukkula_start`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,6 +83,15 @@ pub struct CommandEnvelope {
 }
 
 /// What the UI can ask for.
+///
+/// Every command refuses a key it does not have, those without fields
+/// included: `{"type":"get_settings","auto_accept":true}` is malformed.
+// The variants without fields read through `no_fields`: serde's derive
+// reads a unit variant of an internally tagged enum by draining and
+// ignoring every other key, whatever `deny_unknown_fields` says, so that
+// command was taken as a `get_settings` ("deny_unknown_fields is not
+// enforced for unit variants"). The Rust shape and the JSON shape are what
+// they were.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
@@ -84,10 +107,13 @@ pub enum Command {
         settings: Settings,
     },
     /// Asks for an [`Event::Settings`].
+    #[serde(deserialize_with = "no_fields")]
     GetSettings,
     /// Starts looking for LocalSend and Quick Share peers to send to.
+    #[serde(deserialize_with = "no_fields")]
     StartDiscovery,
     /// Stops looking.
+    #[serde(deserialize_with = "no_fields")]
     StopDiscovery,
     /// Answers a pending offer (F-C2).
     Answer {
@@ -116,10 +142,14 @@ pub enum Command {
     },
     /// Asks for an [`Event::BluetoothDevices`] listing paired devices that
     /// accept Object Push.
+    #[serde(deserialize_with = "no_fields")]
     ListBluetoothDevices,
 }
 
-/// Where a [`Command::Send`] goes.
+/// Where a [`Command::Send`] goes. As with [`Command`], a key a target
+/// does not have is refused, [`SendTarget::Wormhole`]'s included.
+// `Wormhole` reads through `no_fields`, as `Command`'s variants without
+// fields do.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "protocol", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SendTarget {
@@ -135,6 +165,7 @@ pub enum SendTarget {
     },
     /// Magic Wormhole: the engine allocates a code and reports it in
     /// [`Event::WormholeCode`] (F-MW1). One file, or one text.
+    #[serde(deserialize_with = "no_fields")]
     Wormhole,
     /// A paired Bluetooth device from [`Event::BluetoothDevices`] (F-BT1).
     Bluetooth {
@@ -197,6 +228,15 @@ pub enum Event {
         settings: Settings,
         /// The name peers actually see.
         effective_device_name: String,
+        /// The settings file could not be used as it was saved -- edited by
+        /// hand, from another version, damaged -- and what could not be
+        /// read was switched off rather than reset to its defaults
+        /// (`sukkula_core::config`, "A file that does not read"). Until the
+        /// next `set_settings`. Absent when false.
+        // CONTRACT: new field (additive), for the review's "one invalid
+        // field in settings.json silently resets every setting".
+        #[serde(default, skip_serializing_if = "is_false")]
+        recovered: bool,
     },
     /// Whether receiving is on, and how each protocol is doing (F-C1).
     Receiving {
@@ -495,12 +535,17 @@ pub enum ParseError {
 }
 
 impl ErrorInfo {
-    /// An error with a message.
+    /// An error with a message. The message goes through S2 and is capped
+    /// at [`MAX_ERROR_MESSAGE_CHARS`]: it ends up in logs, and a message
+    /// that quotes its input (serde's do) must not carry control characters
+    /// or unbounded length there.
     #[must_use]
     pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
+        // CONTRACT: same signature; the message is now sanitised and capped.
+        let message: String = message.into();
         ErrorInfo {
             code,
-            message: message.into(),
+            message: text::display(&message, MAX_ERROR_MESSAGE_CHARS),
         }
     }
 }
@@ -520,12 +565,24 @@ impl From<ParseError> for ErrorInfo {
 /// The `id` is recovered on a best-effort basis when the rest is malformed,
 /// so the UI still gets a [`Event::Reply`] it can match.
 ///
+/// The work is linear in the input and the input is at most
+/// [`MAX_MESSAGE_BYTES`]: the length is checked before a byte is parsed,
+/// serde_json's recursion limit (128) bounds nesting, and a malformed
+/// command costs at most two passes (the second only looks for `id`). The
+/// fuzz target in `fuzz/` drives this function.
+///
 /// # Errors
 ///
 /// [`ParseError`], with the id if one could be read.
 pub fn parse_command(json: &str) -> Result<CommandEnvelope, (Option<RequestId>, ParseError)> {
     if json.len() > MAX_MESSAGE_BYTES {
         return Err((None, ParseError::TooLarge));
+    }
+    if !is_json_object(json) {
+        return Err((
+            None,
+            ParseError::Malformed("a command is a JSON object".to_owned()),
+        ));
     }
     match serde_json::from_str::<CommandEnvelope>(json) {
         Ok(env) if env.v != API_VERSION => Err((Some(env.id), ParseError::Version(env.v))),
@@ -536,7 +593,7 @@ pub fn parse_command(json: &str) -> Result<CommandEnvelope, (Option<RequestId>, 
                 id: RequestId,
             }
             let id = serde_json::from_str::<IdOnly>(json).ok().map(|i| i.id);
-            Err((id, ParseError::Malformed(e.to_string())))
+            Err((id, ParseError::Malformed(short(&e))))
         }
     }
 }
@@ -550,12 +607,46 @@ pub fn parse_start_config(json: &str) -> Result<StartConfig, ParseError> {
     if json.len() > MAX_MESSAGE_BYTES {
         return Err(ParseError::TooLarge);
     }
+    if !is_json_object(json) {
+        return Err(ParseError::Malformed(
+            "the start configuration is a JSON object".to_owned(),
+        ));
+    }
     let cfg: StartConfig =
-        serde_json::from_str(json).map_err(|e| ParseError::Malformed(e.to_string()))?;
+        serde_json::from_str(json).map_err(|e| ParseError::Malformed(short(&e)))?;
     if cfg.v != API_VERSION {
         return Err(ParseError::Version(cfg.v));
     }
     Ok(cfg)
+}
+
+/// The variant without fields that the tag named: no other key may be
+/// there. The keys left once serde has taken the tag are read as a struct
+/// with no fields that refuses unknown ones, which is what a struct variant
+/// with fields gets.
+fn no_fields<'de, D: serde::Deserializer<'de>>(d: D) -> Result<(), D::Error> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct NoFields {}
+    NoFields::deserialize(d).map(|NoFields {}| ())
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+/// Whether `json` is an object at the top level. serde's derived structs
+/// also accept the positional form `[1, 7, {...}]`, where
+/// `deny_unknown_fields` means nothing; the envelope is only ever an object.
+fn is_json_object(json: &str) -> bool {
+    json.trim_start_matches([' ', '\t', '\n', '\r'])
+        .starts_with('{')
+}
+
+/// A serde error as a log line: S2, and capped. serde quotes unknown
+/// variants and fields verbatim, and the command may be 64 KiB of them.
+fn short(e: &serde_json::Error) -> String {
+    text::display(&e.to_string(), MAX_ERROR_MESSAGE_CHARS)
 }
 
 #[cfg(test)]
@@ -609,6 +700,91 @@ mod tests {
         ));
     }
 
+    /// Every command and target without fields refuses a field, as those
+    /// with fields do; the tag alone, and nothing else, is the command.
+    #[test]
+    fn variants_without_fields_refuse_fields() {
+        for kind in [
+            "get_settings",
+            "start_discovery",
+            "stop_discovery",
+            "list_bluetooth_devices",
+        ] {
+            let bare = format!(r#"{{"v":1,"id":3,"cmd":{{"type":"{kind}"}}}}"#);
+            assert!(parse_command(&bare).is_ok(), "{kind}");
+            for extra in [
+                r#""x":1"#,
+                r#""auto_accept":true"#,
+                r#""type":"get_settings""#,
+            ] {
+                let json = format!(r#"{{"v":1,"id":3,"cmd":{{"type":"{kind}",{extra}}}}}"#);
+                assert!(
+                    matches!(
+                        parse_command(&json),
+                        Err((Some(3), ParseError::Malformed(_)))
+                    ),
+                    "{json}"
+                );
+            }
+        }
+        let send = |target: &str| {
+            format!(
+                r#"{{"v":1,"id":4,"cmd":{{"type":"send","target":{target},"items":[{{"kind":"text","text":"hi"}}]}}}}"#
+            )
+        };
+        let env = parse_command(&send(r#"{"protocol":"wormhole"}"#)).unwrap();
+        assert!(matches!(
+            env.cmd,
+            Command::Send {
+                target: SendTarget::Wormhole,
+                ..
+            }
+        ));
+        for target in [
+            r#"{"protocol":"wormhole","peer":"x"}"#,
+            r#"{"protocol":"wormhole","code":"7-foo"}"#,
+            r#"{"peer":"x","protocol":"wormhole"}"#,
+        ] {
+            assert!(
+                matches!(
+                    parse_command(&send(target)),
+                    Err((Some(4), ParseError::Malformed(_)))
+                ),
+                "{target}"
+            );
+        }
+        // What they serialise to is unchanged, and reads back.
+        for cmd in [
+            Command::GetSettings,
+            Command::StartDiscovery,
+            Command::StopDiscovery,
+            Command::ListBluetoothDevices,
+        ] {
+            let json = serde_json::to_string(&cmd).unwrap();
+            assert!(!json.contains(','), "{json}");
+            assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), cmd);
+        }
+        assert_eq!(
+            serde_json::to_string(&SendTarget::Wormhole).unwrap(),
+            r#"{"protocol":"wormhole"}"#
+        );
+    }
+
+    #[test]
+    fn a_settings_event_says_recovered_only_when_it_was() {
+        let e = |recovered| Event::Settings {
+            settings: Settings::default(),
+            effective_device_name: "P".into(),
+            recovered,
+        };
+        let json = serde_json::to_string(&e(false)).unwrap();
+        assert!(!json.contains("recovered"), "{json}");
+        assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), e(false));
+        let json = serde_json::to_string(&e(true)).unwrap();
+        assert!(json.ends_with(r#","recovered":true}"#), "{json}");
+        assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), e(true));
+    }
+
     #[test]
     fn events_serialise_with_their_tag() {
         let e = Event::Reply {
@@ -632,6 +808,16 @@ mod tests {
             serde_json::to_string(&e).unwrap(),
             r#"{"type":"transfer_finished","transfer":3,"outcome":{"result":"failed","error":{"code":"network","message":"timeout"}}}"#
         );
+    }
+
+    #[test]
+    fn the_positional_form_is_refused() {
+        assert!(matches!(
+            parse_command(r#"[1, 5, {"type":"get_settings"}]"#),
+            Err((None, ParseError::Malformed(_)))
+        ));
+        assert!(parse_command(" \n{\"v\":1,\"id\":1,\"cmd\":{\"type\":\"get_settings\"}}").is_ok());
+        assert!(parse_start_config(r#"[1, "/d", "/dl"]"#).is_err());
     }
 
     #[test]

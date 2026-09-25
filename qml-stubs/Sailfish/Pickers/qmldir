@@ -1,0 +1,3 @@
+# A stub of Sailfish.Pickers for host tests; see qml-stubs/README.md.
+module Sailfish.Pickers
+FilePickerPage 1.0 FilePickerPage.qml

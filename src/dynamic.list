@@ -1,0 +1,7 @@
+/* The only symbol the binary exports: main(), for the silica-qt5 booster,
+ * which dlopen()s the binary and looks it up (Harbour 1.7). A list rather
+ * than -rdynamic, which would also export every symbol of the Rust
+ * static library. See harbour-sukkula.pro. */
+{
+    main;
+};

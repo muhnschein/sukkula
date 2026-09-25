@@ -1,0 +1,49 @@
+[package]
+name = "rqs_lib"
+version = "0.11.5"
+edition = "2024"
+authors = ["martichou"]
+description = "Quick Share (Nearby Share) over the LAN, from open-quickshare's core_lib, patched for embedding in Sukkula"
+# open-quickshare's LICENSE (copied here) is GPL version 3; its README says
+# "Licensed GPL-3" without "or later", so this does not claim more.
+license = "GPL-3.0-only"
+repository = "https://github.com/ignotusbucius/open-quickshare"
+publish = false
+
+# A workspace of its own: the embedding workspace lists third_party/ under
+# `exclude`, and this keeps cargo from searching further up for one.
+[workspace]
+
+[dependencies]
+# RustCrypto AES in place of libaes (see utils::aes_cbc_decrypt).
+aes = "0.8"
+anyhow = "1.0"
+base64 = "0.22"
+bytes = "1.10"
+cbc = { version = "0.1", features = ["alloc"] }
+hex = "0.4"
+hkdf = "0.12"
+hmac = "0.12"
+# Only to tell our own addresses from a peer's; mdns-sd uses the same crate.
+if-addrs = "0.15"
+log = "0.4"
+# The crates.io release, as Sukkula vendors it with its own patches
+# (third_party/mdns-sd, upstream plus third_party/mdns-sd.patches): the
+# cache, the timers and the replies bounded, only the local link read,
+# the announcing source reported.
+mdns-sd = { version = "0.21.4", path = "../mdns-sd" }
+num-bigint = "0.4"
+p256 = { version = "0.13", features = ["ecdh"] }
+prost = "0.13"
+rand = "0.9"
+serde = { version = "1.0", features = ["derive"] }
+sha2 = "0.10"
+# The embedding application's runtime; the library spawns nothing.
+tokio = { version = "1.43", features = ["macros", "rt", "net", "sync", "time", "io-util"] }
+tokio-util = "0.7"
+
+[dev-dependencies]
+# tests/mdns.rs plays hostile hosts on the link: packets from a source
+# address and port of its choosing, next to the daemons' own sockets. The
+# version mdns-sd uses, so nothing new is built.
+socket2 = { version = "0.6", features = ["all"] }

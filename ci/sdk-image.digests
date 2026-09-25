@@ -1,0 +1,17 @@
+# The derived Sailfish SDK image each tree builds with, pinned by digest.
+#
+#     <tag>   <digest>
+#
+# The tag is what `scripts/build-rpm.sh image` prints after `sukkula-sdk:`
+# (SDK version, architecture, and a hash of ci/build-sdk-image.sh and the
+# spec's BuildRequires). rpm.yml and `make rpm` pull an image only as
+# `<registry>/sukkula-sdk@<digest>` from this file, never by its tag: a tag
+# can be repointed by anyone who can push to the registry, and this image
+# compiles, links and packages every release. With no line for the tree's
+# tag, the build derives the image itself from the upstream digest
+# ci/build-sdk-image.sh pins -- slower, and trusting no registry.
+#
+# To pin one: run sdk-image.yml on main (it refuses any other branch); its
+# summary prints the line to add here. Review it like code -- it decides
+# what every package after it is built with. docs/BUILDING.md, "The SDK
+# image".

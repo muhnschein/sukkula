@@ -9,8 +9,17 @@
 //! - An offer nobody answers is declined after `timeout`.
 //! - An adapter that gives up waiting -- the peer hung up, the transfer was
 //!   cancelled -- drops the future, and the offer disappears from the UI.
+//!
+//! Every offer leaves the queue exactly once, and the one who takes it out
+//! decides how it ends: [`ConsentBroker::answer`] takes it out and hands
+//! over the decision under the same lock, and a timeout, a withdrawal or a
+//! shutdown takes it out under that lock too. So an answer that
+//! [`ConsentBroker::answer`] reports as delivered is the answer the adapter
+//! gets, even when it arrives in the same instant as the timeout, and one
+//! that it reports as not delivered changed nothing.
 
 use std::collections::HashMap;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -136,7 +145,7 @@ impl ConsentBroker {
     /// Every outcome but an explicit yes, as a [`Refusal`]. Dropping the
     /// returned future withdraws the offer.
     pub async fn ask(&self, offer: &Offer) -> Result<OfferId, Refusal> {
-        let (tx, rx) = oneshot::channel();
+        let (tx, mut rx) = oneshot::channel();
         let id = {
             let mut state = self.lock();
             if state.shut_down {
@@ -145,8 +154,7 @@ impl ConsentBroker {
             if state.pending.len() >= self.inner.max_pending {
                 return Err(Refusal::Busy);
             }
-            let id = state.next_id;
-            state.next_id = state.next_id.checked_add(1).unwrap_or(1);
+            let id = state.fresh_id();
             state.pending.insert(id, tx);
             id
         };
@@ -155,32 +163,51 @@ impl ConsentBroker {
             id,
             settled: false,
         };
-        (self.inner.observer)(ConsentEvent::Pending {
+        self.notify(ConsentEvent::Pending {
             id,
             offer: Arc::new(offer.clone()),
         });
 
-        let outcome = tokio::time::timeout(self.inner.timeout, rx).await;
+        let outcome = tokio::time::timeout(self.inner.timeout, &mut rx).await;
         guard.settled = true;
-        let (result, reason) = match outcome {
-            Ok(Ok(Decision::Accept)) => (Ok(id), Closed::Accepted),
-            Ok(Ok(Decision::Decline)) => (Err(Refusal::Declined), Closed::Declined),
-            // The sender half is dropped only by `shutdown`.
-            Ok(Err(_)) => (Err(Refusal::Shutdown), Closed::Shutdown),
-            Err(_) => {
-                self.lock().pending.remove(&id);
-                (Err(Refusal::TimedOut), Closed::TimedOut)
+        let decision = match outcome {
+            // An answer, or `None` when `shutdown` dropped the sender: that
+            // is the only other way the sender goes while we wait.
+            Ok(received) => received.ok(),
+            Err(_elapsed) => {
+                // The deadline and an answer can land together. Whoever takes
+                // the entry out of the queue decides: if it is still there,
+                // nobody answered in time; if `answer` took it, it sent its
+                // decision before letting go of the lock, so the decision is
+                // in the channel now.
+                let taken = self.lock().pending.remove(&id);
+                if taken.is_some() {
+                    self.notify(ConsentEvent::Closed {
+                        id,
+                        reason: Closed::TimedOut,
+                    });
+                    return Err(Refusal::TimedOut);
+                }
+                rx.try_recv().ok()
             }
         };
-        (self.inner.observer)(ConsentEvent::Closed { id, reason });
+        let (result, reason) = match decision {
+            Some(Decision::Accept) => (Ok(id), Closed::Accepted),
+            Some(Decision::Decline) => (Err(Refusal::Declined), Closed::Declined),
+            None => (Err(Refusal::Shutdown), Closed::Shutdown),
+        };
+        self.notify(ConsentEvent::Closed { id, reason });
         result
     }
 
-    /// Delivers the user's answer. False when `id` is not waiting any more
-    /// -- answered already, timed out, withdrawn, or never issued.
+    /// Delivers the user's answer. True when the waiting adapter gets it;
+    /// false when `id` is not waiting any more -- answered already, timed
+    /// out, withdrawn, or never issued -- and then nothing changed.
     pub fn answer(&self, id: OfferId, decision: Decision) -> bool {
-        let tx = self.lock().pending.remove(&id);
-        match tx {
+        let mut state = self.lock();
+        match state.pending.remove(&id) {
+            // Sent under the lock; see `ask` for why. A oneshot send only
+            // stores the value and wakes the waiter, it never runs it.
             Some(tx) => tx.send(decision).is_ok(),
             None => false,
         }
@@ -206,6 +233,32 @@ impl ConsentBroker {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
     }
+
+    /// Tells the observer, which is never called with the lock held. A
+    /// panicking observer is contained here: the broker's bookkeeping is
+    /// already done by then, and a panic escaping from the withdrawal in
+    /// [`Waiting::drop`] while another panic unwinds would abort the app.
+    fn notify(&self, event: ConsentEvent) {
+        let observer = &self.inner.observer;
+        if catch_unwind(AssertUnwindSafe(|| observer(event))).is_err() {
+            tracing::error!("the consent observer panicked");
+        }
+    }
+}
+
+impl State {
+    /// The next id not in use. Ids are `u64` and never wrap in practice; if
+    /// they ever did, one still waiting is skipped, so an answer can never
+    /// reach an offer it was not meant for. At most `pending.len() + 1`
+    /// steps, and 0 is never issued.
+    fn fresh_id(&mut self) -> OfferId {
+        let mut id = self.next_id;
+        while id == 0 || self.pending.contains_key(&id) {
+            id = id.checked_add(1).unwrap_or(1);
+        }
+        self.next_id = id.checked_add(1).unwrap_or(1);
+        id
+    }
 }
 
 /// Withdraws the offer if the future asking about it is dropped.
@@ -219,7 +272,7 @@ impl Drop for Waiting<'_> {
     fn drop(&mut self) {
         if !self.settled {
             self.broker.lock().pending.remove(&self.id);
-            (self.broker.inner.observer)(ConsentEvent::Closed {
+            self.broker.notify(ConsentEvent::Closed {
                 id: self.id,
                 reason: Closed::Withdrawn,
             });
@@ -341,5 +394,155 @@ mod tests {
         assert!(broker.answer(1, Decision::Decline));
         assert_eq!(asking.await.unwrap(), Err(Refusal::Declined));
         assert!(!broker.answer(99, Decision::Accept), "an id never issued");
+    }
+
+    /// The race between an answer and the deadline, run for real on two
+    /// threads with answers landing on both sides of it. The rule it holds:
+    /// `answer` returning true means the adapter got that answer. Before the
+    /// answer was handed over under the lock, one landing between the
+    /// deadline and the timeout's cleanup was reported as delivered while the
+    /// offer ended as timed out. That window is nanoseconds wide, so this is
+    /// a guard against the rule breaking wholesale rather than a reliable
+    /// reproduction; the fix is by construction (see `ask`).
+    ///
+    /// Tokio's timer ticks once a millisecond, so a deadline shorter than a
+    /// tick is really one to two ticks: the answers run from well before a
+    /// 2 ms deadline to well after its latest tick, or a quiet machine
+    /// delivers every one and the timed-out side is never reached.
+    #[test]
+    fn an_answer_reported_delivered_is_the_answer_the_adapter_gets() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_time()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let broker = ConsentBroker::with_limits(Arc::new(|_| {}), Duration::from_millis(2), 1);
+            let mut delivered = 0;
+            let mut missed = 0;
+            for round in 0..400u64 {
+                let b = broker.clone();
+                let asking = tokio::spawn(async move { b.ask(&offer()).await });
+                while broker.pending() == 0 && !asking.is_finished() {
+                    tokio::task::yield_now().await;
+                }
+                let b = broker.clone();
+                let id = round + 1;
+                let answered = tokio::task::spawn_blocking(move || {
+                    // From 0 to 4 ms, in 0.5 ms steps: each side of the
+                    // deadline, and the two ticks it can fire on.
+                    std::thread::sleep(Duration::from_micros((round % 9) * 500));
+                    b.answer(id, Decision::Accept)
+                })
+                .await
+                .unwrap();
+                let outcome = asking.await.unwrap();
+                if answered {
+                    delivered += 1;
+                    assert_eq!(outcome, Ok(id), "round {round}");
+                } else {
+                    missed += 1;
+                    assert_eq!(outcome, Err(Refusal::TimedOut), "round {round}");
+                }
+                assert_eq!(broker.pending(), 0);
+            }
+            // Both sides of the race were reached.
+            assert!(delivered > 0 && missed > 0, "{delivered} / {missed}");
+        });
+    }
+
+    #[test]
+    fn ids_are_never_reused_while_waiting() {
+        let mut state = State {
+            next_id: u64::MAX,
+            ..State::default()
+        };
+        let (tx1, _rx1) = oneshot::channel();
+        let (tx2, _rx2) = oneshot::channel();
+        state.pending.insert(1, tx1);
+        state.pending.insert(2, tx2);
+        assert_eq!(state.fresh_id(), u64::MAX);
+        // Wraps past 0, and past the two still waiting.
+        assert_eq!(state.fresh_id(), 3);
+        assert_eq!(state.fresh_id(), 4);
+        let mut state = State::default();
+        assert_eq!(state.fresh_id(), 1, "0 is never issued");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_panicking_observer_does_not_leak_a_slot() {
+        let observer: Observer = Arc::new(|e| {
+            if matches!(e, ConsentEvent::Pending { .. }) {
+                panic!("observer bug");
+            }
+        });
+        let broker = ConsentBroker::with_limits(observer, OFFER_TIMEOUT, 1);
+        // Nobody saw it, so nobody answers: it times out, and the slot is
+        // free again.
+        assert_eq!(broker.ask(&offer()).await, Err(Refusal::TimedOut));
+        assert_eq!(broker.pending(), 0);
+        assert_eq!(broker.ask(&offer()).await, Err(Refusal::TimedOut));
+    }
+
+    /// An adapter task that panics while an offer waits drops the `ask`
+    /// future during unwinding, and the withdrawal calls the observer then.
+    /// An observer that panics too must not turn that into an abort; if it
+    /// did, this test would take the whole test binary down.
+    #[tokio::test(start_paused = true)]
+    async fn a_withdrawal_during_a_panic_survives_a_panicking_observer() {
+        let observer: Observer = Arc::new(|_| panic!("observer bug"));
+        let broker = ConsentBroker::new(observer);
+        let b = broker.clone();
+        let task = tokio::spawn(async move {
+            let o = offer();
+            let ask = b.ask(&o);
+            tokio::pin!(ask);
+            std::future::poll_fn(|cx| {
+                assert!(ask.as_mut().poll(cx).is_pending());
+                std::task::Poll::Ready(())
+            })
+            .await;
+            assert_eq!(b.pending(), 1);
+            panic!("adapter bug");
+        });
+        assert!(task.await.unwrap_err().is_panic());
+        assert_eq!(broker.pending(), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn nothing_is_asked_with_no_room_at_all() {
+        let (obs, log) = recording();
+        let broker = ConsentBroker::with_limits(obs, OFFER_TIMEOUT, 0);
+        assert_eq!(broker.ask(&offer()).await, Err(Refusal::Busy));
+        assert!(log.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn every_offer_closes_exactly_once() {
+        let (obs, log) = recording();
+        let broker = ConsentBroker::with_limits(obs, OFFER_TIMEOUT, 2);
+        // One answered, one withdrawn, then one timed out.
+        let b = broker.clone();
+        let a = tokio::spawn(async move { b.ask(&offer()).await });
+        let b = broker.clone();
+        let w = tokio::spawn(async move { b.ask(&offer()).await });
+        tokio::task::yield_now().await;
+        assert!(broker.answer(1, Decision::Accept));
+        w.abort();
+        let _ = w.await;
+        assert_eq!(a.await.unwrap(), Ok(1));
+        assert_eq!(broker.ask(&offer()).await, Err(Refusal::TimedOut));
+        let log = log.lock().unwrap();
+        for id in 1..=3 {
+            let pending = log
+                .iter()
+                .filter(|e| matches!(e, ConsentEvent::Pending { id: i, .. } if *i == id))
+                .count();
+            let closed = log
+                .iter()
+                .filter(|e| matches!(e, ConsentEvent::Closed { id: i, .. } if *i == id))
+                .count();
+            assert_eq!((pending, closed), (1, 1), "offer {id}");
+        }
     }
 }

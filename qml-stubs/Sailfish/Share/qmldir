@@ -1,0 +1,3 @@
+# A stub of Sailfish.Share for host tests; see qml-stubs/README.md.
+module Sailfish.Share
+ShareProvider 1.0 ShareProvider.qml

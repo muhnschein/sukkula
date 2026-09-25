@@ -10,7 +10,9 @@
 //!    is dropped, so `../../.bashrc` and `C:\x\y.txt` become `.bashrc` and
 //!    `y.txt`.
 //! 2. NUL, control, bidirectional and invisible characters are removed, and
-//!    whitespace becomes single spaces ([`crate::text::classify`]).
+//!    whitespace becomes single spaces ([`crate::text::classify`]). A
+//!    combining mark is kept only on a base that is not a dot, and at most
+//!    [`MAX_COMBINING_RUN`] in a row.
 //! 3. Leading dots and spaces are removed: no hidden files, no `.` or `..`.
 //! 4. Trailing dots and spaces are removed.
 //! 5. The name is shortened to [`MAX_NAME_BYTES`] bytes on a character
@@ -24,6 +26,14 @@ use crate::text::{Class, classify, truncate_bytes};
 
 /// What a name with nothing usable in it becomes.
 pub const FALLBACK_NAME: &str = "received-file";
+
+// `numbered` falls back to FALLBACK_NAME as the stem, next to the longest
+// suffix (` (4294967295)`, 13 bytes) and the longest kept extension; all of
+// it must fit the cap, or a numbered name could outgrow S1.
+const _: () = assert!(
+    FALLBACK_NAME.len() + 13 + 1 + MAX_EXTENSION_BYTES <= MAX_NAME_BYTES,
+    "S1: the numbered fallback must fit MAX_NAME_BYTES"
+);
 
 /// One path component that satisfies S1. Construct it with [`sanitize`].
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -87,31 +97,48 @@ impl AsRef<std::path::Path> for SafeName {
 }
 
 /// Applies S1 to a peer-supplied name.
+///
+/// Idempotent -- `sanitize(sanitize(x).as_str()) == sanitize(x)` -- so a
+/// name checked at two boundaries reads the same as one checked at one; the
+/// property tests and the `name_sanitize` fuzz target hold it to that.
 #[must_use]
 pub fn sanitize(raw: &str) -> SafeName {
     // 1. Last segment only. `rsplit` always yields at least one item.
     let last = raw.rsplit(['/', '\\']).next().unwrap_or("");
 
-    // 2. Characters.
-    let mut cleaned = String::with_capacity(last.len().min(MAX_NAME_BYTES.saturating_mul(4)));
+    // 2. Characters. Work is bounded on a hostile, huge name: nothing past
+    // `SCAN_BYTES` of output can survive step 5 anyway, bar the extension,
+    // which is taken from the raw tail below. Characters that are dropped do
+    // not count, but they cost one `classify` each, so the loop stays linear
+    // in the input, which the adapters already bound (S6).
+    const SCAN_BYTES: usize = MAX_NAME_BYTES.saturating_mul(4);
+    let mut cleaned = String::with_capacity(last.len().min(SCAN_BYTES));
     let mut pending_space = false;
     let mut combining: usize = 0;
+    let mut cut = false;
     for c in last.chars() {
-        // Bound the work on a hostile, huge name: nothing past this many
-        // bytes can survive step 5 anyway, bar the extension, which is
-        // taken from the raw tail below.
-        if cleaned.len() > MAX_NAME_BYTES.saturating_mul(4) {
+        if cleaned.len() > SCAN_BYTES {
+            cut = true;
             break;
         }
         match classify(c) {
             Class::Drop => {}
             Class::Space | Class::Newline => pending_space = true,
             Class::Combining => {
-                if !cleaned.is_empty() && combining < MAX_COMBINING_RUN {
+                // A mark needs a base, and a dot is not one: a mark on a
+                // trailing dot would hide that dot from step 4, and a mark
+                // on a leading dot would be left without a base by step 3,
+                // which is how `.\u{301}x` used to sanitise to a name that
+                // sanitised differently again.
+                let on_dot = cleaned.ends_with('.');
+                if !cleaned.is_empty() && !on_dot && combining < MAX_COMBINING_RUN {
                     combining = combining.saturating_add(1);
                     cleaned.push(c);
                 }
             }
+            // 3. Leading dots never enter the name: no hidden files, no
+            // `.` or `..`, and nothing left for a mark to hang from.
+            Class::Keep if c == '.' && cleaned.is_empty() => {}
             Class::Keep => {
                 if pending_space && !cleaned.is_empty() {
                     cleaned.push(' ');
@@ -124,9 +151,7 @@ pub fn sanitize(raw: &str) -> SafeName {
     }
 
     // A very long name loses its middle, not its extension.
-    if cleaned.len() > MAX_NAME_BYTES.saturating_mul(4)
-        && let (_, Some(ext)) = split_extension(last)
-    {
+    if cut && let (_, Some(ext)) = split_extension(last) {
         let ext_clean = sanitize_extension(ext);
         if !ext_clean.is_empty() {
             cleaned.push('.');
@@ -134,7 +159,8 @@ pub fn sanitize(raw: &str) -> SafeName {
         }
     }
 
-    // 3 and 4. Dots and spaces at either end.
+    // 3 and 4. Dots and spaces at either end. The start is already clean;
+    // trimming it again costs nothing and keeps the rule in one place.
     let trimmed = cleaned
         .trim_start_matches(['.', ' '])
         .trim_end_matches(['.', ' ']);
@@ -281,9 +307,76 @@ mod tests {
             "a\u{202E}b",
             "x".repeat(500).as_str(),
             "  .  ",
+            // Found by the property tests: a mark after a leading dot used
+            // to survive the trim and lose its base, so the second pass
+            // dropped it and gave a different name.
+            ".\u{301}x",
+            "..\u{301}\u{302}x",
+            " .\u{20DD}y",
         ] {
             let once = sanitize(raw);
-            assert_eq!(sanitize(once.as_str()), once);
+            assert_eq!(sanitize(once.as_str()), once, "{raw:?}");
         }
+    }
+
+    #[test]
+    fn marks_cannot_hide_dots() {
+        assert_eq!(s(".\u{301}x"), "x");
+        // A trailing dot with a mark on it is still a trailing dot.
+        assert_eq!(s("a.\u{301}"), "a");
+        assert_eq!(s("a.\u{301}b"), "a.b");
+        assert_eq!(s("\u{301}\u{301}"), FALLBACK_NAME);
+        assert_eq!(s("e\u{301}.txt"), "e\u{301}.txt");
+    }
+
+    #[test]
+    fn a_name_just_over_the_scan_limit_keeps_one_extension() {
+        // 801 bytes: the scan did not stop early, and the extension used to
+        // be appended a second time because the length alone was checked.
+        let raw = format!("{}.pdf", "x".repeat(797));
+        let out = s(&raw);
+        assert!(out.ends_with(".pdf"));
+        assert!(!out.ends_with(".pdf.pdf"));
+        assert!(out.len() <= MAX_NAME_BYTES);
+        // Cut mid-scan, with the extension in the unscanned tail.
+        let raw = format!("{}.ab\u{202E}cd", "x".repeat(799));
+        let out = s(&raw);
+        assert!(out.ends_with(".abcd"), "{out}");
+        assert!(out.len() <= MAX_NAME_BYTES);
+    }
+
+    #[test]
+    fn extensions_are_only_what_looks_like_one() {
+        let n = sanitize("archive.tar.gz");
+        assert_eq!(n.split_extension(), ("archive.tar", Some("gz")));
+        assert_eq!(sanitize("README").split_extension(), ("README", None));
+        assert_eq!(sanitize("a.b c").split_extension(), ("a.b c", None));
+        let long_ext = format!("a.{}", "e".repeat(MAX_EXTENSION_BYTES + 1));
+        assert_eq!(sanitize(&long_ext).split_extension().1, None);
+        // A long name with a long "extension" is cut as a whole.
+        let raw = format!("{}.{}", "x".repeat(300), "e".repeat(40));
+        assert!(s(&raw).len() <= MAX_NAME_BYTES);
+    }
+
+    #[test]
+    fn huge_hostile_names_cost_linear_time() {
+        // A megabyte of invisible characters: nothing survives, and the
+        // loop does one classify per character.
+        let raw = "\u{200B}".repeat(1 << 20);
+        assert_eq!(s(&raw), FALLBACK_NAME);
+        let raw = format!("{}{}", "\u{301}".repeat(1 << 18), "ok.txt");
+        assert_eq!(s(&raw), "ok.txt");
+    }
+
+    #[test]
+    fn safe_names_format_as_themselves() {
+        let n = sanitize("a b.txt");
+        assert_eq!(n.to_string(), "a b.txt");
+        assert_eq!(format!("{n:?}"), "SafeName(\"a b.txt\")");
+        let p: &std::path::Path = n.as_ref();
+        assert_eq!(p, std::path::Path::new("a b.txt"));
+        assert!(is_safe("a b.txt"));
+        assert!(!is_safe(".x"));
+        assert!(!is_safe("a/b"));
     }
 }

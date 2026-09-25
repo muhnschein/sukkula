@@ -1,0 +1,155 @@
+[package]
+name = "sukkula-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+publish = false
+
+# Its own workspace on purpose, as in clove and vuo: cargo-fuzz builds with
+# nightly and its own flags, and a workspace member would drag libfuzzer-sys
+# and `arbitrary` into every ordinary `cargo build`, `cargo deny` and the
+# committed Cargo.lock. Building needs no nightly (`cargo check
+# --manifest-path fuzz/Cargo.toml` works on the pinned toolchain); only
+# running does. See README.md.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+serde_json = "1"
+sukkula-core = { path = "../crates/sukkula-core" }
+# The three network protocols, for their parsers' targets. Not Bluetooth:
+# its parsers read D-Bus replies, which its own sweeps cover.
+sukkula-engine = { path = "../crates/sukkula-engine", default-features = false, features = ["localsend", "quickshare", "wormhole"] }
+# The Quick Share targets play the sender: they drive rqs_lib's
+# InboundRequest -- the same path dependency the engine uses, so one crate
+# -- and seal the frames they write the way it expects: prost for its
+# protobuf types, HMAC-SHA256, SHA-512 for the UKEY2 commitment, P-256 for
+# the key exchange (AES-CBC is rqs_lib's own). The versions rqs_lib uses,
+# so nothing new is built.
+rqs_lib = { path = "../third_party/rqs_lib" }
+prost = "0.13"
+hmac = "0.12"
+sha2 = "0.10"
+p256 = { version = "0.13", features = ["ecdh"] }
+# The socket the Quick Share targets hand rqs_lib: tokio's I/O traits
+# only, no runtime (nothing there ever waits).
+tokio = { version = "1", default-features = false }
+# wormhole_mailbox restates magic-wormhole's server-message types, to hold
+# the guard to what the library would make of a message.
+serde = { version = "1", features = ["derive"] }
+
+[[bin]]
+name = "name_sanitize"
+path = "fuzz_targets/name_sanitize.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "text_display"
+path = "fuzz_targets/text_display.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "text_message"
+path = "fuzz_targets/text_message.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "offer_validate"
+path = "fuzz_targets/offer_validate.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "settings_json"
+path = "fuzz_targets/settings_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "hex"
+path = "fuzz_targets/hex.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "command_json"
+path = "fuzz_targets/command_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "start_config"
+path = "fuzz_targets/start_config.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "localsend_prepare_upload"
+path = "fuzz_targets/localsend_prepare_upload.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "localsend_discovery"
+path = "fuzz_targets/localsend_discovery.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wormhole_wire"
+path = "fuzz_targets/wormhole_wire.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wormhole_code"
+path = "fuzz_targets/wormhole_code.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wormhole_mailbox"
+path = "fuzz_targets/wormhole_mailbox.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "quickshare_frame"
+path = "fuzz_targets/quickshare_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "quickshare_handshake"
+path = "fuzz_targets/quickshare_handshake.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "quickshare_mdns"
+path = "fuzz_targets/quickshare_mdns.rs"
+test = false
+doc = false
+bench = false

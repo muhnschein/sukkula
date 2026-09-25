@@ -11,9 +11,33 @@ publish.workspace = true
 [features]
 default = ["localsend", "quickshare", "wormhole", "bluetooth"]
 # One feature per protocol, so each can be built and tested alone (spec §3).
-localsend = ["dep:localsend"]
-quickshare = []
-wormhole = ["dep:magic-wormhole", "dep:qrcode"]
+localsend = [
+    "dep:localsend",
+    "dep:hyper",
+    "dep:hyper-util",
+    "dep:http-body-util",
+    "dep:bytes",
+    "dep:rustls",
+    "dep:tokio-rustls",
+    "dep:form_urlencoded",
+    "dep:getrandom",
+    "dep:rustix",
+]
+quickshare = ["dep:rqs_lib", "dep:dbus", "dep:rustix"]
+wormhole = [
+    "dep:magic-wormhole",
+    "dep:qrcode",
+    "dep:async-tungstenite",
+    "dep:futures-core",
+    "dep:url",
+    "dep:sha2",
+    "dep:getrandom",
+    "dep:rustls",
+    "dep:tokio-rustls",
+    "dep:rustls-platform-verifier",
+    "dep:rustix",
+    "tokio-util/compat",
+]
 bluetooth = ["dep:dbus"]
 
 [dependencies]
@@ -22,21 +46,91 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+# S9: the engine's own log (src/logging.rs): a Registry, the level table
+# as `Targets` behind a switch, and a line formatter of our own, to
+# standard error. No `fmt`, no `env-filter` (and so no regex), no ANSI.
+# Both crates are already in the tree through the LocalSend core.
+tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "registry"] }
+# The `log` crate's records (rqs_lib, mdns-sd, tungstenite) into the same
+# filter.
+tracing-log = { version = "0.2", default-features = false, features = ["std", "log-tracer"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros", "net", "io-util", "fs"] }
 tokio-util = { workspace = true, features = ["rt"] }
 
 # LocalSend v2: the protocol authors' own core, pinned (spec §6).
 localsend = { git = "https://github.com/localsend/localsend", rev = "e768240d1ad95f0f162b852b5ff37bec71cde1ef", features = ["discovery"], optional = true }
+# The HTTPS layer of the LocalSend adapter. Every one of these is already in
+# the tree through `localsend` (same major versions, features it enables
+# anyway); they are named here because upstream's server and client cannot
+# enforce S4/S6/S7 before they parse (see src/localsend/mod.rs), so the adapter
+# drives hyper and rustls itself and takes only the DTOs, the certificate code
+# and multicast from upstream. No second TLS stack: rustls with ring, as spec
+# §6 lists.
+hyper = { version = "1", default-features = false, features = ["http1", "server", "client"], optional = true }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio"], optional = true }
+http-body-util = { version = "0.1", optional = true }
+bytes = { version = "1", optional = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"], optional = true }
+form_urlencoded = { version = "1", optional = true }
+getrandom = { workspace = true, optional = true }
+# O_NONBLOCK for opening a file to send (LocalSend, Wormhole, Quick Share),
+# so a FIFO swapped in since the hub's check cannot block the open. Already
+# in the tree through core.
+rustix = { workspace = true, optional = true }
+# Quick Share: open-quickshare's rqs_lib, vendored with Sukkula's patches
+# (third_party/rqs_lib.patches, docs/UPSTREAM-QUICKSHARE.md). The BLE nudge
+# (F-QS2) uses the `dbus` dependency below, the same system libdbus-1 stack
+# as Bluetooth.
+rqs_lib = { path = "../../third_party/rqs_lib", optional = true }
 # Magic Wormhole, transfer protocol v1 only (spec §5).
 magic-wormhole = { version = "=0.8.1", default-features = false, features = ["transfer"], optional = true }
 qrcode = { version = "0.14", default-features = false, optional = true }
+# The wormhole guards (src/wormhole/mod.rs, "Why guards"): a loopback
+# WebSocket proxy that holds the mailbox server to the size, count and shape
+# limits magic-wormhole does not enforce. All four are already in the tree
+# through magic-wormhole or sukkula-core.
+async-tungstenite = { version = "0.34", default-features = false, features = ["handshake"], optional = true }
+futures-core = { version = "0.3", default-features = false, optional = true }
+url = { version = "2", optional = true }
+# The transit ack's SHA-256, as the v1 protocol defines it.
+sha2 = { workspace = true, optional = true }
+# wss:// mailboxes (F-MW4) over the TLS stack LocalSend already brings --
+# rustls with ring, tokio-rustls (declared above) and the platform verifier
+# -- rather than magic-wormhole's own TLS features (a second async TLS
+# adapter and a baked-in root store). No second TLS stack. getrandom and
+# rustix (above) serve the wormhole guards' token and the O_NONBLOCK open.
+rustls-platform-verifier = { version = "0.7", optional = true }
 # BlueZ obexd over the system libdbus-1.so.3 (Harbour-allowed). Never `vendored`.
 dbus = { version = "0.9", optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true
 proptest.workspace = true
+# The wormhole tests' raw transit peer seals records by hand, to send what
+# magic-wormhole's own API refuses to (empty and oversized records). Already
+# in the tree through magic-wormhole.
+crypto_secretbox = "0.1"
+# A self-signed certificate for the wormhole tests' fake wss:// mailbox,
+# which must be refused. Already in the tree through LocalSend, with ring.
+rcgen = "0.14"
+# The hub's tests make a FIFO to prove /etc/hw-release is never opened
+# when it is one. Already in the tree through sukkula-core.
+rustix.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros", "net", "io-util", "fs", "test-util"] }
+# tests/quickshare.rs: a hostile Quick Share sender that does the UKEY2
+# handshake and builds its frames itself. The versions rqs_lib uses, so
+# nothing new enters Cargo.lock.
+prost = "0.13"
+p256 = { version = "0.13", features = ["ecdh"] }
+hmac = "0.12"
+sha2.workspace = true
+# tests/quickshare_mdns.rs: mDNS for real, on loopback and a port of the
+# test's own -- a second daemon (the vendored mdns-sd rqs_lib uses) that
+# must resolve our announcement, and hostile hosts sending from a source
+# address and the mDNS port of their choosing. Both already in the tree.
+mdns-sd = { version = "0.21.4", path = "../../third_party/mdns-sd" }
+socket2 = { version = "0.6", features = ["all"] }
 
 [lints]
 workspace = true

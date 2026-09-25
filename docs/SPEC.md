@@ -1,9 +1,13 @@
-# Sukkula — Specification v0.2
+# Sukkula — Specification v0.3
 
 Sep 24, 2026 · @Philipp
 
 v0.2 renames Parvi to Sukkula and settles every open decision of v0.1 (§8). Where
 the implementation departs from v0.1 the change is marked **(v0.2)**.
+
+v0.3 (Sep 25, 2026) ships the engine as a private shared library instead of
+linking it into the binary, after the first phone test (`docs/FFI.md`,
+Linking). The changes are marked **(v0.3)**.
 
 ## 1. Purpose, scope and name
 
@@ -30,7 +34,7 @@ Every package must pass `sfdk check -s harbour`; anything the validator rejects 
 
 - **Targets:** aarch64 only, Sailfish OS 5.2 and later, which is the Jolla Phone 2026 and nothing else. No armv7hl, no i486, no compatibility code for older releases. **(v0.2)**
 - **Sailjail permissions:** `Internet;Bluetooth;Downloads` and nothing else. `Bluetooth` grants BlueZ on the system bus (`org.bluez`) and obexd on the session bus (`org.bluez.obex`), which is everything Bluetooth and the Quick Share BLE nudge need. Received files go to `~/Downloads/Sukkula/`, staged in `~/Downloads/Sukkula/.partial/` (see S3); files to send arrive via the Share menu or a file picker.
-- **Linked system libraries** (all on the Harbour allow-list): Qt5 Core/Gui/Qml/Quick/DBus, libsailfishapp, libdbus-1.so.3, libz. Everything else is statically linked Rust.
+- **Linked system libraries** (all on the Harbour allow-list): Qt5 Core/Gui/Qml/Quick/DBus, libsailfishapp, libdbus-1.so.3, libz. Everything else is Rust, statically linked into one private library, `/usr/share/harbour-sukkula/lib/libsukkula_ffi.so`, which the binary finds through its RPATH **(v0.3: not into the binary itself. The `silica-qt5` booster `dlopen()`s the binary, and an executable's thread-locals are resolved to fixed offsets that a `dlopen()`ed one does not get.)**
 - **QML imports:** Sailfish.Silica, Sailfish.Share (ShareProvider), Sailfish.Pickers, Nemo.KeepAlive, Nemo.Notifications. QtBluetooth is not allowed, so BlueZ is reached over raw D-Bus from Rust.
 - **Lifecycle:** receiving only while the app runs (cover page shows "Receiving"). KeepAlive holds the CPU awake during an active transfer only.
 - **Network:** inbound TCP (LocalSend 53317, Quick Share random port) must survive Sailfish's connman firewall. Verify on hardware in milestone 1; if blocked, document it and stop.
@@ -57,11 +61,11 @@ Arrows show call direction; events flow back up the same path.
 
 - `sukkula-core`: every untrusted value passes through here. It sanitises names and display text, enforces limits, runs the consent broker and writes files. It has no network code and `#![forbid(unsafe_code)]`.
 - `sukkula-engine`: thin adapters that translate each protocol library's events into core types. Each protocol is a Cargo feature so it can be built and tested alone.
-- `sukkula-ffi`: `staticlib` with four C functions: `sukkula_start(config_json, callback, userdata)`, `sukkula_command(handle, json)`, `sukkula_stop(handle)`, `sukkula_version()`. Every entry point wraps `catch_unwind`; strings passed to the callback are valid only during the call.
+- `sukkula-ffi`: a `staticlib`, linked into `libsukkula_ffi.so` **(v0.3)**, with four C functions, which are all the library exports: `sukkula_start(config_json, callback, userdata)`, `sukkula_command(handle, json)`, `sukkula_stop(handle)`, `sukkula_version()`. Every entry point wraps `catch_unwind`; strings passed to the callback are valid only during the call.
 
 **Commands and events** are versioned JSON with serde `deny_unknown_fields`, capped at 64 KiB. A panic in a connection task kills that task only (`panic = "unwind"`), never the app.
 
-**Toolchain:** the Sailfish SDK ships Rust 1.75 at most, while magic-wormhole 0.8 needs 1.92 and open-quickshare uses edition 2024. The Rust part is therefore cross-compiled with a pinned upstream toolchain (`rust-toolchain.toml`, 1.97.1, the LocalSend core's own pin **(v0.2)**) against the Sailfish target sysroot, with the SDK's own aarch64 GCC. `sfdk` then builds the C++/QML shell, links the static library and makes the RPM. Harbour validates the RPM, not the compiler used.
+**Toolchain:** the Sailfish SDK ships Rust 1.75 at most, while magic-wormhole 0.8 needs 1.92 and open-quickshare uses edition 2024. The Rust part is therefore cross-compiled with a pinned upstream toolchain (`rust-toolchain.toml`, 1.97.1, the LocalSend core's own pin **(v0.2)**) against the Sailfish target sysroot, with the SDK's own aarch64 GCC. `sfdk` then builds the C++/QML shell against the engine's library and makes the RPM, which ships both **(v0.3)**. Harbour validates the RPM, not the compiler used.
 
 ## 4. Functional requirements
 
@@ -79,7 +83,7 @@ Each requirement has an ID; every ID gets at least one automated test or a named
 
 **LocalSend (F-LS)**, via the upstream `localsend` crate, protocol v2:
 
-- **F-LS1** Discovery via multicast 224.0.0.167:53317, plus the HTTP register fallback.
+- **F-LS1** Discovery via multicast 224.0.0.167:53317, plus the HTTP register fallback. **(v0.2: the fallback registers, over HTTPS and pinned, only with servers already known -- found earlier by multicast or that registered with us -- and never scans the subnet as the upstream apps do. A phone on a network that drops multicast therefore finds only devices it has met before or that register with it.)**
 - **F-LS2** HTTPS only, with a self-signed certificate generated on first run and kept in the app data dir (mode 0600). Plain HTTP peers are refused.
 - **F-LS3** When sending, pin the peer's certificate to the fingerprint it announced; abort on mismatch.
 - **F-LS4** Optional receive PIN, off by default.
@@ -166,7 +170,7 @@ A change merges only when CI passes: `cargo fmt --check`, `clippy -D warnings`, 
 | Layer | What | Tool |
 | --- | --- | --- |
 | Core | Every S-rule as a property test (names, display text, inbox caps and cleanup) | proptest |
-| Adapters | Loopback transfers per protocol: Sukkula to Sukkula, and Sukkula to the reference client on the same host (LocalSend CLI, `wormhole` CLI, rquickshare) | cargo test (integration) |
+| Adapters | Loopback transfers per protocol: Sukkula to Sukkula, and Sukkula to the reference client on the same host (LocalSend CLI, `wormhole` CLI, rquickshare) **(v0.2: LocalSend against the upstream core's own client and server; `wormhole` against the pinned Python client in CI's `wormhole-interop` job; no rquickshare interop yet -- Quick Share is Sukkula to Sukkula over the patched library plus hand-built frames, and real Android peers are M-30)** | cargo test (integration) |
 | Hostile input | Malicious peers replaying Q1–Q5 and S1–S7 cases: traversal names, negative and oversized sizes, endless chunks, bidi aliases, slow senders | cargo test with hand-built frames |
 | Parsers | FFI command JSON, LocalSend DTOs, Quick Share frames, wormhole offers | cargo-fuzz, corpus in repo |
 | FFI | Start/stop cycles, bad UTF-8, oversize commands, callback on a foreign thread | cargo test + a small C harness under ASan |
