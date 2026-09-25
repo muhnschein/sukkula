@@ -22,7 +22,10 @@
 #     security updates never reach. Visible in the lockfile as libdbus-sys
 #     depending on `cc`, which only that feature pulls;
 #   - an async runtime beside tokio and the smol pieces magic-wormhole
-#     brings.
+#     brings;
+#   - any crate but sukkula-engine using `dbus`, or any but `dbus` using
+#     libdbus-sys (S8: libdbus can start a process, and only the engine's
+#     connection code is held to clippy.toml's constructor bans).
 #
 # Refused unless ci/deps-allow.conf names them with a scope and a reason:
 #
@@ -130,6 +133,32 @@ if awk '
     END { exit found ? 0 : 1 }' "$lock"; then
     bad "libdbus-sys is built 'vendored' (it depends on cc): a static libdbus instead of the system's (Q7)"
 fi
+
+# S8 through libdbus. libdbus starts a process for an `autolaunch:` address
+# (dbus-launch) or a `unixexec:` one (fork and exec), and falls back to
+# autolaunch: when it looks the session bus up itself. clippy.toml bans
+# every constructor of the dbus crate in our code and lifts the ban only
+# where the address has just been checked to be a plain unix: socket
+# (bluetooth::bus::Bus::connect, the Quick Share BLE nudge) -- but clippy
+# does not lint dependencies. So the engine is the one crate that may use
+# dbus, and dbus the one that may use libdbus-sys: a dependency that
+# opened a connection itself would be outside every check (finding "S8
+# gate does not cover libdbus"). `<crate>:<its only dependent>`.
+DBUS_USERS='dbus:sukkula-engine libdbus-sys:dbus'
+for pair in $DBUS_USERS; do
+    crate=${pair%%:*}
+    only=${pair#*:}
+    while IFS= read -r user; do
+        [[ -n "$user" && "$user" != "$only" ]] || continue
+        bad "'$user' depends on $crate: only $only may (S8: libdbus can autolaunch or unixexec, and clippy.toml's constructor bans do not reach dependencies)"
+    done < <(awk -v want="$crate" '
+        /^\[\[package\]\]/ { name = ""; deps = 0 }
+        /^name = "/ { name = $0; sub(/^name = "/, "", name); sub(/"$/, "", name) }
+        /^dependencies = \[/ { deps = 1; next }
+        deps && /^\]/ { deps = 0 }
+        deps && (index($0, "\"" want "\"") || index($0, "\"" want " ")) { print name }
+    ' "$lock" | sort -u)
+done
 
 for crate in $BLUETOOTH $SPAWN; do
     in_lock "$crate" || continue
