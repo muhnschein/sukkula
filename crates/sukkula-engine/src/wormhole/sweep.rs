@@ -292,7 +292,11 @@ fn server_messages_survive_mutation_and_keep_the_guards_promise() {
 fn exchange() -> Vec<String> {
     let sealed = "ab".repeat(48);
     let pake = sukkula_core::hex::encode(
-        format!(r#"{{"pake_v1":"53{}"}}"#, "58".to_owned() + &"66".repeat(31)).as_bytes(),
+        format!(
+            r#"{{"pake_v1":"53{}"}}"#,
+            "58".to_owned() + &"66".repeat(31)
+        )
+        .as_bytes(),
     );
     let echo = |phase: &str, body: &str| {
         json!({"type": "message", "side": OURS, "phase": phase, "body": body}).to_string()

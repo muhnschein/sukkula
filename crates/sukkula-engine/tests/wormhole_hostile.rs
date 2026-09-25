@@ -928,8 +928,10 @@ async fn a_malformed_code_from_the_mailbox_never_reaches_the_screen() {
 /// yields (W1).
 async fn minting_mailbox() -> FakeMailbox {
     mailbox(Behaviour {
-        welcome: Some(json!({"type": "welcome", "welcome": {"permission-required": {
-            "none": null, "hashcash": {"bits": 18, "resource": "r".repeat(256)}}}})),
+        welcome: Some(
+            json!({"type": "welcome", "welcome": {"permission-required": {
+            "none": null, "hashcash": {"bits": 18, "resource": "r".repeat(256)}}}}),
+        ),
         ..Behaviour::default()
     })
     .await

@@ -515,8 +515,14 @@ mod tests {
         let started = Instant::now();
         let r = off_runtime(Duration::from_millis(300), "the test", stuck(rx)).await;
         assert_eq!(r, Err(timed_out("the test")));
-        assert!(started.elapsed() < Duration::from_secs(2), "held up by the future");
-        assert!(ticker.await.unwrap() < Duration::from_millis(250), "the worker was held");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "held up by the future"
+        );
+        assert!(
+            ticker.await.unwrap() < Duration::from_millis(250),
+            "the worker was held"
+        );
         drop(release);
 
         // A cancel (the transfer's, or the engine stopping) ends it too.
@@ -534,7 +540,10 @@ mod tests {
         )
         .await;
         assert_eq!(r, Err(cancelled()));
-        assert!(started.elapsed() < Duration::from_secs(2), "held up by the future");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "held up by the future"
+        );
         drop(release);
 
         // Results come back, panics are caught.
@@ -552,7 +561,10 @@ mod tests {
         let settle = |n: usize| async move {
             let start = Instant::now();
             while OFF_RUNTIME.load(Ordering::SeqCst) != n {
-                assert!(start.elapsed() < Duration::from_secs(10), "never {n} threads");
+                assert!(
+                    start.elapsed() < Duration::from_secs(10),
+                    "never {n} threads"
+                );
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         };

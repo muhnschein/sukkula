@@ -700,7 +700,9 @@ mod tests {
         // W3, as a server or anyone on the ws:// path can send it: a PAKE
         // under "version" (long enough to pass as sealed), then a short
         // "pake" the library would decrypt as the version message.
-        let pake = hex::encode(br#"{"pake_v1":"535866666666666666666666666666666666666666666666666666666666666666"}"#);
+        let pake = hex::encode(
+            br#"{"pake_v1":"535866666666666666666666666666666666666666666666666666666666666666"}"#,
+        );
         let mut c = bound();
         let e = check_server_message(&msg("x", "version", &pake), &mut c).unwrap_err();
         assert_eq!(e.message, out_of_order);

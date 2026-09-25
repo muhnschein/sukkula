@@ -400,7 +400,9 @@ impl TransitGuard {
         if !crate::slots::take(&self.peer_connects, MAX_PEER_CONNECTS) {
             return Err("no connection attempts left for the peer's addresses");
         }
-        TcpStream::connect(addr).await.map_err(|_| "peer unreachable")
+        TcpStream::connect(addr)
+            .await
+            .map_err(|_| "peer unreachable")
     }
 }
 

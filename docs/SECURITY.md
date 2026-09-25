@@ -57,16 +57,22 @@ consent.**
   could swap the path in between. Size checks narrow the window; the
   obexd API cannot close it. Remote peers cannot reach this.
 - **Wormhole peers choose where we connect.** After consent, a peer
-  holding the code can make Sukkula open up to three outbound TCP
-  connections to addresses it names (never loopback, multicast or
-  unspecified), sending only fixed handshake bytes, and resolve relay host
-  names it picks. Every wormhole client does the same.
+  holding the code can make Sukkula try up to three outbound TCP
+  connections in all to addresses it names -- one attempt per direct hint
+  or relay, refused and timed-out attempts included -- never loopback,
+  multicast, broadcast or unspecified, but possibly this phone's own LAN
+  address; each carries only fixed handshake bytes. It can also make
+  Sukkula resolve up to three relay host names it picks. Every wormhole
+  client does the same, most with more attempts.
 - **The default wormhole mailbox is plain `ws://`.** The transfer is
   end-to-end encrypted, but anyone on the path sees the nameplate and the
   timing. A `wss://` mailbox can be configured (F-MW4).
 - **magic-wormhole's reactor thread outlives the engine.** async-io starts
   it on the first wormhole transfer and cannot stop it. It holds no
-  sockets once the engine has stopped and never calls into Sukkula.
+  sockets once the engine has stopped and never calls into Sukkula. A
+  mailbox connection that was minting hashcash when its transfer was
+  cancelled, or the engine stopped, finishes the mint (20 bits at most) on
+  its own thread before that thread ends; nothing waits for it.
 - **libdbus accepts messages up to 128 MiB.** Lowering it needs unsafe
   FFI in the engine, which is forbidden. Replies from BlueZ and obexd are
   walked in place and only small copies are kept.
@@ -126,8 +132,20 @@ These are enforced in the code and checked in CI, not merely intended.
   that made the accepted offer, with the per-file token.
 - **Wormhole transfer v2 is not compiled**, and the v1 path runs behind
   guards that hold the mailbox, relay and peer to size, count and shape
-  limits the library does not enforce, with every library future inside
-  `catch_unwind` and a timeout.
+  limits the library does not enforce -- a peer message is judged in the
+  place the library will read it, not by its phase alone -- with every
+  library future inside `catch_unwind` and a timeout, and the mailbox
+  connection, where the library mints hashcash without yielding, on a
+  thread of its own rather than an engine worker.
+- **Bluetooth connects only to `unix:` buses.** libdbus starts a process
+  for `unixexec:` and `autolaunch:` addresses, and falls back to
+  `autolaunch:` when left to find the session bus itself. Every Bluetooth
+  connection is made by `bluetooth::bus::Bus::connect`, which takes the
+  address from the environment or the standard socket and refuses
+  anything but `unix:` right before it calls `Channel::open_private` (the
+  Quick Share BLE nudge checks its system-bus address the same way); the
+  dbus crate's constructors that let libdbus choose the address are never
+  called.
 - **No side effects.** No process is spawned (`clippy.toml` bans
   `std::process::Command` and `tokio::process::Command`;
   `ci/check-deps.sh` bans process-spawning crates in the shipped graph,
