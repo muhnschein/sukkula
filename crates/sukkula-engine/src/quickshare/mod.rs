@@ -126,12 +126,13 @@ impl Default for Timeouts {
 }
 
 /// How the adapter reaches the network. Not a setting: the engine always
-/// uses [`Options::default`]. Tests turn mDNS off and point the BLE nudge
-/// at a private bus.
+/// uses [`Options::default`]. Tests turn mDNS off, or run it on loopback
+/// and a port of their own ([`adapter_with_mdns_port`]), and point the BLE
+/// nudge at a private bus.
 #[doc(hidden)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Options {
-    /// Announce and browse over mDNS. Off in tests: multicast is real
+    /// Announce and browse over mDNS. Off in most tests: multicast is real
     /// network.
     pub mdns: bool,
     /// Where the TCP listener binds. IPv4, as Quick Share peers resolve us
