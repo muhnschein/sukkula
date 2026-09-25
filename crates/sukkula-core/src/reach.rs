@@ -115,17 +115,30 @@ impl RateLimiter {
 
     fn evict(&mut self, now: Instant) {
         let window = self.window;
+        // An entry whose window is over would be refilled on its next use
+        // anyway; forgetting it changes nothing.
         self.buckets
             .retain(|_, b| now.saturating_duration_since(b.refilled) < window);
         if self.buckets.len() >= RATE_LIMIT_ENTRIES {
-            // Everyone is fresh: forget the stalest.
-            if let Some(oldest) = self
+            // Everyone is fresh: forget the address with the most tokens
+            // left, the stalest among equals. Forgetting an address only
+            // hands it a full bucket, which costs least for one that had
+            // most of its bucket anyway. The address being refused right
+            // now has none left, so it is forgotten last: a flood of new
+            // (spoofed) sources cannot launder it. Forgetting the stalest
+            // outright, as this once did, forgot exactly that address, since
+            // it was the first to arrive.
+            if let Some(victim) = self
                 .buckets
                 .iter()
-                .min_by_key(|(_, b)| b.refilled)
+                .max_by(|(_, a), (_, b)| {
+                    a.tokens
+                        .cmp(&b.tokens)
+                        .then_with(|| b.refilled.cmp(&a.refilled))
+                })
                 .map(|(ip, _)| *ip)
             {
-                self.buckets.remove(&oldest);
+                self.buckets.remove(&victim);
             }
         }
     }
@@ -214,5 +227,116 @@ mod tests {
             r.allow(IpAddr::V4(v4), t0);
         }
         assert!(r.len() <= RATE_LIMIT_ENTRIES);
+        assert!(!r.is_empty());
+        assert!(RateLimiter::new(0, Duration::from_secs(1)).is_empty());
+    }
+
+    /// Before eviction preferred full buckets, an exhausted address was the
+    /// first forgotten -- it was the oldest entry -- so a flood of new
+    /// sources handed it a fresh bucket straight away.
+    #[test]
+    fn a_flood_of_new_sources_cannot_launder_an_exhausted_one() {
+        let mut r = RateLimiter::new(3, Duration::from_secs(10));
+        let t0 = Instant::now();
+        let attacker = ip("192.168.1.66");
+        while r.allow(attacker, t0) {}
+        for i in 0..10_000u32 {
+            let t = t0 + Duration::from_millis(u64::from(i / 1000));
+            let spoofed = IpAddr::V4(Ipv4Addr::from(0x0A00_0000 | i));
+            r.allow(spoofed, t);
+            assert!(!r.allow(attacker, t), "after {i} spoofed sources");
+            assert!(r.len() <= RATE_LIMIT_ENTRIES);
+        }
+        // Its window still ends on time.
+        assert!(r.allow(attacker, t0 + Duration::from_secs(10)));
+    }
+
+    #[test]
+    fn a_legitimate_peer_is_never_refused_by_eviction() {
+        // Forgetting an address only ever hands it a full bucket.
+        let mut r = RateLimiter::new(2, Duration::from_secs(10));
+        let t0 = Instant::now();
+        let peer = ip("fe80::1234");
+        for i in 0..5_000u32 {
+            let spoofed = IpAddr::V4(Ipv4Addr::from(0x0A00_0000 | i));
+            r.allow(spoofed, t0);
+            if i % 1000 == 0 {
+                assert!(r.allow(peer, t0 + Duration::from_secs(u64::from(i / 1000) * 10)));
+            }
+        }
+    }
+
+    #[test]
+    fn time_going_backwards_is_harmless() {
+        let mut r = RateLimiter::new(1, Duration::from_secs(10));
+        let t0 = Instant::now() + Duration::from_secs(100);
+        let a = ip("10.0.0.1");
+        assert!(r.allow(a, t0));
+        assert!(!r.allow(a, t0.checked_sub(Duration::from_secs(50)).unwrap()));
+    }
+
+    #[test]
+    fn range_edges() {
+        let p = ReachPolicy::default();
+        for (a, ok) in [
+            ("9.255.255.255", false),
+            ("10.0.0.0", true),
+            ("10.255.255.255", true),
+            ("11.0.0.0", false),
+            ("172.15.255.255", false),
+            ("172.16.0.0", true),
+            ("172.31.255.255", true),
+            ("172.32.0.0", false),
+            ("192.167.255.255", false),
+            ("192.168.0.0", true),
+            ("192.168.255.255", true),
+            ("169.253.255.255", false),
+            ("169.254.0.0", true),
+            ("169.254.255.255", true),
+            ("169.255.0.0", false),
+            ("100.127.255.255", false),
+            ("192.0.2.1", false),
+            ("198.18.0.1", false),
+            ("240.0.0.1", false),
+            ("fbff:ffff::1", false),
+            ("fc00::", true),
+            ("fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", true),
+            ("fe00::1", false),
+            ("fe7f:ffff::1", false),
+            ("fe80::", true),
+            ("febf:ffff::1", true),
+            ("fec0::", false),
+            ("ff02::fb", false),
+            // IPv4-mapped follows the IPv4 rule, both ways.
+            ("::ffff:10.0.0.1", true),
+            ("::ffff:169.254.1.1", true),
+            ("::ffff:100.64.0.1", false),
+            ("::ffff:224.0.0.167", false),
+            // IPv4-compatible (deprecated), IPv4-translated, NAT64, 6to4,
+            // Teredo, documentation: never on a LAN socket, all refused.
+            ("::10.0.0.1", false),
+            ("::192.168.1.1", false),
+            ("::ffff:0:10.0.0.1", false),
+            ("64:ff9b::10.0.0.1", false),
+            ("2002:c0a8:101::1", false),
+            ("2001:0:4136:e378::1", false),
+            ("2001:db8::1", false),
+            ("::2", false),
+        ] {
+            assert_eq!(p.permits(ip(a)), ok, "{a}");
+        }
+        // Loopback in every spelling, only when asked.
+        let lo = ReachPolicy {
+            allow_loopback: true,
+        };
+        for a in ["127.0.0.1", "127.255.255.254", "::1", "::ffff:127.0.0.2"] {
+            assert!(!p.permits(ip(a)), "{a}");
+            assert!(lo.permits(ip(a)), "{a}");
+        }
+        assert!(
+            !lo.permits(ip("::127.0.0.1")),
+            "IPv4-compatible is not loopback"
+        );
+        assert!(!lo.permits(ip("8.8.8.8")));
     }
 }

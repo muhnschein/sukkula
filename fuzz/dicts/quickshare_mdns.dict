@@ -1,0 +1,16 @@
+# Quick Share mDNS: the service suffix, the name/record separator, and
+# base64url of the fixed bytes around the endpoint id.
+# Generated spelling: non-ASCII and controls as \xHH of their UTF-8.
+"._FC9F5ED42C8A._tcp.local."
+"\x00"
+"I"
+"I0"
+"_J9e"
+"_J9eAAA"
+"-"
+"_"
+"="
+"AAAA"
+"AQID"
+"BAUGBwgJCgsMDQ4P"
+"._tcp.local."

@@ -1,0 +1,297 @@
+S9: no file names, texts, PINs or peer data in the logs
+
+Upstream logs what the user and the peer send, several times at info
+level: every file name offered and the path it will be written to, the
+whole consent metadata (names, text previews, the sender's name), the
+created file, the handshake PIN, the RemoteDeviceInfo, the paths the
+sender opens and the SendInfo the application sends (paths again), every
+chunk's file name and folder, each resolved mDNS service with the peer's
+name, and any unhandled encrypted frame in full, whatever it carries. The
+peer's own strings end up in the log verbatim (the UKEY2 next-protocol
+string, for one), which lets a peer write into it. Per-chunk progress is
+logged at info level, one line per chunk.
+
+Sukkula's rule (spec S9): logging is off by default, and never includes
+file names or text at info level; secrets are never logged. Here the log
+lines keep what helps with a protocol problem (states, frame types,
+payload ids, sizes, device types, addresses at debug) and drop names,
+paths, texts, the PIN and peer-chosen strings; per-chunk lines move to
+trace.
+
+Findings: S9. Report: docs/UPSTREAM-QUICKSHARE.md R13.
+---
+ src/hdl/inbound.rs        | 34 ++++++++++++----------------------
+ src/hdl/mdns.rs           |  2 +-
+ src/hdl/mdns_discovery.rs |  6 +++---
+ src/hdl/outbound.rs       | 21 ++++++++++-----------
+ src/manager.rs            |  2 +-
+ 5 files changed, 27 insertions(+), 38 deletions(-)
+
+diff --git a/src/hdl/inbound.rs b/src/hdl/inbound.rs
+index c580b07..d705988 100644
+--- a/src/hdl/inbound.rs
++++ b/src/hdl/inbound.rs
+@@ -232,7 +232,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
+                 debug!("Handling State::Initial frame");
+                 let frame = location_nearby_connections::OfflineFrame::decode(&*frame_data)?;
+                 let rdi = self.process_connection_request(&frame)?;
+-                info!("RemoteDeviceInfo: {:?}", &rdi);
++                debug!("connection request from a {:?}", rdi.device_type);
+ 
+                 // Advance current state
+                 self.update_state(
+@@ -395,10 +395,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
+ 
+         if client_init.next_protocol() != "AES_256_CBC-HMAC_SHA256" {
+             self.send_ukey2_alert(AlertType::BadNextProtocol).await?;
+-            return Err(anyhow!(
+-                "UKey2: badNextProtocol: {}",
+-                client_init.next_protocol()
+-            ));
++            return Err(anyhow!("UKey2: badNextProtocol"));
+         }
+ 
+         let (secret_key, public_key) = gen_ecdsa_keypair();
+@@ -621,14 +618,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
+                 // Interop forensics: a working peer's exact chunk shape is the
+                 // template for our own sender (Windows is stricter than
+                 // Android about these fields).
+-                debug!(
+-                    "payload frame: id={} type={:?} total_size={:?} name={:?} sensitive={:?} parent={:?} | chunk offset={:?} index={:?} flags={:?} body_len={}",
++                // No file name or folder: names are the user's data.
++                trace!(
++                    "payload frame: id={} type={:?} total_size={:?} sensitive={:?} | chunk offset={:?} index={:?} flags={:?} body_len={}",
+                     header.id(),
+                     header.r#type(),
+                     header.total_size,
+-                    header.file_name,
+                     header.is_sensitive,
+-                    header.parent_folder,
+                     chunk.offset,
+                     chunk.index,
+                     chunk.flags,
+@@ -637,7 +633,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
+ 
+                 match header.r#type() {
+                     payload_header::PayloadType::Bytes => {
+-                        info!("Processing PayloadType::Bytes");
++                        trace!("Processing PayloadType::Bytes");
+                         let payload_id = header.id();
+ 
+                         let is_text = self
+@@ -716,7 +712,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
+                         }
+                     }
+                     payload_header::PayloadType::File => {
+-                        info!("Processing PayloadType::File");
++                        trace!("Processing PayloadType::File");
+                         let payload_id = header.id();
+ 
+                         // Consent first: no file byte is taken before the user
+@@ -816,7 +812,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
+                 self.send_keepalive(true).await?;
+             }
+             _ => {
+-                error!("Unhandled offline frame encrypted: {:?}", offline);
++                // The frame's type only: its fields are the peer's data.
++                debug!("Unhandled offline frame type {:?}", v1_frame.r#type());
+             }
+         }
+ 
+@@ -984,12 +981,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
+ 
+             for file in &introduction.file_metadata {
+                 let resolved_name = dest_file_name(file.name(), file.mime_type());
+-                info!("File name: {} (as {})", file.name(), resolved_name);
+ 
+                 let mut dest = get_download_dir();
+                 dest.push(&resolved_name);
+ 
+-                info!("Destination: {:?}", dest);
+                 if dest.exists() {
+                     let mut counter = 1;
+                     dest.pop();
+@@ -1026,8 +1021,6 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
+                         dest.pop();
+                         counter += 1;
+                     }
+-
+-                    info!("New destination: {:?}", dest);
+                 }
+ 
+                 let info = InternalFileInfo {
+@@ -1056,7 +1049,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
+                 ack_bytes: Default::default(),
+             };
+ 
+-            info!("Asking for user consent: {:?}", metadata);
++            info!("Asking for user consent");
+             self.update_state(
+                 |e| {
+                     e.transfer_metadata = Some(metadata);
+@@ -1088,7 +1081,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
+                         ack_bytes: Default::default(),
+                     };
+ 
+-                    info!("Asking for user consent: {:?}", metadata);
++                    info!("Asking for user consent");
+                     self.update_state(
+                         |e| {
+                             e.text_payload = Some(TextPayloadInfo::Url(meta.payload_id()));
+@@ -1113,7 +1106,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
+                         ack_bytes: Default::default(),
+                     };
+ 
+-                    info!("Asking for user consent: {:?}", metadata);
++                    info!("Asking for user consent");
+                     self.update_state(
+                         |e| {
+                             e.text_payload = Some(TextPayloadInfo::Text(meta.payload_id()));
+@@ -1173,7 +1166,6 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
+             let mfi = self.state.transferred_files.get_mut(&id).unwrap();
+ 
+             let file = File::create(&mfi.file_url)?;
+-            info!("Created file: {:?}", &file);
+             mfi.file = Some(file);
+         }
+ 
+@@ -1289,8 +1281,6 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
+         )
+         .await;
+ 
+-        info!("Pin code: {:?}", self.state.pin_code);
+-
+         Ok(())
+     }
+ 
+diff --git a/src/hdl/mdns.rs b/src/hdl/mdns.rs
+index 220e981..a644c16 100644
+--- a/src/hdl/mdns.rs
++++ b/src/hdl/mdns.rs
+@@ -122,7 +122,7 @@ impl MDnsServer {
+         // If that is not desired, derive host_name, etc. via some other means
+         let name = gen_mdns_name(endpoint_id);
+         let device_name = DEVICE_NAME.read().unwrap().clone();
+-        info!("Broadcasting with: device_name={device_name}, host_name={name}");
++        debug!("Broadcasting as {name}");
+         let endpoint_info = gen_mdns_endpoint_info(device_type as u8, &device_name);
+ 
+         let properties = [("n", endpoint_info)];
+diff --git a/src/hdl/mdns_discovery.rs b/src/hdl/mdns_discovery.rs
+index f5fbb0d..db7f714 100644
+--- a/src/hdl/mdns_discovery.rs
++++ b/src/hdl/mdns_discovery.rs
+@@ -92,18 +92,18 @@ impl MDnsDiscovery {
+                                             rtype: Some(dt),
+                                             present: Some(true),
+                                         };
+-                                        info!("ServiceResolved: Resolved a new service: {:?}", ei);
++                                        debug!("ServiceResolved: a {:?} at {:?}", ei.rtype, ei.id);
+                                         cache.insert(fullname.clone(), ei.clone());
+                                         let _ = self.sender.send(ei);
+                                     }
+                                 }
+                                 ServiceEvent::ServiceRemoved(_, fullname) => {
+-                                    trace!("ServiceRemoved: checking if should remove {}", fullname);
++                                    trace!("ServiceRemoved");
+                                     // Only remove if it has not been seen in the last cleanup_threshold
+                                     let should_remove = cache.get(&fullname).map(|ei| ei.id.clone());
+ 
+                                     if let Some(id) = should_remove {
+-                                        info!("ServiceRemoved: Remove a previous service: {}", fullname);
++                                        debug!("ServiceRemoved: forgetting a service");
+                                         cache.remove(&fullname);
+                                         let _ = self.sender.send(EndpointInfo {
+                                             id,
+diff --git a/src/hdl/outbound.rs b/src/hdl/outbound.rs
+index aa456a5..bac028b 100644
+--- a/src/hdl/outbound.rs
++++ b/src/hdl/outbound.rs
+@@ -584,7 +584,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OutboundRequest<S> {
+                 self.send_keepalive(true).await?;
+             }
+             _ => {
+-                error!("Unhandled offline frame encrypted: {:?}", offline);
++                // The frame's type only: its fields are the peer's data.
++                debug!("Unhandled offline frame type {:?}", v1_frame.r#type());
+             }
+         }
+ 
+@@ -698,21 +699,21 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OutboundRequest<S> {
+                 for f in files {
+                     let path = Path::new(f);
+                     if !path.is_file() {
+-                        warn!("Path is not a file: {}", f);
++                        warn!("Skipping a path that is not a file");
+                         continue;
+                     }
+ 
+                     let file = match File::open(f) {
+                         Ok(_f) => _f,
+                         Err(e) => {
+-                            error!("Failed to open file: {f}: {:?}", e);
++                            error!("Failed to open a file: {}", e.kind());
+                             continue;
+                         }
+                     };
+                     let fmetadata = match file.metadata() {
+                         Ok(_fm) => _fm,
+                         Err(e) => {
+-                            error!("Failed to get metadata for: {f}: {:?}", e);
++                            error!("Failed to get a file's metadata: {}", e.kind());
+                             continue;
+                         }
+                     };
+@@ -761,9 +762,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OutboundRequest<S> {
+                         id: Some(rand::rng().random::<i64>().unsigned_abs() as i64 & i64::MAX),
+                         ..Default::default()
+                     };
+-                    info!(
+-                        "introduction attachment: id={:?} payload_id={:?} name={:?} size={:?} mime={:?}",
+-                        fmeta.id, fmeta.payload_id, fmeta.name, fmeta.size, fmeta.mime_type
++                    debug!(
++                        "introduction attachment: id={:?} payload_id={:?} size={:?} mime={:?}",
++                        fmeta.id, fmeta.payload_id, fmeta.size, fmeta.mime_type
+                     );
+                     transferred_files.insert(
+                         fmeta.payload_id(),
+@@ -996,7 +997,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OutboundRequest<S> {
+                                 None => break,
+                             };
+ 
+-                            info!("> Currently sending {:?}", curr_state.file_url);
++                            trace!("> Currently sending {current}");
+                             if curr_state.bytes_transferred == curr_state.total_size {
+                                 debug!("File {current} finished");
+                                 self.update_state(
+@@ -1031,7 +1032,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OutboundRequest<S> {
+                         };
+ 
+                         let sending_buffer = buffer[..bytes_read].to_vec();
+-                        info!(
++                        trace!(
+                             "> File ready: {bytes_read} bytes && {} && left to send: {} with current offset: {}",
+                             sending_buffer.len(),
+                             curr_state.total_size - curr_state.bytes_transferred,
+@@ -1300,8 +1301,6 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OutboundRequest<S> {
+         )
+         .await;
+ 
+-        info!("Pin code: {:?}", self.state.pin_code);
+-
+         Ok(())
+     }
+ 
+diff --git a/src/manager.rs b/src/manager.rs
+index 9c18326..32c0ce7 100644
+--- a/src/manager.rs
++++ b/src/manager.rs
+@@ -52,7 +52,7 @@ impl TcpServer {
+                     break;
+                 }
+                 Some(i) = self.connect_receiver.recv() => {
+-                    info!("{INNER_NAME}: connect_receiver: got {:?}", i);
++                    info!("{INNER_NAME}: connect_receiver: a send request");
+                     let report_id = i.id.clone();
+                     if let Err(e) = self.connect(cctk, i).await {
+                         error!("{INNER_NAME}: error sending: {}", e.to_string());

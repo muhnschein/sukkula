@@ -1,0 +1,15 @@
+A stand-in for the app's own Qt/QML tree, used by ci/harbour-check-selftest.sh
+and nothing else. None of it is built or shipped.
+
+The selftest copies the real packaging (rpm/, .github/, ci/, Cargo.*) and
+lays these files over it in place of the real qml/, src/, icons/,
+translations/, harbour-sukkula.desktop and harbour-sukkula.pro. That way it
+proves the *gate* -- that ci/harbour-check.sh passes a tree shaped the way
+Harbour wants, and fails each rule broken in a copy of it -- without its
+cases depending on the exact text of the real UI, which changes every week.
+The real tree is judged by ci/harbour-check.sh itself, in the same CI job.
+
+What is here is deliberately shaped like the app: the imports spec §2
+allows, the sandbox permissions it grants, the booster's exported main(),
+the four icon sizes as real PNGs, and a tests/ and qml-stubs/ tree outside
+qml/ whose imports Harbour would reject and the check must not read.

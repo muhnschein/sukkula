@@ -1,0 +1,480 @@
+Tests: the receiver against hostile frames, and a loopback transfer
+
+Two test suites that exercise the patches above through the library's
+public interface and from inside the receiver:
+
+- src/hdl/inbound_tests.rs puts a receiver in the state it has after the
+  handshake and feeds it the frames a hostile sender could send next:
+  names with path separators, `..` and bidi characters reach the
+  application untouched (choosing a name is the application's job, the
+  library joins it onto nothing); Wi-Fi credentials are refused before
+  consent, with and without files beside them; negative, minimal and
+  duplicate file entries, too many files, a text with a bad size, and
+  files and a text at once are refused before consent; a file chunk
+  before acceptance is refused; file chunks past the declared size, at
+  the wrong offset, for an unknown id, or ending short are refused; BYTES
+  payloads with a negative size, longer than declared, or over the cap
+  are refused and leave nothing buffered.
+- tests/loopback.rs runs this crate's sender against its receiver over
+  an in-memory pipe, driven the way an embedding application drives
+  them: files (including an empty one) and a text go through, the PIN
+  both sides compute is the same four digits, a rejection reaches the
+  sender, and file bytes sent before the answer end the receiver's side.
+
+The unit tests of frame.rs, payload.rs and utils.rs came with their
+patches.
+
+Findings: spec §7 (hostile-input and loopback tests).
+---
+ src/hdl/inbound.rs       |   4 +
+ src/hdl/inbound_tests.rs | 246 +++++++++++++++++++++++++++++++++++++++
+ tests/loopback.rs        | 177 ++++++++++++++++++++++++++++
+ 3 files changed, 427 insertions(+)
+
+diff --git a/src/hdl/inbound.rs b/src/hdl/inbound.rs
+index a2442d7..7aa84ba 100644
+--- a/src/hdl/inbound.rs
++++ b/src/hdl/inbound.rs
+@@ -1246,3 +1246,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
+         f(&mut self.state);
+     }
+ }
++
++#[cfg(test)]
++#[path = "inbound_tests.rs"]
++mod tests;
+diff --git a/src/hdl/inbound_tests.rs b/src/hdl/inbound_tests.rs
+new file mode 100644
+index 0000000..50334aa
+--- /dev/null
++++ b/src/hdl/inbound_tests.rs
+@@ -0,0 +1,246 @@
++//! The receiver's own checks, driven from inside: a request put in the
++//! state it has once the handshake is done, fed the frames a sender could
++//! send next.
++
++use tokio::io::DuplexStream;
++
++use super::*;
++use crate::sharing_nearby::{
++    FileMetadata, IntroductionFrame, TextMetadata, WifiCredentialsMetadata,
++};
++
++/// A receiver past the handshake, and the other end of its socket (kept
++/// open, with room for everything it writes).
++fn ready(state: TransferState) -> (InboundRequest<DuplexStream>, DuplexStream) {
++    let (ours, theirs) = tokio::io::duplex(1 << 20);
++    let mut ir = InboundRequest::new(ours);
++    ir.state.state = state;
++    ir.state.encryption_done = true;
++    ir.state.encrypt_key = Some(vec![1; 32]);
++    ir.state.send_hmac_key = Some(vec![2; 32]);
++    ir.state.decrypt_key = Some(vec![3; 32]);
++    ir.state.recv_hmac_key = Some(vec![4; 32]);
++    (ir, theirs)
++}
++
++fn introduction(intro: IntroductionFrame) -> sharing_nearby::Frame {
++    sharing_nearby::Frame {
++        version: Some(sharing_nearby::frame::Version::V1.into()),
++        v1: Some(sharing_nearby::V1Frame {
++            r#type: Some(sharing_nearby::v1_frame::FrameType::Introduction.into()),
++            introduction: Some(intro),
++            ..Default::default()
++        }),
++    }
++}
++
++fn file(id: i64, name: &str, size: i64) -> FileMetadata {
++    FileMetadata {
++        payload_id: Some(id),
++        name: Some(name.into()),
++        size: Some(size),
++        ..Default::default()
++    }
++}
++
++fn chunk(
++    kind: payload_header::PayloadType,
++    id: i64,
++    total: i64,
++    offset: i64,
++    body: &[u8],
++    last: bool,
++) -> OfflineFrame {
++    OfflineFrame {
++        version: Some(location_nearby_connections::offline_frame::Version::V1.into()),
++        v1: Some(location_nearby_connections::V1Frame {
++            r#type: Some(location_nearby_connections::v1_frame::FrameType::PayloadTransfer.into()),
++            payload_transfer: Some(PayloadTransferFrame {
++                packet_type: Some(PacketType::Data.into()),
++                payload_header: Some(PayloadHeader {
++                    id: Some(id),
++                    r#type: Some(kind.into()),
++                    total_size: Some(total),
++                    ..Default::default()
++                }),
++                payload_chunk: Some(PayloadChunk {
++                    offset: Some(offset),
++                    flags: Some(i32::from(last)),
++                    body: Some(body.to_vec()),
++                    ..Default::default()
++                }),
++                ..Default::default()
++            }),
++            ..Default::default()
++        }),
++    }
++}
++
++async fn introduced(files: Vec<FileMetadata>) -> (InboundRequest<DuplexStream>, DuplexStream) {
++    let (mut ir, peer) = ready(TransferState::ReceivedPairedKeyResult);
++    ir.process_transfer_setup(&introduction(IntroductionFrame {
++        file_metadata: files,
++        ..Default::default()
++    }))
++    .await
++    .unwrap();
++    (ir, peer)
++}
++
++#[tokio::test]
++async fn names_reach_the_application_as_sent_and_nothing_else() {
++    let (mut ir, _peer) = ready(TransferState::ReceivedPairedKeyResult);
++    let names = [
++        "../../.bashrc",
++        "/etc/passwd",
++        "..",
++        "a\\b/c",
++        "\u{202e}gpj.exe",
++    ];
++    let files = (1i64..).zip(names).map(|(id, n)| file(id, n, 3)).collect();
++    let ev = ir
++        .process_transfer_setup(&introduction(IntroductionFrame {
++            file_metadata: files,
++            ..Default::default()
++        }))
++        .await
++        .unwrap();
++    let Some(InboundEvent::Introduction(intro)) = ev else {
++        panic!("{ev:?}")
++    };
++    // Untouched: choosing a file name is the application's job, and the
++    // library has no directory to join them onto.
++    let got: Vec<&str> = intro.files.iter().map(|f| f.name.as_str()).collect();
++    assert_eq!(got, names);
++    assert_eq!(ir.state.state, TransferState::WaitingForUserConsent);
++}
++
++#[tokio::test]
++async fn wifi_credentials_are_refused_before_consent() {
++    for with_files in [false, true] {
++        let (mut ir, _peer) = ready(TransferState::ReceivedPairedKeyResult);
++        let intro = IntroductionFrame {
++            file_metadata: if with_files {
++                vec![file(1, "a", 1)]
++            } else {
++                vec![]
++            },
++            wifi_credentials_metadata: vec![WifiCredentialsMetadata {
++                ssid: Some("net".into()),
++                ..Default::default()
++            }],
++            ..Default::default()
++        };
++        let err = ir
++            .process_transfer_setup(&introduction(intro))
++            .await
++            .unwrap_err();
++        assert!(err.to_string().contains("Wi-Fi"), "{err}");
++    }
++}
++
++#[tokio::test]
++async fn bad_file_lists_are_refused_before_consent() {
++    let too_many = (0..=MAX_INTRODUCTION_FILES as i64)
++        .map(|i| file(i, "f", 1))
++        .collect();
++    for files in [
++        vec![file(1, "a", -1)],
++        vec![file(1, "a", i64::MIN)],
++        vec![file(1, "a", 1), file(1, "b", 1)],
++        too_many,
++    ] {
++        let (mut ir, _peer) = ready(TransferState::ReceivedPairedKeyResult);
++        let intro = IntroductionFrame {
++            file_metadata: files,
++            ..Default::default()
++        };
++        assert!(
++            ir.process_transfer_setup(&introduction(intro))
++                .await
++                .is_err()
++        );
++    }
++    // Files and a text at once: which would the user be accepting?
++    let (mut ir, _peer) = ready(TransferState::ReceivedPairedKeyResult);
++    let mixed = IntroductionFrame {
++        file_metadata: vec![file(1, "a", 1)],
++        text_metadata: vec![TextMetadata {
++            payload_id: Some(9),
++            size: Some(1),
++            r#type: Some(text_metadata::Type::Text.into()),
++            ..Default::default()
++        }],
++        ..Default::default()
++    };
++    assert!(
++        ir.process_transfer_setup(&introduction(mixed))
++            .await
++            .is_err()
++    );
++    for size in [-1, MAX_TEXT_PAYLOAD_LENGTH + 1] {
++        let (mut ir, _peer) = ready(TransferState::ReceivedPairedKeyResult);
++        let intro = IntroductionFrame {
++            text_metadata: vec![TextMetadata {
++                payload_id: Some(9),
++                size: Some(size),
++                r#type: Some(text_metadata::Type::Text.into()),
++                ..Default::default()
++            }],
++            ..Default::default()
++        };
++        assert!(
++            ir.process_transfer_setup(&introduction(intro))
++                .await
++                .is_err()
++        );
++    }
++}
++
++#[tokio::test]
++async fn no_payload_byte_before_acceptance() {
++    let (mut ir, _peer) = introduced(vec![file(7, "a", 3)]).await;
++    let early = chunk(payload_header::PayloadType::File, 7, 3, 0, b"abc", true);
++    let err = ir.process_offline_frame(early).await.unwrap_err();
++    assert!(err.to_string().contains("before the transfer was accepted"));
++}
++
++#[tokio::test]
++async fn file_chunks_stop_at_the_declared_size() {
++    let file_kind = payload_header::PayloadType::File;
++    let (mut ir, _peer) = introduced(vec![file(7, "a", 3)]).await;
++    ir.accept_transfer().await.unwrap();
++    let ok = ir
++        .process_offline_frame(chunk(file_kind, 7, 3, 0, b"ab", false))
++        .await
++        .unwrap();
++    assert!(matches!(ok, Some(InboundEvent::FileChunk(ref c)) if c.body == b"ab"));
++    // Past the end, a wrong offset, an unknown id.
++    for bad in [
++        chunk(file_kind, 7, 3, 2, b"cd", false),
++        chunk(file_kind, 7, 3, 0, b"c", false),
++        chunk(file_kind, 8, 3, 0, b"c", false),
++    ] {
++        assert!(ir.process_offline_frame(bad).await.is_err());
++    }
++    // A last chunk short of the declared size.
++    let (mut ir, _peer) = introduced(vec![file(7, "a", 3)]).await;
++    ir.accept_transfer().await.unwrap();
++    let short = chunk(file_kind, 7, 3, 0, b"a", true);
++    assert!(ir.process_offline_frame(short).await.is_err());
++}
++
++#[tokio::test]
++async fn byte_payloads_are_bounded() {
++    let bytes = payload_header::PayloadType::Bytes;
++    // Q3: a negative size; Q4: more than declared, or over the cap.
++    for bad in [
++        chunk(bytes, 1, -1, 0, b"", true),
++        chunk(bytes, 2, 2, 0, b"abc", false),
++        chunk(bytes, 3, MAX_CONTROL_PAYLOAD_LENGTH + 1, 0, b"a", false),
++    ] {
++        let (mut ir, _peer) = ready(TransferState::SentConnectionResponse);
++        assert!(ir.process_offline_frame(bad).await.is_err());
++        assert!(ir.state.payload_buffers.is_empty());
++    }
++}
+diff --git a/tests/loopback.rs b/tests/loopback.rs
+new file mode 100644
+index 0000000..66589af
+--- /dev/null
++++ b/tests/loopback.rs
+@@ -0,0 +1,177 @@
++//! A sender and a receiver from this crate, talking over an in-memory pipe:
++//! the whole handshake, consent, and the payload, driven the way an
++//! embedding application drives them.
++
++use rqs_lib::hdl::TextPayloadType;
++use rqs_lib::hdl::info::{OutgoingFile, OutgoingText};
++use rqs_lib::{InboundEvent, InboundRequest, OutboundEvent, OutboundPayload, OutboundRequest};
++
++async fn receive(
++    socket: tokio::io::DuplexStream,
++    accept: bool,
++) -> (Vec<(String, Vec<u8>)>, Option<String>, Option<String>) {
++    let mut ir = InboundRequest::new(socket);
++    let intro = loop {
++        match ir.next_event().await.unwrap() {
++            Some(InboundEvent::Introduction(i)) => break i,
++            None => {}
++            Some(other) => panic!("unexpected {other:?}"),
++        }
++    };
++    let pin = ir.pin_code().map(str::to_owned);
++    if !accept {
++        ir.reject_transfer(None).await.unwrap();
++        return (Vec::new(), None, pin);
++    }
++    ir.accept_transfer().await.unwrap();
++    let mut files: Vec<(String, Vec<u8>)> = intro
++        .files
++        .iter()
++        .map(|f| (f.name.clone(), Vec::new()))
++        .collect();
++    let mut text = None;
++    while !ir.is_finished() {
++        match ir.next_event().await.unwrap() {
++            Some(InboundEvent::FileChunk(c)) => {
++                let i = intro
++                    .files
++                    .iter()
++                    .position(|f| f.payload_id == c.payload_id)
++                    .unwrap();
++                assert_eq!(c.offset as usize, files[i].1.len());
++                files[i].1.extend_from_slice(&c.body);
++            }
++            Some(InboundEvent::Text { text: t, .. }) => text = Some(t),
++            None => {}
++            Some(other) => panic!("unexpected {other:?}"),
++        }
++    }
++    ir.disconnection().await.unwrap();
++    (files, text, pin)
++}
++
++async fn send(
++    socket: tokio::io::DuplexStream,
++    payload: OutboundPayload,
++    contents: Vec<Vec<u8>>,
++) -> (bool, Option<String>) {
++    let mut or = OutboundRequest::new(*b"ABCD", socket, "Sender".into(), payload.clone());
++    or.send_connection_request().await.unwrap();
++    or.send_ukey2_client_init().await.unwrap();
++    let accepted = loop {
++        match or.next_event().await.unwrap() {
++            Some(OutboundEvent::IntroductionSent) | None => {}
++            Some(OutboundEvent::Accepted) => break true,
++            Some(OutboundEvent::Rejected(_)) => break false,
++            Some(other) => panic!("unexpected {other:?}"),
++        }
++    };
++    let pin = or.pin_code().map(str::to_owned);
++    if !accepted {
++        return (false, pin);
++    }
++    match payload {
++        OutboundPayload::Files(_) => {
++            let ids = or.file_ids().to_vec();
++            for (id, content) in ids.into_iter().zip(contents) {
++                for chunk in content.chunks(1000) {
++                    or.send_file_chunk(id, chunk).await.unwrap();
++                }
++                or.finish_file(id).await.unwrap();
++            }
++        }
++        OutboundPayload::Text(_) => or.send_text().await.unwrap(),
++    }
++    or.finish().await.unwrap();
++    (true, pin)
++}
++
++fn file(name: &str, content: &[u8]) -> OutgoingFile {
++    OutgoingFile {
++        name: name.into(),
++        size: content.len() as i64,
++        mime_type: "application/octet-stream".into(),
++    }
++}
++
++#[tokio::test]
++async fn files_go_through() {
++    let (a, b) = tokio::io::duplex(8192);
++    let contents = vec![vec![1u8; 2500], Vec::new(), b"hello".to_vec()];
++    let payload = OutboundPayload::Files(vec![
++        file("a.bin", &contents[0]),
++        file("empty", &contents[1]),
++        file("c.txt", &contents[2]),
++    ]);
++    let (sent, received) = tokio::join!(send(a, payload, contents.clone()), receive(b, true));
++    assert!(sent.0);
++    let (files, text, pin) = received;
++    assert_eq!(text, None);
++    assert_eq!(files.len(), 3);
++    assert_eq!(files[0], ("a.bin".to_string(), contents[0].clone()));
++    assert_eq!(files[1], ("empty".to_string(), Vec::new()));
++    assert_eq!(files[2], ("c.txt".to_string(), contents[2].clone()));
++    assert_eq!(pin.as_deref().map(str::len), Some(4));
++    assert_eq!(pin, sent.1, "both sides show the same PIN");
++}
++
++#[tokio::test]
++async fn text_goes_through() {
++    let (a, b) = tokio::io::duplex(8192);
++    let payload = OutboundPayload::Text(OutgoingText {
++        kind: TextPayloadType::Text,
++        title: "hi".into(),
++        text: "hi there, äöü".into(),
++    });
++    let (sent, received) = tokio::join!(send(a, payload, Vec::new()), receive(b, true));
++    assert!(sent.0);
++    assert_eq!(received.1.as_deref(), Some("hi there, äöü"));
++}
++
++#[tokio::test]
++async fn a_rejection_reaches_the_sender() {
++    let (a, b) = tokio::io::duplex(8192);
++    let payload = OutboundPayload::Files(vec![file("a", b"x")]);
++    let (sent, _) = tokio::join!(send(a, payload, vec![b"x".to_vec()]), receive(b, false));
++    assert!(!sent.0);
++}
++
++#[tokio::test]
++async fn file_bytes_before_consent_are_refused() {
++    let (a, b) = tokio::io::duplex(8192);
++    let sender = async move {
++        let payload = OutboundPayload::Files(vec![file("a", b"xyz")]);
++        let mut or = OutboundRequest::new(*b"ABCD", a, "Sender".into(), payload);
++        or.send_connection_request().await.unwrap();
++        or.send_ukey2_client_init().await.unwrap();
++        while or.next_event().await.unwrap() != Some(OutboundEvent::IntroductionSent) {}
++        // Straight on, without waiting for the answer.
++        let id = or.file_ids()[0];
++        let _ = or.send_file_chunk(id, b"xyz").await;
++        or
++    };
++    let receiver = async move {
++        let mut ir = InboundRequest::new(b);
++        loop {
++            match ir.next_event().await {
++                Ok(Some(InboundEvent::Introduction(_))) => break,
++                Ok(_) => {}
++                Err(e) => panic!("{e}"),
++            }
++        }
++        // The user has not answered; the early chunk ends the connection.
++        loop {
++            match ir.next_event().await {
++                Ok(None) => {}
++                other => break other,
++            }
++        }
++    };
++    let (_or, early) = tokio::join!(sender, receiver);
++    assert!(
++        early
++            .unwrap_err()
++            .to_string()
++            .contains("before the transfer was accepted")
++    );
++}

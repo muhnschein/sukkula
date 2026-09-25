@@ -1,0 +1,1 @@
+{"wormhole":{"mailbox_url":"wss://relay.example/v1","relay_url":"tcp://relay.example:4001"},"bluetooth":{"enabled":true}}

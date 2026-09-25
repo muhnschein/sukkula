@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later
+     Sukkula's icon: a loom shuttle, pointed at both ends because it goes
+     both ways, on a round badge. The source of the four PNG sizes Harbour
+     requires; regenerate them with scripts/render-icons.sh. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="badge" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#22b8a8"/>
+      <stop offset="1" stop-color="#0a5873"/>
+    </linearGradient>
+    <linearGradient id="shuttle" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#d7efec"/>
+    </linearGradient>
+  </defs>
+  <circle cx="128" cy="128" r="120" fill="url(#badge)"/>
+  <g transform="rotate(-30 128 128)">
+    <!-- The shuttle's body: a lens, pointed at both ends. -->
+    <path d="M 22 128 C 72 82, 184 82, 234 128 C 184 174, 72 174, 22 128 Z" fill="url(#shuttle)"/>
+    <!-- The bobbin slot, and the thread wound in it. -->
+    <rect x="90" y="113" width="76" height="30" rx="15" fill="#0a5873"/>
+    <rect x="100" y="123" width="56" height="10" rx="5" fill="#ffcf5c"/>
+    <!-- The thread paying out behind it. -->
+    <path d="M 22 128 C 8 140, 4 160, 18 176" fill="none" stroke="#ffcf5c" stroke-width="7"
+          stroke-linecap="round"/>
+  </g>
+</svg>

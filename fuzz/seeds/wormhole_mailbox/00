@@ -1,0 +1,8 @@
+{"type":"welcome","welcome":{"motd":"hi","permission-required":{"none":{},"hashcash":{"bits":6,"resource":"r"}}}}
+{"type":"ack","id":null}
+{"type":"nameplates","nameplates":[{"id":"7"}]}
+{"type":"claimed","mailbox":"m"}
+{"type":"message","side":"0123456789","phase":"pake","body":"7b7d"}
+{"type":"message","side":"0123456789","phase":"version","body":"abababababababababababababababababababababababababababababababababababababababababababababababab"}
+{"type":"message","side":"0123456789","phase":"0","body":"abababababababababababababababababababababababababababababababababababababababababababababababab","id":"1"}
+{"type":"message","side":"0123456789","phase":"1","body":"abababababababababababababababababababababababababababababababababababababababababababababababab"}

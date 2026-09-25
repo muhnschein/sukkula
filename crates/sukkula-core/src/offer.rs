@@ -59,7 +59,7 @@ pub struct RawFile {
 }
 
 /// An offer as the peer described it. Nothing here has been checked.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct RawOffer {
     /// Which protocol it came over.
     pub protocol: Protocol,
@@ -106,7 +106,7 @@ pub struct OfferFile {
 
 /// A checked offer: everything the consent dialog shows and the inbox
 /// enforces.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Offer {
     /// Which protocol it came over.
     pub protocol: Protocol,
@@ -122,6 +122,44 @@ pub struct Offer {
     pub text: Option<String>,
     /// The PIN to compare, digits only.
     pub pin: Option<String>,
+}
+
+// S9: the message and the PIN are the user's and the handshake's, so a
+// `{:?}` of an offer -- in a log line, a panic message -- gives the
+// message's length and whether there is a PIN, not what they say.
+fn redacted_text(text: Option<&String>) -> Option<String> {
+    text.map(|t| format!("<{} bytes>", t.len()))
+}
+
+fn redacted_pin(pin: Option<&String>) -> Option<&'static str> {
+    pin.map(|_| "<redacted>")
+}
+
+impl std::fmt::Debug for RawOffer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RawOffer")
+            .field("protocol", &self.protocol)
+            .field("sender", &self.sender)
+            .field("model", &self.model)
+            .field("files", &self.files)
+            .field("text", &redacted_text(self.text.as_ref()))
+            .field("pin", &redacted_pin(self.pin.as_ref()))
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for Offer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Offer")
+            .field("protocol", &self.protocol)
+            .field("sender", &self.sender)
+            .field("model", &self.model)
+            .field("files", &self.files)
+            .field("total_bytes", &self.total_bytes)
+            .field("text", &redacted_text(self.text.as_ref()))
+            .field("pin", &redacted_pin(self.pin.as_ref()))
+            .finish()
+    }
 }
 
 /// Why an offer was refused before it reached the user.
@@ -247,7 +285,9 @@ impl Offer {
 /// A MIME type is `type/subtype`, both RFC 6838 restricted names. Anything
 /// else is dropped; the offer is not refused over it.
 fn clean_mime(m: &str) -> Option<String> {
-    let m = m.trim();
+    // Parameters (`; charset=utf-8`) are dropped, not refused, and before
+    // the length check, so a long parameter does not cost a good type.
+    let m = m.split(';').next().unwrap_or("").trim();
     if m.is_empty() || m.len() > MAX_MIME_BYTES {
         return None;
     }
@@ -257,8 +297,6 @@ fn clean_mime(m: &str) -> Option<String> {
             && s.bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b"!#$&-^_.+".contains(&b))
     };
-    // Parameters (`; charset=utf-8`) are dropped, not refused.
-    let sub = sub.split(';').next().unwrap_or("").trim();
     (token(ty) && token(sub))
         .then(|| format!("{}/{}", ty.to_ascii_lowercase(), sub.to_ascii_lowercase()))
 }
@@ -397,5 +435,21 @@ mod tests {
         assert_eq!(clean_mime("image"), None);
         assert_eq!(clean_mime("a/b\nc"), None);
         assert_eq!(clean_mime(&format!("a/{}", "b".repeat(200))), None);
+    }
+
+    #[test]
+    fn debug_hides_the_message_and_the_pin() {
+        let mut raw = offer(vec![file("a.txt", 1)]);
+        raw.text = Some("meet me at the quay".into());
+        raw.pin = Some("4821".into());
+        let checked = Offer::validate(raw.clone()).unwrap();
+        for shown in [format!("{raw:?}"), format!("{checked:?}")] {
+            assert!(
+                !shown.contains("quay") && !shown.contains("4821"),
+                "{shown}"
+            );
+            assert!(shown.contains("<19 bytes>") && shown.contains("<redacted>"));
+            assert!(shown.contains("a.txt"), "{shown}");
+        }
     }
 }

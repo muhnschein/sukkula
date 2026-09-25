@@ -1,0 +1,203 @@
+# cargo-deny policy (spec §6): licences against an allow-list, RustSec
+# advisories, duplicate versions, banned crates and permitted sources.
+#
+# Run by CI's `deny` job and by `make deny`. Every exception below carries
+# its reason; an exception without one is a review comment waiting to
+# happen, and the spec requires a written reason for every advisory one.
+
+[graph]
+# The two targets anything here is ever built for: the phone, and the
+# x86_64 host the tests run on. Without this every crate a Windows, macOS,
+# Android or wasm build would pull is judged too -- security-framework,
+# schannel, the wasm websocket shims -- none of which is ever compiled for
+# a Sailfish phone, and whose presence in Cargo.lock is only cargo locking
+# every platform at once.
+targets = [
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-gnu",
+]
+# Every protocol feature at once, so a dependency that only one feature
+# pulls is still judged. The per-feature CI jobs build each alone; this is
+# the union of what they build.
+all-features = true
+
+[output]
+feature-depth = 1
+
+[advisories]
+# Unmaintained crates are reported for the whole graph, not only for our
+# own direct dependencies: a transitive crate nobody patches any more is
+# exactly where the next unfixed advisory lands.
+unmaintained = "all"
+yanked = "deny"
+ignore = [
+    # The Marvin timing side channel in `rsa`'s PKCS#1 v1.5 decryption. The
+    # LocalSend core pulls `rsa` to generate its self-signed certificate's
+    # key and to verify signatures (spec §6), and neither of those is the
+    # attack: Marvin needs an oracle that decrypts attacker-chosen
+    # ciphertexts with our private key and leaks timing, and Sukkula never
+    # decrypts with RSA at all -- the TLS stack is rustls, which does not
+    # use this crate. No fixed version exists. Accepted for v1.0 in spec §6
+    # and §8; drop this entry the day `rsa` ships a constant-time release or
+    # the LocalSend core stops needing it.
+    { id = "RUSTSEC-2023-0071", reason = "rsa: key generation and signature verification only; no RSA decryption oracle exists in Sukkula (spec §6)" },
+]
+
+[licenses]
+version = 2
+# Sukkula is GPL-3.0-or-later, and every licence here may be conveyed as
+# part of a GPLv3 work. Permissive licences are allowed by name; the copyleft
+# and unusual ones are not listed here but granted to the one crate that
+# needs each (`exceptions` below), so the next crate arriving under one of
+# them is a review rather than a silent pass.
+#
+# What is deliberately absent: GPL-2.0-only, AGPL, SSPL, the Commons Clause,
+# and anything proprietary. Each would be a distribution problem.
+allow = [
+    # Ours (every workspace crate declares it).
+    "GPL-3.0-or-later",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    # A public-domain dedication, which the FSF lists as GPL-compatible.
+    # noise-protocol and noise-rust-crypto, magic-wormhole's transit
+    # encryption, are under it alone.
+    "Unlicense",
+]
+confidence-threshold = 0.93
+# The list says which licences are acceptable, not which happen to be in
+# this week's graph, so an unused entry is not an error.
+unused-allowed-license = "allow"
+exceptions = [
+    # Magic Wormhole (spec §6). EUPL-1.2's compatibility appendix lists
+    # GPL-3.0, so the EUPL work may be conveyed under the GPL as part of
+    # Sukkula. Granted to this crate alone.
+    { crate = "magic-wormhole", allow = ["EUPL-1.2"] },
+    # rqs_lib, open-quickshare's core, vendored in third_party/ (spec §5,
+    # §6). Upstream licenses the repository under the GPLv3 text without an
+    # "or later" notice, so it is read as GPL-3.0-only -- which our
+    # GPL-3.0-or-later code may be combined with, the whole being conveyed
+    # under GPL-3.0. Upstream's core_lib/Cargo.toml has no `license` field,
+    # so the vendored copy carries either one (added by a patch) or
+    # upstream's LICENSE file, which cargo-deny identifies by its text; both
+    # spellings are granted, and with neither the crate is unlicensed and
+    # fails here. Deliberately no [[licenses.clarify]]: a clarification
+    # would override the manifest, and wave through a licence change there.
+    { crate = "rqs_lib", allow = ["GPL-3.0-only", "GPL-3.0-or-later"] },
+]
+
+# The LocalSend core lives in a subdirectory of the LocalSend repository,
+# and neither its Cargo.toml nor its directory carries a licence: the
+# repository's top-level LICENSE, Apache-2.0, is what covers it -- read at
+# the commit Cargo.toml pins, e768240 (spec §6).
+[[licenses.clarify]]
+crate = "localsend"
+expression = "Apache-2.0"
+license-files = []
+
+[licenses.private]
+# Our own crates are `publish = false`; they are judged all the same, since
+# their licence is what the package ships under.
+ignore = false
+
+[bans]
+# "deny", not "warn": a duplicate reported and passed is a report, not a
+# gate. The skip list below is the graph as it is today, every entry a
+# transitive split nothing in Sukkula chooses; a NEW duplicate is not on it
+# and fails here, which is the point. Drop an entry when it resolves.
+multiple-versions = "deny"
+wildcards = "deny"
+# Workspace path dependencies carry no version requirement, which is normal
+# inside a workspace and not the supply-chain hazard `wildcards` is for.
+allow-wildcard-paths = true
+highlight = "all"
+deny = [
+    # One TLS stack: rustls over ring, via the LocalSend core (spec §6).
+    # OpenSSL would also be a library Harbour does not let us link.
+    { crate = "openssl", reason = "one TLS stack: rustls (spec §6); OpenSSL is not linkable under Harbour" },
+    { crate = "openssl-sys", reason = "one TLS stack: rustls (spec §6); OpenSSL is not linkable under Harbour" },
+    { crate = "native-tls", reason = "one TLS stack: rustls (spec §6)" },
+    { crate = "tokio-native-tls", reason = "one TLS stack: rustls (spec §6)" },
+    { crate = "hyper-tls", reason = "one TLS stack: rustls (spec §6)" },
+    { crate = "boring-sys", reason = "one TLS stack: rustls (spec §6)" },
+    # One crypto backend under rustls: ring. aws-lc is rustls's other
+    # provider and a large C build of its own.
+    { crate = "aws-lc-rs", reason = "one crypto provider: ring (spec §6)" },
+    { crate = "aws-lc-sys", reason = "one crypto provider: ring (spec §6)" },
+    # One D-Bus stack: the `dbus` crate over the system libdbus-1.so.3,
+    # which Harbour allows (spec §2). zbus is a second, pure-Rust one.
+    { crate = "zbus", reason = "one D-Bus stack: dbus over libdbus-1 (spec §2, §6)" },
+    { crate = "zvariant", reason = "one D-Bus stack: dbus over libdbus-1 (spec §2, §6)" },
+    { crate = "rustbus", reason = "one D-Bus stack: dbus over libdbus-1 (spec §2, §6)" },
+    # Platform TLS and keychain bindings. `targets` above already keeps them
+    # out of the graph judged here; listed so that one reaching a Linux
+    # build is named rather than waved through.
+    { crate = "security-framework", reason = "Apple-only; must never reach a Linux build" },
+    { crate = "schannel", reason = "Windows-only; must never reach a Linux build" },
+]
+features = [
+    # Q7 (spec §5): upstream rqs_lib builds `dbus` with `vendored` on
+    # aarch64, which compiles a static copy of libdbus into the binary
+    # instead of linking the system's -- a second libdbus, and one Jolla's
+    # security updates never reach. Never, from any crate.
+    { crate = "libdbus-sys", deny = ["vendored"] },
+    { crate = "dbus", deny = ["vendored"] },
+]
+skip = [
+    # The RustCrypto 0.10 -> 0.11 generation split. The LocalSend core is on
+    # the new generation (sha2 0.11, digest 0.11, der 0.8, ed25519-dalek 3);
+    # rsa 0.9 (LocalSend's certificate key), magic-wormhole 0.8.1, spake2,
+    # chacha20poly1305, stun_codec and our own `sha2 = "0.10"` are on the
+    # old one. Each older version goes when its last puller moves.
+    { crate = "block-buffer@0.10.4", reason = "RustCrypto 0.10/0.11 split (digest 0.10)" },
+    { crate = "const-oid@0.9.6", reason = "RustCrypto 0.10/0.11 split (der 0.7, rsa 0.9)" },
+    { crate = "crypto-common@0.1.7", reason = "RustCrypto 0.10/0.11 split (digest 0.10, aead)" },
+    { crate = "digest@0.10.7", reason = "RustCrypto 0.10/0.11 split (sha2 0.10, magic-wormhole)" },
+    { crate = "der@0.7.10", reason = "RustCrypto 0.10/0.11 split (rsa 0.9 via pkcs1/pkcs8)" },
+    { crate = "pem-rfc7468@0.7.0", reason = "RustCrypto 0.10/0.11 split (der 0.7)" },
+    { crate = "pkcs8@0.10.2", reason = "RustCrypto 0.10/0.11 split (rsa 0.9)" },
+    { crate = "spki@0.7.3", reason = "RustCrypto 0.10/0.11 split (rsa 0.9)" },
+    { crate = "signature@2.2.0", reason = "RustCrypto 0.10/0.11 split (rsa 0.9)" },
+    { crate = "sha1@0.10.7", reason = "RustCrypto 0.10/0.11 split (magic-wormhole's stun_codec)" },
+    { crate = "sha2@0.10.9", reason = "RustCrypto 0.10/0.11 split (sukkula-core's sha2 0.10, magic-wormhole)" },
+    { crate = "hmac@0.12.1", reason = "RustCrypto 0.10/0.11 split (spake2's hkdf 0.12, stun_codec)" },
+    { crate = "hkdf@0.12.4", reason = "RustCrypto 0.10/0.11 split (spake2 0.4, via magic-wormhole)" },
+    { crate = "cpufeatures@0.2.17", reason = "RustCrypto 0.10/0.11 split (sha2 0.10, aes, poly1305)" },
+    { crate = "chacha20@0.9.1", reason = "RustCrypto 0.10/0.11 split (chacha20poly1305 0.10, via magic-wormhole)" },
+    { crate = "curve25519-dalek@4.1.3", reason = "dalek 4/5 split (x25519-dalek 2, via magic-wormhole)" },
+    # The rand 0.8 / 0.9 / 0.10 generations: magic-wormhole and rsa's
+    # num-bigint-dig are on 0.8, proptest (tests only) and tungstenite 0.29
+    # on 0.9, the LocalSend core on 0.10. getrandom follows rand_core.
+    { crate = "rand@0.8.8", reason = "rand generations (magic-wormhole, num-bigint-dig)" },
+    { crate = "rand@0.9.5", reason = "rand generations (proptest, tests only; tungstenite 0.29)" },
+    { crate = "rand_core@0.6.4", reason = "rand generations (rand 0.8)" },
+    { crate = "rand_core@0.9.5", reason = "rand generations (rand 0.9)" },
+    { crate = "rand_chacha@0.3.1", reason = "rand generations (rand 0.8)" },
+    { crate = "getrandom@0.2.17", reason = "rand generations (ring, rand_core 0.6, magic-wormhole)" },
+    { crate = "getrandom@0.4.3", reason = "rand generations (rand 0.10, uuid, tempfile)" },
+    # magic-wormhole is one release behind the LocalSend core on both.
+    { crate = "tungstenite@0.29.0", reason = "async-tungstenite 0.34, via magic-wormhole" },
+    { crate = "base64@0.22.1", reason = "magic-wormhole 0.8.1; the LocalSend core is on 0.23" },
+    # Proc-macro generations: build-time only, nothing of them ships.
+    { crate = "syn@1.0.109", reason = "build-time only (trackable_derive, via magic-wormhole)" },
+    { crate = "syn@2.0.119", reason = "build-time only (most derive crates)" },
+    { crate = "synstructure@0.13.2", reason = "build-time only (syn 2 derives)" },
+]
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# Exactly the pinned git repositories. The commit each is pinned to is in
+# Cargo.toml and Cargo.lock, and ci/check-lockfile.sh refuses a git
+# dependency that is not pinned by `rev`.
+allow-git = [
+    # The LocalSend core, rev e768240 (spec §6).
+    "https://github.com/localsend/localsend",
+]

@@ -1,0 +1,5 @@
+{"type":"error","error":"nameplate unknown","orig":{}}
+{"type":"pong","pong":7}
+{"type":"released"}
+{"type":"closed"}
+{"type":"allocated","nameplate":"7"}

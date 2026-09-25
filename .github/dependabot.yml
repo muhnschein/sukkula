@@ -1,0 +1,12 @@
+# Moves the commit-pinned actions in .github/workflows along, with the
+# version in the trailing comment kept in step. Cargo is deliberately not
+# here: every dependency change is a reviewed decision (spec §6) that has to
+# pass deny.toml, ci/check-deps.sh and, through Cargo.lock, rpm.yml's real
+# Harbour validation -- one line of reason per crate, which a bot does not
+# write.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

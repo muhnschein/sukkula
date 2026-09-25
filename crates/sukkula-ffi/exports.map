@@ -1,0 +1,17 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * What libsukkula_ffi.so exports: the C ABI of include/sukkula.h and
+ * nothing else -- no Rust symbol, no libstd one. scripts/cross-build-rust.sh
+ * links the library with this; ci/check-elf.sh --exports-only reads the
+ * result back off the packaged one. Unversioned, so rpm derives no
+ * versioned Requires from it.
+ */
+{
+    global:
+        sukkula_start;
+        sukkula_command;
+        sukkula_stop;
+        sukkula_version;
+    local:
+        *;
+};

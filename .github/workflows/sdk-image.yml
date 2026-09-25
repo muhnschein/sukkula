@@ -1,0 +1,91 @@
+# Publishes the Sailfish SDK image rpm.yml builds with.
+#
+# Upstream's platform SDK carries three architectures' target rootfs and
+# leaves the spec's BuildRequires to be installed into the target on every
+# build: about 5 GB to pull and a zypper run, every time.
+# ci/build-sdk-image.sh derives an image with the one architecture Sukkula
+# builds and those packages already in place -- about 2 GB, and nothing to
+# install -- and this publishes it to the repository's registry, under the
+# tag scripts/build-rpm.sh names for the current tree.
+#
+# Publishing is not enough for a build to use it: rpm.yml pulls the image
+# only by the digest ci/sdk-image.digests pins, never by its tag, and
+# derives its own when there is none. So run this when the SDK version,
+# ci/build-sdk-image.sh or the spec's BuildRequires change, and commit the
+# line the summary prints (docs/BUILDING.md, "The SDK image"). Or never:
+# every build then derives the image, which costs about as long as the
+# build itself.
+#
+# The one workflow holding `packages: write`, so it runs only from main:
+# the image it publishes is derived by main's reviewed scripts and nothing
+# else, and it is signed in to the registry only after the derivation is
+# done, for the push. A dispatch from another branch runs that branch's
+# copy of this file and could drop the check -- which is why rpm.yml
+# trusts the pinned digest and not whatever this last pushed.
+name: sdk-image
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      # What this workflow is for.
+      packages: write
+    env:
+      # The Jolla Phone 2026's baseline, and the only version with a pinned
+      # upstream digest in ci/build-sdk-image.sh.
+      SFOS: "5.2.0.15"
+      ARCH: aarch64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The upstream image unpacks to about 20 GB of layers, and the
+      # flattened one is written beside it. A fresh runner has around 25 GB
+      # free, most of it language toolchains nothing here compiles with.
+      - name: Make room for two SDK images
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+                      /usr/local/share/boost "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}"
+          df -h / | tail -1
+
+      # Before any credential is on the runner: the derivation runs the
+      # upstream SDK image privileged.
+      - name: Derive the image
+        run: |
+          image=$(./scripts/build-rpm.sh image)
+          ./ci/build-sdk-image.sh "$SFOS" "$ARCH" "$image"
+          echo "IMAGE=$image" >> "$GITHUB_ENV"
+
+      - name: Publish it
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          echo "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          docker push "$IMAGE"
+          docker logout ghcr.io
+          repo=${IMAGE%:*}
+          digest=$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$IMAGE" |
+            sed -n "s|^$repo@\(sha256:[0-9a-f]\{64\}\)\$|\1|p" | head -1)
+          [ -n "$digest" ] || { echo "::error::the registry returned no digest for $IMAGE"; exit 1; }
+          {
+            echo "### \`$IMAGE\`"
+            docker image inspect --format '- unpacked: {{.Size}} bytes' "$IMAGE"
+            echo
+            echo "Pin it in \`ci/sdk-image.digests\` so builds use it:"
+            echo
+            echo '```'
+            echo "${IMAGE##*:}  $digest"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

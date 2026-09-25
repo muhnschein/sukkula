@@ -5,17 +5,41 @@
 //! read with a size cap, and never through a symlink. A secret that is
 //! group- or world-readable, or not owned by us, is refused rather than
 //! used: something other than this code wrote it.
+//!
+//! Every operation opens the directory by descriptor (the private `dirfd` module) and
+//! works relative to it, and every read checks the file it actually opened,
+//! not the name it asked for.
+//!
+//! A write killed before its rename -- the low-memory killer does not wait
+//! -- leaves its temporary file behind; [`Store::open`] removes those, so
+//! kills do not pile them up ("No kill-during-write (chaos) test").
+//! `tests/chaos.rs` kills a writer mid-write, many times, and checks both
+//! halves: the file is the old or the new version, whole, and nothing else
+//! survives the next open.
 
 use std::io::{self, Read, Write};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 
+use rustix::fs::{AtFlags, FileType, Mode, OFlags};
+use rustix::io::Errno;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use thiserror::Error;
 
+use crate::dirfd::{self, DirError, Share};
 use crate::hex;
-use crate::inbox::{InboxError, ensure_private_dir};
+use crate::inbox::InboxError;
+
+/// Longest store file name.
+const MAX_STORE_NAME: usize = 64;
+
+/// Random bytes in a temporary file's name.
+const TMP_RANDOM_BYTES: usize = 8;
+
+/// Most directory entries looked at for leftover temporary files when a
+/// store opens.
+const MAX_TMP_SWEEP: usize = 10_000;
 
 /// Why a store operation failed.
 #[derive(Debug, Error)]
@@ -56,16 +80,24 @@ pub struct Store {
 }
 
 impl Store {
-    /// Opens `dir`, creating it `0700` if needed.
+    /// Opens `dir`, creating it `0700` if needed, and tightening it to
+    /// `0700` if it is looser (S9). Removes the temporary files of writes
+    /// that a kill interrupted; nothing else in it is touched.
+    ///
+    /// One engine per data directory: a write in progress elsewhere would
+    /// lose its temporary file, as a receive would lose its staging file to
+    /// the inbox's own sweep.
     ///
     /// # Errors
     ///
     /// When it cannot be created or is not a plain directory of ours.
     pub fn open(dir: &Path) -> Result<Store, StoreError> {
-        ensure_private_dir(dir)?;
-        Ok(Store {
+        let store = Store {
             dir: dir.to_path_buf(),
-        })
+        };
+        let fd = store.open_dir()?;
+        sweep_temporaries(&fd);
+        Ok(store)
     }
 
     /// The directory.
@@ -98,23 +130,17 @@ impl Store {
     /// # Errors
     ///
     /// An I/O error; the old contents are intact.
+    // S3: the store's writer; removes its own temporary file on failure.
+    #[allow(clippy::disallowed_methods)]
     pub fn write(&self, name: &str, bytes: &[u8]) -> Result<(), StoreError> {
-        let path = self.path(name)?;
-        let mut random = [0u8; 8];
+        check_name(name)?;
+        let dir = self.open_dir()?;
+        let mut random = [0u8; TMP_RANDOM_BYTES];
         getrandom::fill(&mut random).map_err(|e| io::Error::other(e.to_string()))?;
-        let tmp = self
-            .dir
-            .join(format!(".{name}.{}.tmp", hex::encode(&random)));
-        let result = (|| {
-            let mut f = open_exclusive(&tmp)?;
-            f.write_all(bytes)?;
-            f.sync_all()?;
-            rename(&tmp, &path)?;
-            // The rename is durable once the directory is.
-            std::fs::File::open(&self.dir)?.sync_all()
-        })();
+        let tmp = temporary_name(name, &random);
+        let result = replace(&dir, &tmp, name, bytes);
         if result.is_err() {
-            let _ = std::fs::remove_file(&tmp);
+            let _ = rustix::fs::unlinkat(&dir, tmp.as_str(), AtFlags::empty());
         }
         Ok(result?)
     }
@@ -148,76 +174,152 @@ impl Store {
         self.write(name, &bytes)
     }
 
+    // S3: an O_RDONLY|O_NOFOLLOW open relative to the checked directory.
+    #[allow(clippy::disallowed_methods)]
     fn read_checked(
         &self,
         name: &str,
         max: usize,
         secret: bool,
     ) -> Result<Option<Vec<u8>>, StoreError> {
-        let path = self.path(name)?;
-        let meta = match std::fs::symlink_metadata(&path) {
-            Ok(m) => m,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(e.into()),
+        check_name(name)?;
+        let dir = self.open_dir()?;
+        // Open first, then check what was opened: checking the name and
+        // then opening it would let the entry change in between. O_NONBLOCK
+        // so that a FIFO planted here cannot hang the open, O_NOCTTY so that
+        // a terminal cannot become ours.
+        let flags =
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::NOCTTY | OFlags::CLOEXEC;
+        let fd = match rustix::fs::openat(&dir, name, flags, Mode::empty()) {
+            Ok(fd) => fd,
+            Err(Errno::NOENT) => return Ok(None),
+            // A symlink (O_NOFOLLOW), or a socket.
+            Err(Errno::LOOP | Errno::NXIO) => {
+                return Err(StoreError::NotRegular(name.to_owned()));
+            }
+            Err(e) => return Err(StoreError::Io(e.into())),
         };
-        if !meta.file_type().is_file() || meta.uid() != rustix::process::geteuid().as_raw() {
+        let st = rustix::fs::fstat(&fd).map_err(io::Error::from)?;
+        if FileType::from_raw_mode(st.st_mode) != FileType::RegularFile || !dirfd::ours(&st) {
             return Err(StoreError::NotRegular(name.to_owned()));
         }
-        if secret && meta.mode() & 0o077 != 0 {
+        if secret && st.st_mode & 0o077 != 0 {
             return Err(StoreError::Exposed(name.to_owned()));
         }
         let cap = u64::try_from(max).unwrap_or(u64::MAX);
-        if meta.len() > cap {
+        // S4: the size is checked before anything is allocated for it...
+        if u64::try_from(st.st_size).map_or(true, |len| len > cap) {
             return Err(StoreError::TooLarge(name.to_owned()));
         }
-        let file = open_read_nofollow(&path)?;
+        // ...and the read is capped too, for a file that grows meanwhile.
         let mut out = Vec::new();
-        file.take(cap.saturating_add(1)).read_to_end(&mut out)?;
+        std::fs::File::from(fd)
+            .take(cap.saturating_add(1))
+            .read_to_end(&mut out)?;
         if out.len() > max {
             return Err(StoreError::TooLarge(name.to_owned()));
         }
         Ok(Some(out))
     }
 
-    fn path(&self, name: &str) -> Result<PathBuf, StoreError> {
-        let ok = !name.is_empty()
-            && name.len() <= 64
-            && !name.starts_with('.')
-            && name
-                .bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._-".contains(&b));
-        if !ok {
-            return Err(StoreError::BadName);
-        }
-        Ok(self.dir.join(name))
+    fn open_dir(&self) -> Result<OwnedFd, StoreError> {
+        dirfd::open(&self.dir, Share::Nothing).map_err(|e| match e {
+            DirError::NotPlain => StoreError::Directory(format!(
+                "{} is not a plain directory owned by this user",
+                self.dir.display()
+            )),
+            DirError::Io(e) => StoreError::Directory(e.to_string()),
+        })
     }
 }
 
-fn nofollow() -> i32 {
-    i32::try_from(rustix::fs::OFlags::NOFOLLOW.bits()).unwrap_or(0)
+/// Writes `bytes` to the new file `tmp` in `dir`, makes it durable, and
+/// renames it over `name`.
+// S3: the store's one write: O_CREAT|O_EXCL 0600, then renameat.
+#[allow(clippy::disallowed_methods)]
+fn replace(dir: &OwnedFd, tmp: &str, name: &str, bytes: &[u8]) -> io::Result<()> {
+    let fd = rustix::fs::openat(
+        dir,
+        tmp,
+        OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::from_raw_mode(0o600),
+    )?;
+    let mut f = std::fs::File::from(fd);
+    f.write_all(bytes)?;
+    f.sync_all()?;
+    // rename(2) replaces the entry itself, a symlink included; it never
+    // writes through one.
+    rustix::fs::renameat(dir, tmp, dir, name)?;
+    // The rename is durable once the directory is.
+    rustix::fs::fsync(dir)?;
+    Ok(())
 }
 
-#[allow(clippy::disallowed_methods)] // S3: this is the store.
-fn open_exclusive(path: &Path) -> io::Result<std::fs::File> {
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(nofollow())
-        .open(path)
+/// Removes the regular files named as [`Store::write`] names its temporary
+/// files (`.{name}.{16 hex}.tmp`): what a write left when it was killed
+/// before its rename. A crash never leaves anything else, and nothing else
+/// is touched -- not other hidden names, not directories, not symlinks.
+// S3: deletes only the store's own temporary files, in its own directory.
+#[allow(clippy::disallowed_methods)]
+fn sweep_temporaries(dir: &OwnedFd) {
+    let Ok(entries) = rustix::fs::Dir::read_from(dir) else {
+        return;
+    };
+    for entry in entries.take(MAX_TMP_SWEEP).flatten() {
+        let Ok(name) = entry.file_name().to_str() else {
+            continue;
+        };
+        if !is_temporary(name) {
+            continue;
+        }
+        let regular = match entry.file_type() {
+            FileType::RegularFile => true,
+            // Some file systems do not fill in `d_type`.
+            FileType::Unknown => rustix::fs::statat(dir, name, AtFlags::SYMLINK_NOFOLLOW)
+                .is_ok_and(|st| FileType::from_raw_mode(st.st_mode) == FileType::RegularFile),
+            _ => false,
+        };
+        if regular {
+            let _ = rustix::fs::unlinkat(dir, name, AtFlags::empty());
+        }
+    }
 }
 
-#[allow(clippy::disallowed_methods)] // Reading, with O_NOFOLLOW.
-fn open_read_nofollow(path: &Path) -> io::Result<std::fs::File> {
-    std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(nofollow())
-        .open(path)
+/// The temporary file [`Store::write`] writes `name` to first. A leading
+/// dot: no store name has one, so a temporary file can never be mistaken
+/// for, or collide with, a real one.
+fn temporary_name(name: &str, random: &[u8; TMP_RANDOM_BYTES]) -> String {
+    format!(".{name}.{}.tmp", hex::encode(random))
 }
 
-#[allow(clippy::disallowed_methods)] // S3: this is the store.
-fn rename(from: &Path, to: &Path) -> io::Result<()> {
-    std::fs::rename(from, to)
+/// Whether `name` is a temporary file of [`Store::write`]'s: a dot, a store
+/// name, a dot, [`TMP_RANDOM_BYTES`] as lowercase hex, `.tmp`.
+fn is_temporary(name: &str) -> bool {
+    let Some((store_name, random)) = name
+        .strip_prefix('.')
+        .and_then(|rest| rest.strip_suffix(".tmp"))
+        .and_then(|rest| rest.rsplit_once('.'))
+    else {
+        return false;
+    };
+    random.len() == TMP_RANDOM_BYTES.saturating_mul(2)
+        && random
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        && check_name(store_name).is_ok()
+}
+
+/// A store name is one plain lowercase component: no separators, no leading
+/// dot (so never `.`, `..` or a temporary file), at most [`MAX_STORE_NAME`]
+/// bytes.
+fn check_name(name: &str) -> Result<(), StoreError> {
+    let ok = !name.is_empty()
+        && name.len() <= MAX_STORE_NAME
+        && !name.starts_with('.')
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._-".contains(&b));
+    if ok { Ok(()) } else { Err(StoreError::BadName) }
 }
 
 #[cfg(test)]
@@ -245,6 +347,8 @@ mod tests {
         store.write("key.pem", b"other").unwrap();
         assert_eq!(store.read("key.pem", 100).unwrap().unwrap(), b"other");
         assert_eq!(store.read("missing", 100).unwrap(), None);
+        // Nothing but the file itself is left behind.
+        assert_eq!(std::fs::read_dir(store.dir()).unwrap().count(), 1);
     }
 
     #[test]
@@ -261,6 +365,8 @@ mod tests {
             store.read_secret("key.pem", 100),
             Err(StoreError::Exposed(_))
         ));
+        // Not a secret: readable.
+        assert_eq!(store.read("key.pem", 100).unwrap().unwrap(), b"secret");
     }
 
     #[test]
@@ -272,6 +378,192 @@ mod tests {
             store.read("settings.json", 100),
             Err(StoreError::NotRegular(_))
         ));
+        // A write replaces the link itself and never writes through it.
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, b"untouched").unwrap();
+        std::os::unix::fs::symlink(&victim, dir.path().join("key.pem")).unwrap();
+        store.write("key.pem", b"new").unwrap();
+        assert_eq!(std::fs::read(&victim).unwrap(), b"untouched");
+        assert!(
+            !std::fs::symlink_metadata(dir.path().join("key.pem"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[test]
+    fn a_symlinked_store_directory_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert!(matches!(Store::open(&link), Err(StoreError::Directory(_))));
+        // And one swapped in after opening is refused at the next use.
+        let data = dir.path().join("data");
+        let store = Store::open(&data).unwrap();
+        std::fs::remove_dir(&data).unwrap();
+        std::os::unix::fs::symlink(&real, &data).unwrap();
+        assert!(matches!(
+            store.write("settings.json", b"{}"),
+            Err(StoreError::Directory(_))
+        ));
+        assert!(matches!(
+            store.read("settings.json", 100),
+            Err(StoreError::Directory(_))
+        ));
+        assert_eq!(std::fs::read_dir(&real).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_loose_store_directory_is_tightened() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        Store::open(dir.path()).unwrap();
+        let mode = std::fs::metadata(dir.path()).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+    }
+
+    #[test]
+    fn special_files_are_refused_without_blocking() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        // A FIFO: a blocking open would wait for a writer forever.
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            dir.path().join("fifo"),
+            FileType::Fifo,
+            Mode::from_raw_mode(0o600),
+            0,
+        )
+        .unwrap();
+        assert!(matches!(
+            store.read("fifo", 100),
+            Err(StoreError::NotRegular(_))
+        ));
+        std::fs::create_dir(dir.path().join("subdir")).unwrap();
+        assert!(matches!(
+            store.read("subdir", 100),
+            Err(StoreError::NotRegular(_))
+        ));
+        // A directory cannot be replaced by a write; nothing is left over.
+        assert!(store.write("subdir", b"x").is_err());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn a_file_owned_by_someone_else_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        store.write("key.pem", b"planted").unwrap();
+        let _given_away = dirfd::theirs::disown(&dir.path().join("key.pem"));
+        assert!(matches!(
+            store.read_secret("key.pem", 100),
+            Err(StoreError::NotRegular(_))
+        ));
+        assert!(matches!(
+            store.read("key.pem", 100),
+            Err(StoreError::NotRegular(_))
+        ));
+        assert!(matches!(
+            store.read_json::<serde_json::Value>("key.pem", 100),
+            Err(StoreError::NotRegular(_))
+        ));
+    }
+
+    #[test]
+    fn a_store_directory_owned_by_someone_else_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        let store = Store::open(&data).unwrap();
+        store.write("settings.json", b"{}").unwrap();
+        let _given_away = dirfd::theirs::disown(&data);
+        assert!(matches!(Store::open(&data), Err(StoreError::Directory(_))));
+        assert!(matches!(
+            store.read("settings.json", 100),
+            Err(StoreError::Directory(_))
+        ));
+        assert!(matches!(
+            store.write("settings.json", b"[]"),
+            Err(StoreError::Directory(_))
+        ));
+        assert_eq!(std::fs::read(data.join("settings.json")).unwrap(), b"{}");
+    }
+
+    #[test]
+    fn leftover_temporaries_are_swept_and_nothing_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        let store = Store::open(&data).unwrap();
+        store.write("settings.json", b"{}").unwrap();
+        // What a write killed before its rename leaves: swept.
+        let torn = [
+            ".settings.json.0123456789abcdef.tmp",
+            ".key.pem.fedcba9876543210.tmp",
+        ];
+        for name in torn {
+            std::fs::write(data.join(name), b"half").unwrap();
+        }
+        // Anything else: kept, whatever it looks like.
+        let kept = [
+            "settings.json",
+            ".settings.json.tmp",
+            ".settings.json.0123456789ABCDEF.tmp",
+            ".settings.json.0123456789abcde.tmp",
+            ".Bad Name.0123456789abcdef.tmp",
+            "settings.json.0123456789abcdef.tmp",
+            ".settings.json.0123456789abcdef.tmp~",
+        ];
+        for name in &kept[1..] {
+            std::fs::write(data.join(name), b"x").unwrap();
+        }
+        std::fs::create_dir(data.join(".cert.pem.1111111111111111.tmp")).unwrap();
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, b"untouched").unwrap();
+        std::os::unix::fs::symlink(&victim, data.join(".key.pem.2222222222222222.tmp")).unwrap();
+
+        let again = Store::open(&data).unwrap();
+        for name in torn {
+            assert!(!data.join(name).exists(), "{name} survived");
+        }
+        for name in kept {
+            assert!(data.join(name).exists(), "{name} was removed");
+        }
+        assert!(data.join(".cert.pem.1111111111111111.tmp").is_dir());
+        assert!(
+            std::fs::symlink_metadata(data.join(".key.pem.2222222222222222.tmp"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(std::fs::read(&victim).unwrap(), b"untouched");
+        assert_eq!(again.read("settings.json", 10).unwrap().unwrap(), b"{}");
+    }
+
+    #[test]
+    fn temporary_names_are_recognised_exactly() {
+        let longest = "z".repeat(MAX_STORE_NAME);
+        for random in [[0u8; TMP_RANDOM_BYTES], [0xff; TMP_RANDOM_BYTES]] {
+            for name in ["settings.json", "key.pem", "a", longest.as_str()] {
+                assert!(is_temporary(&temporary_name(name, &random)), "{name}");
+            }
+        }
+        for name in [
+            ".tmp",
+            "..tmp",
+            "..0000000000000000.tmp",
+            ".x.0000000000000000",
+            "x.0000000000000000.tmp",
+            ".x.00000000000000000.tmp",
+            ".x.000000000000000.tmp",
+            ".x.000000000000000g.tmp",
+            ".x.000000000000000A.tmp",
+            ".x/y.0000000000000000.tmp",
+            "..x.0000000000000000.tmp",
+        ] {
+            assert!(!is_temporary(name), "{name}");
+        }
     }
 
     #[test]
@@ -283,18 +575,28 @@ mod tests {
             store.read("big", 100),
             Err(StoreError::TooLarge(_))
         ));
+        assert_eq!(store.read("big", 101).unwrap().unwrap().len(), 101);
+        assert!(matches!(store.read("big", 0), Err(StoreError::TooLarge(_))));
     }
 
     #[test]
     fn names_are_plain() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path()).unwrap();
-        for bad in ["", "../x", "a/b", ".hidden", "UPPER", "a b"] {
+        let long = "a".repeat(MAX_STORE_NAME + 1);
+        for bad in [
+            "", "../x", "a/b", ".hidden", "UPPER", "a b", "..", ".", &long,
+        ] {
             assert!(
                 matches!(store.write(bad, b"x"), Err(StoreError::BadName)),
                 "{bad}"
             );
+            assert!(
+                matches!(store.read(bad, 10), Err(StoreError::BadName)),
+                "{bad}"
+            );
         }
+        store.write(&"a".repeat(MAX_STORE_NAME), b"x").unwrap();
     }
 
     #[test]
@@ -306,5 +608,38 @@ mod tests {
             store.read_json::<serde_json::Value>("s.json", 100),
             Err(StoreError::Malformed(..))
         ));
+        store
+            .write_json("t.json", &serde_json::json!({"a": 1}))
+            .unwrap();
+        assert_eq!(
+            store
+                .read_json::<serde_json::Value>("t.json", 100)
+                .unwrap()
+                .unwrap(),
+            serde_json::json!({"a": 1})
+        );
+        assert_eq!(
+            store
+                .read_json::<serde_json::Value>("none.json", 100)
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn errors_describe_themselves() {
+        let e = StoreError::from(InboxError::NoSpace);
+        assert!(matches!(e, StoreError::Directory(_)));
+        for e in [
+            StoreError::Directory("d".into()),
+            StoreError::BadName,
+            StoreError::NotRegular("n".into()),
+            StoreError::Exposed("n".into()),
+            StoreError::TooLarge("n".into()),
+            StoreError::Malformed("n".into(), "m".into()),
+            StoreError::Io(io::Error::other("x")),
+        ] {
+            assert!(!e.to_string().is_empty());
+        }
     }
 }

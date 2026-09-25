@@ -1,0 +1,639 @@
+S4, S6: bound every frame by phase, read it cancel-safely, and time reads out
+
+Frames on the wire are a 4-byte big-endian length and that many bytes.
+Upstream's handlers:
+
+- accept any length up to 5 MiB in every state and allocate it at once
+  (`vec![0u8; len]`), so a peer that has not even finished the plaintext
+  handshake makes the receiver allocate 5 MiB per connection by sending
+  four bytes, and every open connection can hold that much;
+- accept an empty frame, which decodes as an empty message;
+- read the length and then the body with `read_exact` inside a
+  `tokio::select!` that also waits for the application's channel. When
+  the channel wins while a frame is half read, the bytes already read
+  are lost with the dropped future, and the rest of the stream is parsed
+  from the middle of a frame;
+- have no read timeout at all: a peer that connects and sends nothing, or
+  stops half-way through a frame or a transfer, holds its connection
+  task, its socket and (on the receiving side) its half-written file
+  forever.
+
+hdl/frame.rs adds a FrameReader that reassembles frames from whatever
+the socket delivers, keeps a partial frame across dropped futures (so
+select! can cancel a read safely), refuses a length over the limit before
+reading or allocating any of the body, grows its buffer only as bytes
+actually arrive (at most 64 KiB per read), and refuses empty frames; and
+write_frame, which refuses a frame whose length does not fit the prefix.
+The limit follows the protocol's phase: 32 KiB during the plaintext
+handshake, 260 KiB (one sharing frame) until the receiver has accepted,
+5 MiB (file chunks) only after; a sender gets 260 KiB from a receiver at
+any time, since receivers send no file data.
+
+Both handlers read through it, and a read that waits more than 30 s (the
+Nearby keep-alive timeout) ends the connection. Unit tests cover frames
+split at every byte with the read future dropped mid-frame, oversized
+and empty lengths, and a trickled length prefix that allocates nothing
+up front.
+
+Findings: S4, S6. Report: docs/UPSTREAM-QUICKSHARE.md R7.
+---
+ src/hdl/frame.rs    | 216 ++++++++++++++++++++++++++++++++++++++++++++
+ src/hdl/inbound.rs  |  87 ++++++++++--------
+ src/hdl/mod.rs      |   1 +
+ src/hdl/outbound.rs |  94 ++++++++++---------
+ src/utils.rs        |  11 ---
+ 5 files changed, 316 insertions(+), 93 deletions(-)
+
+diff --git a/src/hdl/frame.rs b/src/hdl/frame.rs
+new file mode 100644
+index 0000000..8f2a098
+--- /dev/null
++++ b/src/hdl/frame.rs
+@@ -0,0 +1,216 @@
++//! The wire framing: a 4-byte big-endian length, then that many bytes.
++
++use anyhow::anyhow;
++use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
++
++/// Largest frame accepted once the connection is encrypted: a payload chunk
++/// with its protobuf and encryption overhead. Senders use chunks of at most
++/// 512 KiB; this leaves room for any that use more.
++pub const SANE_FRAME_LENGTH: usize = 5 * 1024 * 1024;
++
++/// Largest frame accepted before the connection is encrypted. Those frames
++/// (the connection request and response, the UKEY2 messages) are a few
++/// hundred bytes, and a peer nobody has authenticated yet gets to make us
++/// hold no more than this per connection.
++pub const MAX_HANDSHAKE_FRAME_LENGTH: usize = 32 * 1024;
++
++/// Largest frame accepted once the connection is encrypted but before any
++/// payload was accepted: one sharing frame (at most
++/// [`MAX_CONTROL_PAYLOAD_LENGTH`](super::payload::MAX_CONTROL_PAYLOAD_LENGTH))
++/// with its protobuf and encryption overhead. A sender that nobody has said
++/// yes to, and a receiver, which never sends file data, get no more.
++pub const MAX_SETUP_FRAME_LENGTH: usize = 260 * 1024;
++
++/// Most bytes asked of the socket in one read.
++const READ_CHUNK: usize = 64 * 1024;
++
++/// Reassembles frames from a byte stream.
++///
++/// [`FrameReader::read_frame`] is cancel-safe: the bytes of a frame that has
++/// only partly arrived stay in the reader, so the future can be dropped (a
++/// branch of `tokio::select!` that lost the race) and a later call picks up
++/// where it left off. Reading the length prefix and the body with
++/// `read_exact`, as the request handlers used to, loses whatever was read
++/// when the future is dropped and desynchronises the stream.
++#[derive(Debug, Default)]
++pub struct FrameReader {
++    buf: Vec<u8>,
++}
++
++impl FrameReader {
++    /// A reader with nothing buffered.
++    pub fn new() -> Self {
++        Self::default()
++    }
++
++    /// Reads the next whole frame from `stream`, refusing one whose length
++    /// prefix says more than `max` bytes -- before reading or allocating any
++    /// of it. Memory grows only as the body actually arrives, at most
++    /// [`READ_CHUNK`] per read, so a length prefix alone buys a peer nothing.
++    pub async fn read_frame<R: AsyncRead + Unpin>(
++        &mut self,
++        stream: &mut R,
++        max: usize,
++    ) -> Result<Vec<u8>, anyhow::Error> {
++        loop {
++            if let Some(frame) = self.take_frame(max)? {
++                return Ok(frame);
++            }
++            // Never read past the frame being assembled: what is buffered is
++            // at most one frame.
++            let want = self.wanted(max)?.min(READ_CHUNK);
++            self.buf.reserve(want);
++            let n = (&mut *stream)
++                .take(want as u64)
++                .read_buf(&mut self.buf)
++                .await?;
++            if n == 0 {
++                return Err(anyhow!("connection closed"));
++            }
++        }
++    }
++
++    /// Bytes still missing from the frame being assembled.
++    fn wanted(&self, max: usize) -> Result<usize, anyhow::Error> {
++        let end = match self.frame_len(max)? {
++            None => 4,
++            Some(len) => len
++                .checked_add(4)
++                .ok_or_else(|| anyhow!("frame too long"))?,
++        };
++        Ok(end.saturating_sub(self.buf.len()))
++    }
++
++    /// The length the prefix announces, once all four bytes are in.
++    fn frame_len(&self, max: usize) -> Result<Option<usize>, anyhow::Error> {
++        let Some(prefix) = self.buf.get(..4) else {
++            return Ok(None);
++        };
++        let len = usize::try_from(u32::from_be_bytes(prefix.try_into()?))?;
++        // Ensure the message length is not unreasonably big to avoid allocation attacks
++        if len > max.min(SANE_FRAME_LENGTH) {
++            return Err(anyhow!("frame length {len} is over the limit"));
++        }
++        // An empty frame decodes as an empty message, which no state wants;
++        // refusing it here keeps a peer from spinning the parser for free.
++        if len == 0 {
++            return Err(anyhow!("empty frame"));
++        }
++        Ok(Some(len))
++    }
++
++    fn take_frame(&mut self, max: usize) -> Result<Option<Vec<u8>>, anyhow::Error> {
++        let Some(len) = self.frame_len(max)? else {
++            return Ok(None);
++        };
++        let end = len
++            .checked_add(4)
++            .ok_or_else(|| anyhow!("frame too long"))?;
++        if self.buf.len() < end {
++            return Ok(None);
++        }
++        // The buffer holds exactly this frame (reads never go past it), so
++        // hand the allocation over rather than copying it, and start the
++        // next frame from an empty, small buffer.
++        let mut frame = std::mem::take(&mut self.buf);
++        frame.drain(..4);
++        Ok(Some(frame))
++    }
++}
++
++/// Writes one frame.
++pub async fn write_frame<W: AsyncWrite + Unpin>(
++    stream: &mut W,
++    data: &[u8],
++) -> Result<(), anyhow::Error> {
++    let length = u32::try_from(data.len())?;
++    let mut prefixed = Vec::with_capacity(4 + data.len());
++    prefixed.extend_from_slice(&length.to_be_bytes());
++    prefixed.extend_from_slice(data);
++    stream.write_all(&prefixed).await?;
++    stream.flush().await?;
++    Ok(())
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[tokio::test]
++    async fn frames_survive_arbitrary_splits_and_cancellation() {
++        let mut wire = Vec::new();
++        for body in [&b"one"[..], &b"2"[..], &[7u8; 70_000][..], &b"four"[..]] {
++            wire.extend_from_slice(&(body.len() as u32).to_be_bytes());
++            wire.extend_from_slice(body);
++        }
++        let (mut tx, mut rx) = tokio::io::duplex(64);
++        let writer = tokio::spawn(async move {
++            for piece in wire.chunks(3) {
++                tx.write_all(piece).await.unwrap();
++            }
++        });
++        let mut reader = FrameReader::new();
++        let mut got = Vec::new();
++        while got.len() < 4 {
++            // Drop the read future often, mid-frame.
++            tokio::select! {
++                f = reader.read_frame(&mut rx, SANE_FRAME_LENGTH) => got.push(f.unwrap()),
++                _ = tokio::task::yield_now() => {}
++            }
++        }
++        writer.await.unwrap();
++        assert_eq!(got[0], b"one");
++        assert_eq!(got[1], b"2");
++        assert_eq!(got[2], vec![7u8; 70_000]);
++        assert_eq!(got[3], b"four");
++    }
++
++    #[tokio::test]
++    async fn oversized_lengths_are_refused_before_reading_the_body() {
++        for (len, max) in [
++            (u32::MAX, SANE_FRAME_LENGTH),
++            (SANE_FRAME_LENGTH as u32 + 1, usize::MAX),
++            (
++                MAX_HANDSHAKE_FRAME_LENGTH as u32 + 1,
++                MAX_HANDSHAKE_FRAME_LENGTH,
++            ),
++        ] {
++            let (mut tx, mut rx) = tokio::io::duplex(64);
++            tx.write_all(&len.to_be_bytes()).await.unwrap();
++            let err = FrameReader::new()
++                .read_frame(&mut rx, max)
++                .await
++                .unwrap_err();
++            assert!(err.to_string().contains("over the limit"), "{len}");
++        }
++    }
++
++    #[tokio::test]
++    async fn empty_frames_are_refused() {
++        let (mut tx, mut rx) = tokio::io::duplex(64);
++        tx.write_all(&0u32.to_be_bytes()).await.unwrap();
++        let err = FrameReader::new()
++            .read_frame(&mut rx, SANE_FRAME_LENGTH)
++            .await
++            .unwrap_err();
++        assert!(err.to_string().contains("empty"));
++    }
++
++    #[tokio::test]
++    async fn a_trickled_length_prefix_allocates_nothing_up_front() {
++        let (mut tx, mut rx) = tokio::io::duplex(64);
++        tx.write_all(&(SANE_FRAME_LENGTH as u32).to_be_bytes())
++            .await
++            .unwrap();
++        tx.write_all(&[0u8; 10]).await.unwrap();
++        let mut reader = FrameReader::new();
++        let r = tokio::time::timeout(
++            std::time::Duration::from_millis(50),
++            reader.read_frame(&mut rx, SANE_FRAME_LENGTH),
++        )
++        .await;
++        assert!(r.is_err(), "still waiting for the body");
++        // What arrived plus one read ahead, amortised -- not the 5 MiB announced.
++        assert!(reader.buf.capacity() <= 2 * (14 + READ_CHUNK));
++    }
++}
+diff --git a/src/hdl/inbound.rs b/src/hdl/inbound.rs
+index 42e8917..8d08862 100644
+--- a/src/hdl/inbound.rs
++++ b/src/hdl/inbound.rs
+@@ -12,10 +12,13 @@ use p256::{EncodedPoint, PublicKey};
+ use prost::Message;
+ use rand::Rng;
+ use sha2::{Digest, Sha256, Sha512};
+-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
++use tokio::io::{AsyncRead, AsyncWrite};
+ use tokio::net::TcpStream;
+ use tokio::sync::broadcast::{Receiver, Sender};
+ 
++use super::frame::{
++    FrameReader, MAX_HANDSHAKE_FRAME_LENGTH, MAX_SETUP_FRAME_LENGTH, SANE_FRAME_LENGTH, write_frame,
++};
+ use super::{InnerState, TransferState};
+ use crate::channel::{self, ChannelMessage, MessageClient, TransferAction, TransferKind};
+ use crate::hdl::TextPayloadInfo;
+@@ -39,14 +42,16 @@ use crate::securemessage::{
+ use crate::sharing_nearby::{paired_key_result_frame, text_metadata};
+ use crate::utils::{
+     DeviceType, RemoteDeviceInfo, aes_cbc_decrypt, aes_cbc_encrypt, encode_point,
+-    gen_ecdsa_keypair, gen_random, get_download_dir, hkdf_extract_expand, stream_read_exact,
+-    to_four_digit_string,
++    gen_ecdsa_keypair, gen_random, get_download_dir, hkdf_extract_expand, to_four_digit_string,
+ };
+ use crate::{location_nearby_connections, sharing_nearby};
+ 
+ type HmacSha256 = Hmac<Sha256>;
+ 
+-const SANE_FRAME_LENGTH: i32 = 5 * 1024 * 1024;
++/// How long a read may wait for the sender's next frame. The sender's own
++/// keep-alives come every few seconds, while the user decides too; a
++/// sender that sends nothing for this long is gone, or stalling on purpose.
++const READ_TIMEOUT: Duration = Duration::from_secs(30);
+ const SANITY_DURATION: Duration = Duration::from_micros(10);
+ 
+ #[cfg(test)]
+@@ -98,6 +103,7 @@ fn dest_file_name(name: &str, mime_type: &str) -> String {
+ #[derive(Debug)]
+ pub struct InboundRequest<S = TcpStream> {
+     socket: S,
++    reader: FrameReader,
+     pub state: InnerState,
+     sender: Sender<ChannelMessage>,
+     receiver: Receiver<ChannelMessage>,
+@@ -109,6 +115,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
+ 
+         Self {
+             socket,
++            reader: FrameReader::new(),
+             state: InnerState {
+                 id,
+                 server_seq: 0,
+@@ -122,9 +129,33 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
+         }
+     }
+ 
++    /// Whether the next frame from the sender is still a plaintext
++    /// handshake frame.
++    fn is_handshaking(&self) -> bool {
++        matches!(
++            self.state.state,
++            TransferState::Initial
++                | TransferState::ReceivedConnectionRequest
++                | TransferState::SentUkeyServerInit
++                | TransferState::ReceivedUkeyClientFinish
++        )
++    }
++
++    /// How large the next frame may be, by how far the sender got: a few
++    /// kilobytes during the plaintext handshake, one sharing frame until
++    /// the user accepted, file chunks only after.
++    fn frame_limit(&self) -> usize {
++        if self.is_handshaking() {
++            MAX_HANDSHAKE_FRAME_LENGTH
++        } else if self.state.state == TransferState::ReceivingFiles {
++            SANE_FRAME_LENGTH
++        } else {
++            MAX_SETUP_FRAME_LENGTH
++        }
++    }
++
+     pub async fn handle(&mut self) -> Result<(), anyhow::Error> {
+-        // Buffer for the 4-byte length
+-        let mut length_buf = [0u8; 4];
++        let max = self.frame_limit();
+ 
+         tokio::select! {
+             i = self.receiver.recv() => {
+@@ -172,28 +203,25 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
+                     }
+                 }
+             },
+-            h = stream_read_exact(&mut self.socket, &mut length_buf) => {
+-                h?;
+-
+-                self._handle(length_buf).await?
++            // Cancel-safe: when the channel branch wins, the part of a frame
++            // already read stays in the reader for the next call. Reading the
++            // length and then the body with read_exact, as before, lost it
++            // and desynchronised the stream.
++            h = tokio::time::timeout(READ_TIMEOUT, self.reader.read_frame(&mut self.socket, max)) => {
++                let frame = h.map_err(|_| anyhow!("the sender stopped responding"))??;
++
++                self._handle(frame).await?
+             }
+         }
+ 
+         Ok(())
+     }
+ 
+-    pub async fn _handle(&mut self, length_buf: [u8; 4]) -> Result<(), anyhow::Error> {
+-        let msg_length = u32::from_be_bytes(length_buf) as usize;
+-        // Ensure the message length is not unreasonably big to avoid allocation attacks
+-        if msg_length > SANE_FRAME_LENGTH as usize {
+-            error!("Message length too big");
+-            return Err(anyhow!("value"));
++    pub async fn _handle(&mut self, frame_data: Vec<u8>) -> Result<(), anyhow::Error> {
++        if frame_data.len() > SANE_FRAME_LENGTH {
++            return Err(anyhow!("Message length too big"));
+         }
+ 
+-        // Allocate buffer for the actual message and read it
+-        let mut frame_data = vec![0u8; msg_length];
+-        stream_read_exact(&mut self.socket, &mut frame_data).await?;
+-
+         let current_state = &self.state;
+         // Now determine what will be the request type based on current state
+         match current_state.state {
+@@ -1400,24 +1428,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
+     }
+ 
+     async fn send_frame(&mut self, data: Vec<u8>) -> Result<(), anyhow::Error> {
+-        let length = data.len();
+-
+-        // Prepare length prefix in big-endian format
+-        let length_bytes = [
+-            (length >> 24) as u8,
+-            (length >> 16) as u8,
+-            (length >> 8) as u8,
+-            length as u8,
+-        ];
+-
+-        let mut prefixed_length = Vec::with_capacity(length + 4);
+-        prefixed_length.extend_from_slice(&length_bytes);
+-        prefixed_length.extend_from_slice(&data);
+-
+-        self.socket.write_all(&prefixed_length).await?;
+-        self.socket.flush().await?;
+-
+-        Ok(())
++        write_frame(&mut self.socket, &data).await
+     }
+ 
+     async fn get_server_seq_inc(&mut self) -> i32 {
+diff --git a/src/hdl/mod.rs b/src/hdl/mod.rs
+index 68830bb..297e17b 100644
+--- a/src/hdl/mod.rs
++++ b/src/hdl/mod.rs
+@@ -6,6 +6,7 @@ use p256::{PublicKey, SecretKey};
+ use crate::securegcm::ukey2_client_init::CipherCommitment;
+ use crate::utils::RemoteDeviceInfo;
+ 
++pub mod frame;
+ mod inbound;
+ pub use inbound::*;
+ pub mod info;
+diff --git a/src/hdl/outbound.rs b/src/hdl/outbound.rs
+index 5193a02..67a6400 100644
+--- a/src/hdl/outbound.rs
++++ b/src/hdl/outbound.rs
+@@ -14,11 +14,14 @@ use p256::{EncodedPoint, PublicKey};
+ use prost::Message;
+ use rand::Rng;
+ use sha2::{Digest, Sha256, Sha512};
+-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
++use tokio::io::{AsyncRead, AsyncWrite};
+ use tokio::net::TcpStream;
+ use tokio::sync::broadcast::error::TryRecvError;
+ use tokio::sync::broadcast::{Receiver, Sender};
+ 
++use super::frame::{
++    FrameReader, MAX_HANDSHAKE_FRAME_LENGTH, MAX_SETUP_FRAME_LENGTH, SANE_FRAME_LENGTH, write_frame,
++};
+ use super::info::{InternalFileInfo, TransferMetadata, TransferPayload, TransferPayloadKind};
+ use super::payload::{MAX_CONTROL_PAYLOAD_LENGTH, assemble};
+ use super::{InnerState, TransferState};
+@@ -44,13 +47,16 @@ use crate::sharing_nearby::{
+ };
+ use crate::utils::{
+     DeviceType, RemoteDeviceInfo, aes_cbc_decrypt, aes_cbc_encrypt, encode_point,
+-    gen_ecdsa_keypair, gen_random, hkdf_extract_expand, stream_read_exact, to_four_digit_string,
++    gen_ecdsa_keypair, gen_random, hkdf_extract_expand, to_four_digit_string,
+ };
+ use crate::{DEVICE_NAME, location_nearby_connections, sharing_nearby};
+ 
+ type HmacSha256 = Hmac<Sha256>;
+ 
+-const SANE_FRAME_LENGTH: i32 = 5 * 1024 * 1024;
++/// How long a read may wait for the receiver's next frame. Its user has a
++/// minute or so to answer, and it sends keep-alives meanwhile; a receiver
++/// that sends nothing for this long is gone.
++const READ_TIMEOUT: Duration = Duration::from_secs(30);
+ const SANITY_DURATION: Duration = Duration::from_micros(10);
+ 
+ /// A single chunk write that blocks this long means the peer stopped reading;
+@@ -67,6 +73,7 @@ pub enum OutboundPayload {
+ pub struct OutboundRequest<S = TcpStream> {
+     endpoint_id: [u8; 4],
+     socket: S,
++    reader: FrameReader,
+     pub state: InnerState,
+     sender: Sender<ChannelMessage>,
+     receiver: Receiver<ChannelMessage>,
+@@ -91,6 +98,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OutboundRequest<S> {
+         Self {
+             endpoint_id,
+             socket,
++            reader: FrameReader::new(),
+             state: InnerState {
+                 id,
+                 server_seq: 0,
+@@ -117,9 +125,36 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OutboundRequest<S> {
+         }
+     }
+ 
++    /// Whether the next frame from the receiver is still a plaintext
++    /// handshake frame.
++    fn is_handshaking(&self) -> bool {
++        matches!(
++            self.state.state,
++            TransferState::Initial
++                | TransferState::SentUkeyClientInit
++                | TransferState::SentUkeyClientFinish
++        )
++    }
++
++    /// How large the next frame may be. A receiver sends nothing but
++    /// handshake and sharing frames, never file data, so it gets no more
++    /// room than one sharing frame.
++    fn frame_limit(&self) -> usize {
++        if self.is_handshaking() {
++            MAX_HANDSHAKE_FRAME_LENGTH
++        } else {
++            MAX_SETUP_FRAME_LENGTH
++        }
++    }
++
++    /// Reads the next frame. Cancel-safe; see [`FrameReader`].
++    async fn read_frame(&mut self) -> Result<Vec<u8>, anyhow::Error> {
++        let max = self.frame_limit();
++        self.reader.read_frame(&mut self.socket, max).await
++    }
++
+     pub async fn handle(&mut self) -> Result<(), anyhow::Error> {
+-        // Buffer for the 4-byte length
+-        let mut length_buf = [0u8; 4];
++        let max = self.frame_limit();
+ 
+         tokio::select! {
+             i = self.receiver.recv() => {
+@@ -151,28 +186,23 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OutboundRequest<S> {
+                     }
+                 }
+             },
+-            h = stream_read_exact(&mut self.socket, &mut length_buf) => {
+-                h?;
++            // Cancel-safe: when the channel branch wins, the part of a frame
++            // already read stays in the reader for the next call.
++            h = tokio::time::timeout(READ_TIMEOUT, self.reader.read_frame(&mut self.socket, max)) => {
++                let frame = h.map_err(|_| anyhow!("the receiver stopped responding"))??;
+ 
+-                self._handle(length_buf).await?
++                self._handle(frame).await?
+             }
+         }
+ 
+         Ok(())
+     }
+ 
+-    pub async fn _handle(&mut self, length_buf: [u8; 4]) -> Result<(), anyhow::Error> {
+-        let msg_length = u32::from_be_bytes(length_buf) as usize;
+-        // Ensure the message length is not unreasonably big to avoid allocation attacks
+-        if msg_length > SANE_FRAME_LENGTH as usize {
+-            error!("Message length too big");
+-            return Err(anyhow!("value"));
++    pub async fn _handle(&mut self, frame_data: Vec<u8>) -> Result<(), anyhow::Error> {
++        if frame_data.len() > SANE_FRAME_LENGTH {
++            return Err(anyhow!("Message length too big"));
+         }
+ 
+-        // Allocate buffer for the actual message and read it
+-        let mut frame_data = vec![0u8; msg_length];
+-        stream_read_exact(&mut self.socket, &mut frame_data).await?;
+-
+         let current_state = &self.state;
+         // Now determine what will be the request type based on current state
+         match current_state.state {
+@@ -780,14 +810,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OutboundRequest<S> {
+     /// client_seq), and return the OfflineFrame without dispatching to the
+     /// payload state machine.
+     async fn read_encrypted_offline_frame(&mut self) -> Result<OfflineFrame, anyhow::Error> {
+-        let mut len_buf = [0u8; 4];
+-        stream_read_exact(&mut self.socket, &mut len_buf).await?;
+-        let msg_len = u32::from_be_bytes(len_buf) as usize;
+-        if msg_len == 0 || msg_len > SANE_FRAME_LENGTH as usize {
+-            return Err(anyhow!("bad frame length {msg_len}"));
+-        }
+-        let mut data = vec![0u8; msg_len];
+-        stream_read_exact(&mut self.socket, &mut data).await?;
++        let data = self.read_frame().await?;
+ 
+         let smsg = SecureMessage::decode(&*data)?;
+         let mut hmac = HmacSha256::new_from_slice(self.state.recv_hmac_key.as_ref().unwrap())?;
+@@ -1405,24 +1428,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OutboundRequest<S> {
+     }
+ 
+     async fn send_frame(&mut self, data: Vec<u8>) -> Result<(), anyhow::Error> {
+-        let length = data.len();
+-
+-        // Prepare length prefix in big-endian format
+-        let length_bytes = [
+-            (length >> 24) as u8,
+-            (length >> 16) as u8,
+-            (length >> 8) as u8,
+-            length as u8,
+-        ];
+-
+-        let mut prefixed_length = Vec::with_capacity(length + 4);
+-        prefixed_length.extend_from_slice(&length_bytes);
+-        prefixed_length.extend_from_slice(&data);
+-
+-        self.socket.write_all(&prefixed_length).await?;
+-        self.socket.flush().await?;
+-
+-        Ok(())
++        write_frame(&mut self.socket, &data).await
+     }
+ 
+     async fn get_server_seq_inc(&mut self) -> i32 {
+diff --git a/src/utils.rs b/src/utils.rs
+index a7da6fd..1444d0a 100644
+--- a/src/utils.rs
++++ b/src/utils.rs
+@@ -14,7 +14,6 @@ use p256::{PublicKey, SecretKey};
+ use rand::{Rng, RngCore};
+ use serde::{Deserialize, Serialize};
+ use sha2::Sha256;
+-use tokio::io::AsyncReadExt;
+ 
+ use crate::CUSTOM_DOWNLOAD;
+ 
+@@ -125,16 +124,6 @@ pub fn parse_mdns_endpoint_info(encoded_str: &str) -> Result<(DeviceType, String
+     Ok((DeviceType::from_raw_value(device_type), device_name))
+ }
+ 
+-pub async fn stream_read_exact<S: tokio::io::AsyncRead + Unpin>(
+-    socket: &mut S,
+-    buf: &mut [u8],
+-) -> Result<(), anyhow::Error> {
+-    match socket.read_exact(buf).await {
+-        Ok(_) => Ok(()),
+-        Err(e) => Err(e.into()),
+-    }
+-}
+-
+ pub fn gen_ecdsa_keypair() -> (SecretKey, PublicKey) {
+     let secret_key = SecretKey::random(&mut OsRng);
+     let public_key = secret_key.public_key();

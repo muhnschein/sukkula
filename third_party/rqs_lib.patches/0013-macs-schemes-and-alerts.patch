@@ -1,0 +1,129 @@
+Check MACs in constant time, check the schemes, send real UKEY2 alerts
+
+Three protocol details in the encrypted channel and the handshake:
+
+- The HMAC-SHA256 over each SecureMessage is checked by comparing the
+  computed tag with the received one using slice equality, which returns
+  at the first differing byte. hmac's verify_slice compares in constant
+  time.
+- The SecureMessage header names its encryption and signature schemes;
+  they are not checked, so a message that claims another scheme is
+  decrypted as AES-256-CBC with HMAC-SHA256 all the same. Anything else
+  is now refused.
+- A UKEY2 alert is sent as a Ukey2Message whose message_type is the
+  alert type instead of ALERT: BAD_MESSAGE_TYPE (2) goes out as a
+  CLIENT_INIT, BAD_MESSAGE_DATA (4) as a CLIENT_FINISH, the others as
+  undefined types, so the peer never reads an alert. It now goes out as
+  type ALERT with the Ukey2Alert inside, as UKEY2 specifies.
+
+Findings: none in the spec; hardening. Report: docs/UPSTREAM-QUICKSHARE.md R15.
+---
+ src/hdl/inbound.rs  | 20 +++++++++++---------
+ src/hdl/outbound.rs | 34 ++++++++++++++++++----------------
+ 2 files changed, 29 insertions(+), 25 deletions(-)
+
+diff --git a/src/hdl/inbound.rs b/src/hdl/inbound.rs
+index 9a01e99..c580b07 100644
+--- a/src/hdl/inbound.rs
++++ b/src/hdl/inbound.rs
+@@ -555,16 +555,16 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
+             .ok_or_else(|| anyhow!("no keys yet"))?;
+         let mut hmac = HmacSha256::new_from_slice(hmac_key)?;
+         hmac.update(&smsg.header_and_body);
+-        if !hmac
+-            .finalize()
+-            .into_bytes()
+-            .as_slice()
+-            .eq(smsg.signature.as_slice())
+-        {
+-            return Err(anyhow!("hmac!=signature"));
+-        }
++        // Constant time, unlike comparing the two byte slices.
++        hmac.verify_slice(&smsg.signature)
++            .map_err(|_| anyhow!("hmac!=signature"))?;
+ 
+         let header_and_body = HeaderAndBody::decode(&*smsg.header_and_body)?;
++        if header_and_body.header.encryption_scheme() != EncScheme::Aes256Cbc
++            || header_and_body.header.signature_scheme() != SigScheme::HmacSha256
++        {
++            return Err(anyhow!("unexpected SecureMessage schemes"));
++        }
+ 
+         let msg_data = header_and_body.body;
+         let key = self
+@@ -1300,8 +1300,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> InboundRequest<S> {
+             error_message: None,
+         };
+ 
++        // An ALERT message carrying the alert; upstream put the alert type in
++        // the message type field, which no peer understands.
+         let data = Ukey2Message {
+-            message_type: Some(atype.into()),
++            message_type: Some(ukey2_message::Type::Alert.into()),
+             message_data: Some(alert.encode_to_vec()),
+         };
+ 
+diff --git a/src/hdl/outbound.rs b/src/hdl/outbound.rs
+index e44b5d1..aa456a5 100644
+--- a/src/hdl/outbound.rs
++++ b/src/hdl/outbound.rs
+@@ -487,16 +487,16 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OutboundRequest<S> {
+             .ok_or_else(|| anyhow!("no keys yet"))?;
+         let mut hmac = HmacSha256::new_from_slice(hmac_key)?;
+         hmac.update(&smsg.header_and_body);
+-        if !hmac
+-            .finalize()
+-            .into_bytes()
+-            .as_slice()
+-            .eq(smsg.signature.as_slice())
+-        {
+-            return Err(anyhow!("hmac!=signature"));
+-        }
++        // Constant time, unlike comparing the two byte slices.
++        hmac.verify_slice(&smsg.signature)
++            .map_err(|_| anyhow!("hmac!=signature"))?;
+ 
+         let header_and_body = HeaderAndBody::decode(&*smsg.header_and_body)?;
++        if header_and_body.header.encryption_scheme() != EncScheme::Aes256Cbc
++            || header_and_body.header.signature_scheme() != SigScheme::HmacSha256
++        {
++            return Err(anyhow!("unexpected SecureMessage schemes"));
++        }
+ 
+         let msg_data = header_and_body.body;
+         let key = self
+@@ -841,15 +841,15 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OutboundRequest<S> {
+             .ok_or_else(|| anyhow!("no keys yet"))?;
+         let mut hmac = HmacSha256::new_from_slice(hmac_key)?;
+         hmac.update(&smsg.header_and_body);
+-        if !hmac
+-            .finalize()
+-            .into_bytes()
+-            .as_slice()
+-            .eq(smsg.signature.as_slice())
++        // Constant time, unlike comparing the two byte slices.
++        hmac.verify_slice(&smsg.signature)
++            .map_err(|_| anyhow!("hmac!=signature"))?;
++        let header_and_body = HeaderAndBody::decode(&*smsg.header_and_body)?;
++        if header_and_body.header.encryption_scheme() != EncScheme::Aes256Cbc
++            || header_and_body.header.signature_scheme() != SigScheme::HmacSha256
+         {
+-            return Err(anyhow!("hmac!=signature"));
++            return Err(anyhow!("unexpected SecureMessage schemes"));
+         }
+-        let header_and_body = HeaderAndBody::decode(&*smsg.header_and_body)?;
+         let key = self
+             .state
+             .decrypt_key
+@@ -1311,8 +1311,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> OutboundRequest<S> {
+             error_message: None,
+         };
+ 
++        // An ALERT message carrying the alert; upstream put the alert type in
++        // the message type field, which no peer understands.
+         let data = Ukey2Message {
+-            message_type: Some(atype.into()),
++            message_type: Some(ukey2_message::Type::Alert.into()),
+             message_data: Some(alert.encode_to_vec()),
+         };
+ 
