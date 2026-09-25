@@ -14,9 +14,10 @@
 //! 3. **HTTP/1.1 head**: at most [`MAX_BUF_BYTES`] and [`MAX_HEADERS`], read
 //!    within the handshake timeout; an idle keep-alive connection ends on
 //!    the same timer. A response that cannot be written for the idle
-//!    timeout ends the connection ([`WriteDeadline`]), and a connection
-//!    that carries no offer or session of its own ends after
-//!    [`lifetime`], however busy it keeps.
+//!    timeout ends the connection ([`WriteDeadline`], behind a small
+//!    kernel send buffer, [`SEND_BUFFER_BYTES`]), and a connection that
+//!    carries no offer or session of its own ends after [`lifetime`],
+//!    however busy it keeps.
 //! 4. **Routing**: the v2 endpoints only. Every other path is a 404 whose
 //!    body is never read.
 //! 5. **JSON bodies** (S4, S6): at most 64 KiB, with an idle timeout and an
