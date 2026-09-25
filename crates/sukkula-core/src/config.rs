@@ -4,8 +4,36 @@
 //! (which may be from an older version, or edited by hand) and the UI. Both
 //! go through [`Settings::validate`]. Unknown fields are refused, lengths
 //! are capped, and URLs are held to the schemes each protocol can use.
+//!
+//! # A file that does not read
+//!
+//! The UI's settings are refused whole, and the user sees why. The file is
+//! read by [`Settings::from_stored`], which fails closed, part by part:
+//!
+//! - A part -- the device name, a protocol's section, the logging switch --
+//!   that reads and validates on its own is kept as it is. One bad field no
+//!   longer throws away everything else: a mailbox URL an older build took
+//!   and this one refuses does not cost the LocalSend PIN or Quick Share's
+//!   Hidden ("One invalid or unknown field in settings.json silently
+//!   resets every setting").
+//! - A protocol section that does not is not reset to its defaults, which
+//!   are the most permissive values there are (LocalSend without a PIN,
+//!   Quick Share visible to everyone). The protocol is switched off and its
+//!   options take their strictest values: no PIN, Hidden, no BLE nudge, the
+//!   default servers. Whatever the file meant for it, the phone now does
+//!   less, not more.
+//! - A key this build does not know may be a restriction from a newer one;
+//!   what it restricted cannot be known, so every protocol is switched off.
+//!   A key given twice cannot be read one way only, and a file that is not
+//!   a JSON object cannot be read at all: both give
+//!   [`Settings::locked_down`].
+//!
+//! The engine tells the UI (`recovered` in the `settings` event), and
+//! leaves the file as it is until the user saves settings again.
 
+use serde::de::{self, DeserializeOwned, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use thiserror::Error;
 
 use crate::limits::{MAX_ALIAS_CHARS, MAX_PIN_CHARS};
@@ -85,9 +113,13 @@ pub struct QuickShareSettings {
 }
 
 /// Magic Wormhole settings (F-MW4).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct WormholeSettings {
+    /// Send and receive with Magic Wormhole (F-C1). A file from before this
+    /// setting has none, and reads as on.
+    // CONTRACT: new field (F-C1; the one change to the settings' shape).
+    pub enabled: bool,
     /// A mailbox server instead of the default, `ws://` or `wss://`.
     pub mailbox_url: Option<String>,
     /// A transit relay instead of the default, `tcp://host:port`.
@@ -121,10 +153,72 @@ impl Default for QuickShareSettings {
     }
 }
 
+impl Default for WormholeSettings {
+    fn default() -> Self {
+        WormholeSettings {
+            enabled: true,
+            mailbox_url: None,
+            relay_url: None,
+        }
+    }
+}
+
 impl Default for BluetoothSettings {
     fn default() -> Self {
         BluetoothSettings { enabled: true }
     }
+}
+
+impl LocalSendSettings {
+    /// Off, and no PIN kept.
+    fn locked_down() -> Self {
+        LocalSendSettings {
+            enabled: false,
+            pin: None,
+        }
+    }
+}
+
+impl QuickShareSettings {
+    /// Off, hidden, and silent over BLE.
+    fn locked_down() -> Self {
+        QuickShareSettings {
+            enabled: false,
+            visibility: Visibility::Hidden,
+            ble_nudge: false,
+        }
+    }
+}
+
+impl WormholeSettings {
+    /// Off, and no server of anyone's choosing.
+    fn locked_down() -> Self {
+        WormholeSettings {
+            enabled: false,
+            mailbox_url: None,
+            relay_url: None,
+        }
+    }
+}
+
+impl BluetoothSettings {
+    /// Off.
+    fn locked_down() -> Self {
+        BluetoothSettings { enabled: false }
+    }
+}
+
+/// What [`Settings::from_stored`] made of a settings file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Stored {
+    /// The settings to run with.
+    pub settings: Settings,
+    /// The parts of the file that could not be used as they were, by name:
+    /// `device_name`, `localsend`, `quickshare`, `wormhole`, `bluetooth`,
+    /// `logging`, `unknown` for a key this build does not know, `file` when
+    /// nothing could be read. Empty when the file was used whole. Fixed
+    /// names, never the file's content: safe to log (S9).
+    pub unusable: Vec<&'static str>,
 }
 
 /// A setting that cannot be used.
@@ -166,6 +260,101 @@ impl Settings {
         Ok(self)
     }
 
+    /// The strictest settings there are: every protocol off, Quick Share
+    /// hidden and silent, no PIN, no custom server, logging off. What a
+    /// settings file that cannot be read at all becomes.
+    #[must_use]
+    pub fn locked_down() -> Settings {
+        Settings {
+            device_name: String::new(),
+            localsend: LocalSendSettings::locked_down(),
+            quickshare: QuickShareSettings::locked_down(),
+            wormhole: WormholeSettings::locked_down(),
+            bluetooth: BluetoothSettings::locked_down(),
+            logging: false,
+        }
+    }
+
+    /// Reads a settings file, failing closed: see the module docs, "A file
+    /// that does not read". A file that parses and validates whole is used
+    /// as it is.
+    #[must_use]
+    pub fn from_stored(bytes: &[u8]) -> Stored {
+        if let Ok(whole) = serde_json::from_slice::<Settings>(bytes)
+            && let Ok(settings) = whole.validate()
+        {
+            return Stored {
+                settings,
+                unusable: Vec::new(),
+            };
+        }
+        let Ok(Unique(Value::Object(map))) = serde_json::from_slice::<Unique>(bytes) else {
+            return Stored {
+                settings: Settings::locked_down(),
+                unusable: vec!["file"],
+            };
+        };
+        let mut s = Settings::default();
+        let mut unusable = Vec::new();
+        for (key, value) in map {
+            let (part, used) = match key.as_str() {
+                "device_name" => ("device_name", s.adopt(value, |s, v| s.device_name = v)),
+                "localsend" => ("localsend", s.adopt(value, |s, v| s.localsend = v)),
+                "quickshare" => ("quickshare", s.adopt(value, |s, v| s.quickshare = v)),
+                "wormhole" => ("wormhole", s.adopt(value, |s, v| s.wormhole = v)),
+                "bluetooth" => ("bluetooth", s.adopt(value, |s, v| s.bluetooth = v)),
+                "logging" => ("logging", s.adopt(value, |s, v| s.logging = v)),
+                _ => ("unknown", false),
+            };
+            if used {
+                continue;
+            }
+            match part {
+                "localsend" => s.localsend = LocalSendSettings::locked_down(),
+                "quickshare" => s.quickshare = QuickShareSettings::locked_down(),
+                "wormhole" => s.wormhole = WormholeSettings::locked_down(),
+                "bluetooth" => s.bluetooth = BluetoothSettings::locked_down(),
+                // The name falls back to the model and logging stays off:
+                // neither lets anything in.
+                _ => {}
+            }
+            if !unusable.contains(&part) {
+                unusable.push(part);
+            }
+        }
+        if unusable.contains(&"unknown") {
+            s.localsend.enabled = false;
+            s.quickshare.enabled = false;
+            s.wormhole.enabled = false;
+            s.bluetooth.enabled = false;
+        }
+        Stored {
+            settings: s,
+            unusable,
+        }
+    }
+
+    /// Takes `value` as the part `put` sets, if it parses as that part and
+    /// the whole still validates. False, and nothing changed, otherwise.
+    fn adopt<T: DeserializeOwned>(
+        &mut self,
+        value: Value,
+        put: impl FnOnce(&mut Settings, T),
+    ) -> bool {
+        let Ok(part) = serde_json::from_value::<T>(value) else {
+            return false;
+        };
+        let mut next = self.clone();
+        put(&mut next, part);
+        match next.validate() {
+            Ok(valid) => {
+                *self = valid;
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
     /// The name to show peers: the setting, else `model`, else "Sailfish".
     #[must_use]
     pub fn effective_device_name(&self, model: &str) -> String {
@@ -179,6 +368,78 @@ impl Settings {
         } else {
             model
         }
+    }
+}
+
+/// A JSON value in which no object has a key twice, at any depth.
+/// serde_json's own `Value` keeps the last of two, and a file that says two
+/// things about one setting cannot be read one way only. Nesting is bounded
+/// by serde_json's recursion limit, and size by the file's.
+struct Unique(Value);
+
+impl<'de> Deserialize<'de> for Unique {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        d.deserialize_any(UniqueVisitor)
+    }
+}
+
+struct UniqueVisitor;
+
+impl<'de> Visitor<'de> for UniqueVisitor {
+    type Value = Unique;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a JSON value")
+    }
+
+    fn visit_bool<E>(self, v: bool) -> Result<Unique, E> {
+        Ok(Unique(Value::Bool(v)))
+    }
+
+    fn visit_i64<E>(self, v: i64) -> Result<Unique, E> {
+        Ok(Unique(Value::from(v)))
+    }
+
+    fn visit_u64<E>(self, v: u64) -> Result<Unique, E> {
+        Ok(Unique(Value::from(v)))
+    }
+
+    fn visit_f64<E: de::Error>(self, v: f64) -> Result<Unique, E> {
+        serde_json::Number::from_f64(v)
+            .map(|n| Unique(Value::Number(n)))
+            .ok_or_else(|| E::custom("not a JSON number"))
+    }
+
+    fn visit_str<E>(self, v: &str) -> Result<Unique, E> {
+        Ok(Unique(Value::String(v.to_owned())))
+    }
+
+    fn visit_string<E>(self, v: String) -> Result<Unique, E> {
+        Ok(Unique(Value::String(v)))
+    }
+
+    fn visit_unit<E>(self) -> Result<Unique, E> {
+        Ok(Unique(Value::Null))
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Unique, A::Error> {
+        let mut items = Vec::new();
+        while let Some(Unique(item)) = seq.next_element()? {
+            items.push(item);
+        }
+        Ok(Unique(Value::Array(items)))
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Unique, A::Error> {
+        let mut out = Map::new();
+        while let Some(key) = map.next_key::<String>()? {
+            if out.contains_key(&key) {
+                return Err(de::Error::custom("a key given twice"));
+            }
+            let Unique(value) = map.next_value()?;
+            out.insert(key, value);
+        }
+        Ok(Unique(Value::Object(out)))
     }
 }
 
@@ -252,6 +513,7 @@ mod tests {
         s.wormhole.mailbox_url = Some("wss://relay.example/v1".into());
         s.wormhole.relay_url = Some("tcp://relay.example:4001".into());
         assert!(s.clone().validate().is_ok());
+        assert!(s.wormhole.enabled, "on unless switched off");
         for bad in [
             "wss://user:pass@relay.example/v1",
             "wss://relay.example/v1?token=x",
@@ -348,6 +610,208 @@ mod tests {
         assert!(shown.contains("<redacted>"));
         s.localsend.pin = None;
         assert!(format!("{s:?}").contains("pin: None"));
+    }
+
+    /// The file the tests below damage: every choice a user can make
+    /// against the defaults, to be kept or failed closed.
+    const CAREFUL: &str = r#"{
+        "device_name": "Pekka",
+        "localsend": {"enabled": true, "pin": "4711"},
+        "quickshare": {"enabled": true, "visibility": "hidden", "ble_nudge": false},
+        "wormhole": {"enabled": true, "mailbox_url": "wss://m.example/v1", "relay_url": "tcp://r.example:4001"},
+        "bluetooth": {"enabled": false},
+        "logging": false
+    }"#;
+
+    fn careful() -> Settings {
+        serde_json::from_str::<Settings>(CAREFUL)
+            .unwrap()
+            .validate()
+            .unwrap()
+    }
+
+    /// `CAREFUL` with the part `key` replaced by `value` (or removed).
+    fn damaged(key: &str, value: Option<Value>) -> Vec<u8> {
+        let mut v: Value = serde_json::from_str(CAREFUL).unwrap();
+        let map = v.as_object_mut().unwrap();
+        match value {
+            Some(value) => {
+                map.insert(key.to_owned(), value);
+            }
+            None => {
+                map.remove(key);
+            }
+        }
+        serde_json::to_vec(&v).unwrap()
+    }
+
+    #[test]
+    fn a_whole_file_is_used_as_it_is() {
+        let stored = Settings::from_stored(CAREFUL.as_bytes());
+        assert_eq!(stored.settings, careful());
+        assert!(stored.unusable.is_empty());
+        // Parts left out take their defaults, as they always did, and a file
+        // from before `wormhole.enabled` reads as on.
+        let stored = Settings::from_stored(br#"{"logging":true,"wormhole":{"mailbox_url":null}}"#);
+        assert!(stored.unusable.is_empty());
+        assert!(stored.settings.logging);
+        assert!(stored.settings.wormhole.enabled);
+        assert_eq!(stored.settings.localsend, LocalSendSettings::default());
+        assert_eq!(Settings::from_stored(b"{}").settings, Settings::default());
+    }
+
+    #[test]
+    fn one_bad_part_costs_only_that_part() {
+        // The review's case: a mailbox URL an earlier build took.
+        let bytes = damaged(
+            "wormhole",
+            Some(serde_json::json!({"mailbox_url": "wss://relay.example/v1?token=x"})),
+        );
+        let stored = Settings::from_stored(&bytes);
+        assert_eq!(stored.unusable, vec!["wormhole"]);
+        let s = stored.settings;
+        assert_eq!(s.localsend.pin.as_deref(), Some("4711"), "the PIN survives");
+        assert!(s.localsend.enabled);
+        assert_eq!(
+            s.quickshare.visibility,
+            Visibility::Hidden,
+            "so does Hidden"
+        );
+        assert!(s.quickshare.enabled);
+        assert_eq!(s.device_name, "Pekka");
+        // And the part that did not read is off, with no server of anyone's.
+        assert!(!s.wormhole.enabled);
+        assert_eq!(s.wormhole.mailbox_url, None);
+        assert_eq!(s.wormhole.relay_url, None);
+    }
+
+    #[test]
+    fn a_bad_section_is_switched_off_not_reset_to_its_defaults() {
+        let bad_pin = damaged(
+            "localsend",
+            Some(serde_json::json!({"enabled": true, "pin": "12 34"})),
+        );
+        let s = Settings::from_stored(&bad_pin).settings;
+        assert_eq!(s.localsend, LocalSendSettings::locked_down());
+        assert_eq!(s.quickshare, careful().quickshare);
+        let contacts = damaged(
+            "quickshare",
+            Some(serde_json::json!({"enabled": true, "visibility": "contacts"})),
+        );
+        let s = Settings::from_stored(&contacts).settings;
+        assert_eq!(s.quickshare, QuickShareSettings::locked_down());
+        assert_eq!(s.quickshare.visibility, Visibility::Hidden);
+        assert_eq!(s.localsend, careful().localsend);
+        let from_a_newer_build = damaged(
+            "localsend",
+            Some(serde_json::json!({"enabled": true, "pin": "4711", "allow_only": ["x"]})),
+        );
+        let stored = Settings::from_stored(&from_a_newer_build);
+        assert_eq!(stored.unusable, vec!["localsend"]);
+        assert!(!stored.settings.localsend.enabled);
+    }
+
+    #[test]
+    fn an_unknown_key_switches_every_protocol_off() {
+        let mut v: Value = serde_json::from_str(CAREFUL).unwrap();
+        v["contacts_only"] = Value::Bool(true);
+        let stored = Settings::from_stored(&serde_json::to_vec(&v).unwrap());
+        assert_eq!(stored.unusable, vec!["unknown"]);
+        let s = stored.settings;
+        assert!(!s.localsend.enabled && !s.quickshare.enabled);
+        assert!(!s.wormhole.enabled && !s.bluetooth.enabled);
+        // Everything else is kept, for when the user switches them back on.
+        assert_eq!(s.localsend.pin.as_deref(), Some("4711"));
+        assert_eq!(s.quickshare.visibility, Visibility::Hidden);
+        assert_eq!(s.device_name, "Pekka");
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_one_way_is_locked_down() {
+        for bytes in [
+            &b""[..],
+            b"nonsense",
+            b"7",
+            b"null",
+            b"{\"localsend\":",
+            br#"{"logging":false,"logging":true}"#,
+            br#"{"localsend":{"pin":"4711","pin":null}}"#,
+            br#"{"wormhole":{"mailbox_url":"ws://a/v1"},"x":{"y":{"z":1,"z":2}}}"#,
+            b"\xef\xbb\xbf{}",
+        ] {
+            let stored = Settings::from_stored(bytes);
+            assert_eq!(stored.settings, Settings::locked_down(), "{bytes:?}");
+            assert_eq!(stored.unusable, vec!["file"], "{bytes:?}");
+        }
+        let s = Settings::locked_down();
+        assert!(!s.localsend.enabled && !s.quickshare.enabled);
+        assert!(!s.wormhole.enabled && !s.bluetooth.enabled && !s.logging);
+        assert_eq!(s.quickshare.visibility, Visibility::Hidden);
+        assert!(!s.quickshare.ble_nudge);
+        assert_eq!(s.clone().validate().unwrap(), s);
+    }
+
+    /// Every part of the careful file, damaged every way: the result is never
+    /// more permissive than the file was.
+    #[test]
+    fn damage_never_opens_anything_up() {
+        let bad = [
+            Value::Null,
+            Value::Bool(true),
+            serde_json::json!(1),
+            serde_json::json!(-1.5),
+            serde_json::json!("everyone"),
+            serde_json::json!([1]),
+            serde_json::json!({"enabled": "yes"}),
+            serde_json::json!({"enabled": true, "surprise": 1}),
+            serde_json::json!({"enabled": true, "pin": 4711}),
+            serde_json::json!({"enabled": true, "pin": "12 34"}),
+            serde_json::json!({"enabled": true, "visibility": "contacts"}),
+            serde_json::json!({"enabled": true, "ble_nudge": "on"}),
+            serde_json::json!({"enabled": true, "mailbox_url": "http://evil/v1"}),
+            serde_json::json!({"enabled": true, "relay_url": "tcp://u@evil:1"}),
+        ];
+        let keys = [
+            "device_name",
+            "localsend",
+            "quickshare",
+            "wormhole",
+            "bluetooth",
+            "logging",
+            "extra",
+        ];
+        let base = careful();
+        let mut damaged_files = 0;
+        for key in keys {
+            for value in &bad {
+                let bytes = damaged(key, Some(value.clone()));
+                let whole = serde_json::from_slice::<Settings>(&bytes)
+                    .ok()
+                    .and_then(|s| s.validate().ok());
+                if whole.is_some() {
+                    // Not damage: a file that says something else.
+                    continue;
+                }
+                damaged_files += 1;
+                let s = Settings::from_stored(&bytes).settings;
+                let at = format!("{key} = {value}");
+                if s.localsend.enabled {
+                    assert_eq!(s.localsend.pin, base.localsend.pin, "{at}");
+                }
+                if s.quickshare.enabled {
+                    assert_eq!(s.quickshare.visibility, Visibility::Hidden, "{at}");
+                    assert!(!s.quickshare.ble_nudge, "{at}");
+                }
+                if s.wormhole.enabled {
+                    assert_eq!(s.wormhole.mailbox_url, base.wormhole.mailbox_url, "{at}");
+                    assert_eq!(s.wormhole.relay_url, base.wormhole.relay_url, "{at}");
+                }
+                assert!(!s.bluetooth.enabled, "{at}");
+                assert!(!s.logging, "{at}");
+                assert_eq!(s.clone().validate().unwrap(), s, "{at}");
+            }
+        }
+        assert!(damaged_files > 60, "{damaged_files}");
     }
 
     #[test]
