@@ -28,8 +28,9 @@
 mod localsend_support;
 
 use std::collections::HashMap;
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use localsend_support::*;
@@ -493,6 +494,218 @@ async fn slow_handshakes_heads_and_bodies_are_cut_off() {
     assert!(closed_within(&mut s, Duration::from_secs(5)).await);
     assert_eq!(b.offers_shown(), 0);
     an_honest_transfer_still_works(&b).await;
+}
+
+/// A peer that pipelines requests for 404s from `source` and never reads an
+/// answer, with a receive buffer as small as the kernel allows: the
+/// server's answers back up until it cannot write. The task holds the
+/// connection until it is aborted.
+async fn stops_reading(port: u16, source: Option<Ipv4Addr>) -> tokio::task::JoinHandle<()> {
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    socket.set_recv_buffer_size(1024).unwrap();
+    socket
+        .bind(SocketAddr::new(IpAddr::V4(source.unwrap()), 0))
+        .unwrap();
+    let tcp = socket
+        .connect(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), port))
+        .await
+        .unwrap();
+    let mut s = tokio_rustls::TlsConnector::from(raw_client_config(Some(EVE)))
+        .connect(
+            rustls::pki_types::ServerName::IpAddress(Ipv4Addr::LOCALHOST.into()),
+            tcp,
+        )
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        // About 1 MiB of answers; far more than every buffer between.
+        let requests = b"GET /x HTTP/1.1\r\nHost: x\r\n\r\n".repeat(8000);
+        let _ = s.write_all(&requests).await;
+        std::future::pending::<()>().await;
+    })
+}
+
+/// The server-side twin of `a_receiver_that_stops_reading_times_out`.
+/// Nothing timed out a response that could not be written: four addresses
+/// with eight such connections each held every connection the server has,
+/// for as long as they liked, and every honest peer was turned away.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sender_that_stops_reading_is_cut_off() {
+    let b = receiver();
+    let port = b.receive().await;
+    let listening = b.ls.tasks_running();
+    let mut held = Vec::new();
+    for a in 0..4 {
+        for _ in 0..8 {
+            held.push(stops_reading(port, src(90 + a)).await);
+        }
+    }
+    assert!(b.ls.tasks_running() > listening, "the connections are up");
+    // Every one ends once its answers stop moving.
+    wait("the stalled connections to be cut off", || {
+        (b.ls.tasks_running() <= listening).then_some(())
+    })
+    .await;
+    an_honest_transfer_still_works(&b).await;
+    for h in held {
+        h.abort();
+    }
+}
+
+/// hyper's header timer is armed for each request anew, so a request just
+/// before every timeout kept a connection -- and its slot -- for ever.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_connection_kept_busy_is_retired() {
+    let b = receiver();
+    let port = b.receive().await;
+    let mut s = tls_from(port, src(94)).await;
+    let start = Instant::now();
+    let closed = loop {
+        match exchange(&mut s, "GET /x HTTP/1.1\r\nHost: x\r\n\r\n", b"").await {
+            None => break true,
+            Some(r) => assert_eq!(r.status, 404),
+        }
+        if start.elapsed() > Duration::from_secs(15) {
+            break false;
+        }
+        // Well within the 2 s header timeout.
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    };
+    assert!(closed, "a busy connection lives only so long");
+    // The handshake and idle timeouts, and the grace to finish an answer.
+    assert!(start.elapsed() < Duration::from_secs(12));
+    an_honest_transfer_still_works(&b).await;
+}
+
+/// A registration from `source` as pool identity `id`, whose server is at
+/// `port`.
+async fn register_as(
+    to: u16,
+    id: usize,
+    source: Option<Ipv4Addr>,
+    port: u16,
+) -> Option<RawResponse> {
+    let body = serde_json::to_vec(&json!({
+        "alias": format!("Eve{id}"), "version": "2.2", "deviceType": "mobile",
+        "fingerprint": identity(id).fingerprint, "port": port, "protocol": "https"
+    }))
+    .unwrap();
+    let mut s = raw_tls(to, Some(id), source).await.ok()?;
+    exchange(&mut s, &post(REGISTER, body.len()), &body).await
+}
+
+fn found(b: &Node) -> Vec<String> {
+    b.events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|e| match e {
+            Event::PeerFound { peer } => Some(peer.id.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// clove's `one_destination_cannot_monopolise_the_peer_table`, for
+/// LocalSend: the peer list once filled first come, first served, so one
+/// address with certificates enough kept every later device off it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn one_address_cannot_fill_the_peer_list() {
+    let b = receiver();
+    let port = b.receive().await;
+    b.ls.start_discovery().await.unwrap();
+    // Every certificate one address has: one over its share.
+    for id in [0, 2, 3, 4, 5] {
+        assert_eq!(
+            register_as(port, id, src(96), 4000).await.unwrap().status,
+            200
+        );
+    }
+    let first = format!("ls:{}", identity(0).fingerprint);
+    b.wait_event("the stalest of them to make way", |e| match e {
+        Event::PeerLost { peer } if *peer == first => Some(()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(found(&b).len(), 5);
+    // Another address is listed as ever.
+    assert_eq!(
+        register_as(port, 0, src(97), 4000).await.unwrap().status,
+        200
+    );
+    wait("a peer at another address listed", || {
+        (found(&b).len() == 6).then_some(())
+    })
+    .await;
+    an_honest_transfer_still_works(&b).await;
+}
+
+/// A TLS server with pool identity `id` that counts connections, and
+/// requests that got past the handshake.
+async fn counting_server(id: usize) -> (u16, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+    use rustls::pki_types::pem::PemObject;
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+    let id = identity(id);
+    let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![CertificateDer::from_pem_slice(id.certificate_pem.as_bytes()).unwrap()],
+        PrivateKeyDer::from_pem_slice(id.private_key_pem.as_bytes()).unwrap(),
+    )
+    .unwrap();
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let connections = Arc::new(AtomicUsize::new(0));
+    let requests = Arc::new(AtomicUsize::new(0));
+    let (c, r) = (connections.clone(), requests.clone());
+    tokio::spawn(async move {
+        while let Ok((tcp, _)) = listener.accept().await {
+            c.fetch_add(1, Ordering::SeqCst);
+            let acceptor = acceptor.clone();
+            let r = r.clone();
+            tokio::spawn(async move {
+                let Ok(mut s) = acceptor.accept(tcp).await else {
+                    return;
+                };
+                let mut byte = [0u8; 1];
+                if s.read(&mut byte).await.unwrap_or(0) > 0 {
+                    r.fetch_add(1, Ordering::SeqCst);
+                }
+            });
+        }
+    });
+    (port, connections, requests)
+}
+
+/// F-LS3 for the HTTP register fallback: a lead is registered with only
+/// under the certificate it was known by. Here a peer registers as one
+/// identity and names, as its server, a port where another certificate
+/// answers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_fallback_sends_nothing_to_another_certificate() {
+    let mut cfg = NodeConfig::new(0, "Alice");
+    cfg.rounds = Duration::from_secs(1);
+    let a = Node::new(&cfg);
+    let port = a.receive().await;
+    let (other, connections, requests) = counting_server(2).await;
+    assert_eq!(register_as(port, 4, None, other).await.unwrap().status, 200);
+    a.ls.start_discovery().await.unwrap();
+    wait("the fallback to try the lead", || {
+        (connections.load(Ordering::SeqCst) > 0).then_some(())
+    })
+    .await;
+    // Rounds go by; the lead was dropped at the mismatch, not retried.
+    tokio::time::sleep(Duration::from_millis(3500)).await;
+    assert_eq!(connections.load(Ordering::SeqCst), 1);
+    assert_eq!(requests.load(Ordering::SeqCst), 0, "not a byte of HTTP");
+    assert!(found(&a).is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

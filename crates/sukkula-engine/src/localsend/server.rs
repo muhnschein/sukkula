@@ -13,7 +13,10 @@
 //!    deadline.
 //! 3. **HTTP/1.1 head**: at most [`MAX_BUF_BYTES`] and [`MAX_HEADERS`], read
 //!    within the handshake timeout; an idle keep-alive connection ends on
-//!    the same timer.
+//!    the same timer. A response that cannot be written for the idle
+//!    timeout ends the connection ([`WriteDeadline`]), and a connection
+//!    that carries no offer or session of its own ends after
+//!    [`lifetime`], however busy it keeps.
 //! 4. **Routing**: the v2 endpoints only. Every other path is a 404 whose
 //!    body is never read.
 //! 5. **JSON bodies** (S4, S6): at most 64 KiB, with an idle timeout and an
@@ -28,9 +31,12 @@
 
 use std::collections::HashMap;
 use std::convert::Infallible;
+use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -52,6 +58,7 @@ use sukkula_core::consent::Refusal;
 use sukkula_core::limits::RATE_LIMIT_ENTRIES;
 use sukkula_core::offer::{OfferFile, RawFile, RawOffer};
 use sukkula_core::reach::RateLimiter;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use tokio_rustls::TlsAcceptor;
@@ -211,22 +218,7 @@ impl Server {
             .map_err(|_| ErrorInfo::new(ErrorCode::Network, "the LocalSend port is not available"))?
             .port();
         shared.set_port(port);
-        let stop = shared.ctx.shutdown_token().child_token();
-        let inner = Arc::new(Inner {
-            shared: shared.clone(),
-            identity,
-            acceptor: TlsAcceptor::from(config),
-            accepting: AtomicBool::new(true),
-            drain: Mutex::new(CancellationToken::new()),
-            closing: stop.child_token(),
-            stop,
-            slot: Mutex::new(Slot::Free),
-            per_ip: Mutex::new(HashMap::new()),
-            connect_limiter: Mutex::new(RateLimiter::new(CONNECT_BURST, CONNECT_WINDOW)),
-            permits: Arc::new(Semaphore::new(MAX_CONNECTIONS)),
-            pins: Mutex::new(PinFailures::default()),
-            next_pending: AtomicU64::new(0),
-        });
+        let inner = Arc::new(Inner::new(shared.clone(), identity, config));
         let task = shared.tasks.spawn(accept_loop(inner.clone(), listener));
         Ok(Server { inner, task })
     }
@@ -241,10 +233,10 @@ impl Server {
         self.inner.closing.is_cancelled()
     }
 
-    /// Takes offers again after [`drain`](Self::drain).
-    pub(super) fn resume(&self) {
-        *lock(&self.inner.drain) = CancellationToken::new();
-        self.inner.accepting.store(true, Ordering::Release);
+    /// Takes offers again after [`drain`](Self::drain). False when the
+    /// server has stopped, or stops meanwhile: then start a new one.
+    pub(super) fn resume(&self) -> bool {
+        self.inner.resume()
     }
 
     /// Stops taking offers: a pending offer is declined, every connection
@@ -252,10 +244,65 @@ impl Server {
     /// running and the server has stopped; otherwise it stops by itself when
     /// the session ends.
     pub(super) fn drain(&self) -> bool {
-        self.inner.accepting.store(false, Ordering::Release);
-        lock(&self.inner.drain).cancel();
+        self.inner.drain()
+    }
+
+    /// Waits for the listener to close.
+    pub(super) async fn wait(self) {
+        let _ = self.task.await;
+    }
+}
+
+impl Inner {
+    fn new(
+        shared: Arc<Shared>,
+        identity: Arc<Identity>,
+        config: Arc<rustls::ServerConfig>,
+    ) -> Inner {
+        let stop = shared.ctx.shutdown_token().child_token();
+        Inner {
+            shared,
+            identity,
+            acceptor: TlsAcceptor::from(config),
+            accepting: AtomicBool::new(true),
+            drain: Mutex::new(CancellationToken::new()),
+            closing: stop.child_token(),
+            stop,
+            slot: Mutex::new(Slot::Free),
+            per_ip: Mutex::new(HashMap::new()),
+            connect_limiter: Mutex::new(RateLimiter::new(CONNECT_BURST, CONNECT_WINDOW)),
+            permits: Arc::new(Semaphore::new(MAX_CONNECTIONS)),
+            pins: Mutex::new(PinFailures::default()),
+            next_pending: AtomicU64::new(0),
+        }
+    }
+
+    /// See [`Server::resume`].
+    ///
+    /// A draining server stops itself when its last session or pending
+    /// offer ends and it is not accepting: [`Inner::release`] and
+    /// [`PendingGuard`]'s drop decide that under the slot lock. So this
+    /// decides under it too: either they see `accepting` and leave the
+    /// server running, or this sees it stopped and says so. Checking
+    /// `stopped` first and storing `accepting` after, as this once did, let
+    /// a session end in between: Receive reported on, the listener closed
+    /// (F-C1).
+    fn resume(&self) -> bool {
+        // A fresh token first: harmless if the server turns out stopped.
+        *lock(&self.drain) = CancellationToken::new();
+        let _slot = lock(&self.slot);
+        if self.closing.is_cancelled() {
+            return false;
+        }
+        self.accepting.store(true, Ordering::Release);
+        true
+    }
+
+    /// See [`Server::drain`].
+    fn drain(&self) -> bool {
         let idle = {
-            let slot = lock(&self.inner.slot);
+            let slot = lock(&self.slot);
+            self.accepting.store(false, Ordering::Release);
             match &*slot {
                 Slot::Free => true,
                 Slot::Pending { cancel, .. } => {
@@ -265,15 +312,11 @@ impl Server {
                 Slot::Active(_) => false,
             }
         };
+        lock(&self.drain).cancel();
         if idle {
-            self.inner.closing.cancel();
+            self.closing.cancel();
         }
         idle
-    }
-
-    /// Waits for the listener to close.
-    pub(super) async fn wait(self) {
-        let _ = self.task.await;
     }
 }
 
@@ -326,6 +369,20 @@ async fn accept_loop(inner: Arc<Inner>, listener: TcpListener) {
     }
 }
 
+/// How long a connection lives that carries no offer or session of its
+/// own: time for a request's head and body (the handshake timeout) and
+/// its answer (the idle timeout).
+///
+/// hyper's header timer bounds the wait for each request head, and
+/// [`WriteDeadline`] each stalled write, but neither bounds a connection
+/// that makes a little progress now and then: a request just before every
+/// header timeout, or responses read just fast enough to keep a write
+/// moving. Either held a connection slot for as long as the peer liked,
+/// and four addresses held all [`MAX_CONNECTIONS`].
+fn lifetime(opts: &super::Options) -> Duration {
+    opts.handshake_timeout().saturating_add(opts.idle_timeout())
+}
+
 async fn serve(
     inner: Arc<Inner>,
     tcp: TcpStream,
@@ -336,6 +393,8 @@ async fn serve(
 ) {
     let _ = tcp.set_nodelay(true);
     let handshake = inner.shared.opts.handshake_timeout();
+    let idle = inner.shared.opts.idle_timeout();
+    let lifetime = lifetime(&inner.shared.opts);
     let tls = tokio::select! {
         () = inner.closing.cancelled() => return,
         tls = tokio::time::timeout(handshake, inner.acceptor.accept(tcp)) => tls,
@@ -356,9 +415,10 @@ async fn serve(
     };
     let caller = Arc::new(Caller { ip, fingerprint });
     let svc_inner = inner.clone();
+    let svc_caller = caller.clone();
     let service = service_fn(move |req| {
         let inner = svc_inner.clone();
-        let caller = caller.clone();
+        let caller = svc_caller.clone();
         async move { Ok::<_, Infallible>(route(&inner, &caller, req).await) }
     });
     let mut builder = hyper::server::conn::http1::Builder::new();
@@ -368,8 +428,11 @@ async fn serve(
         .max_buf_size(MAX_BUF_BYTES)
         .max_headers(MAX_HEADERS)
         .keep_alive(true);
-    let conn = builder.serve_connection(TokioIo::new(tls), service);
+    let io = TokioIo::new(WriteDeadline::new(tls, idle));
+    let conn = builder.serve_connection(io, service);
     tokio::pin!(conn);
+    let retire = tokio::time::sleep(lifetime);
+    tokio::pin!(retire);
     let mut spared = false;
     let mut closing = false;
     loop {
@@ -382,7 +445,24 @@ async fn serve(
                 closing = true;
                 conn.as_mut().graceful_shutdown();
             }
-            () = tokio::time::sleep(handshake), if closing => break,
+            () = &mut retire, if !closing => {
+                // The sender of the pending offer or the running session
+                // keeps its connections for as long as that takes; anyone
+                // else finishes what it asked and goes.
+                if inner.is_party(&caller) {
+                    retire.set(tokio::time::sleep(lifetime));
+                } else {
+                    closing = true;
+                    conn.as_mut().graceful_shutdown();
+                }
+            }
+            () = tokio::time::sleep(handshake), if closing => {
+                // An offer that arrived as the connection was retired may
+                // be waiting for the user now; it ends with its answer.
+                if !inner.is_party(&caller) {
+                    break;
+                }
+            }
             () = drain.cancelled(), if !spared && !closing => {
                 if inner.is_session_sender(ip) {
                     spared = true;
@@ -391,6 +471,100 @@ async fn serve(
                 }
             }
         }
+    }
+}
+
+/// A stream whose writes fail after `limit` without progress (S6).
+///
+/// hyper times out a request head, and the handlers time out every body
+/// they read, but nothing timed out a response that could not be written. A
+/// peer that sent requests (pipelined, or one after another on a
+/// keep-alive connection) and then stopped reading filled the socket's,
+/// rustls's and hyper's buffers; hyper then waits for the flush and arms no
+/// timer, and Linux keeps probing a zero window for as long as the peer
+/// acknowledges -- so the connection was held for ever, with no traffic.
+struct WriteDeadline<T> {
+    io: T,
+    limit: Duration,
+    /// Armed by the first write that could not go on, disarmed by the next
+    /// that did.
+    stalled: Option<Pin<Box<tokio::time::Sleep>>>,
+}
+
+impl<T> WriteDeadline<T> {
+    fn new(io: T, limit: Duration) -> Self {
+        WriteDeadline {
+            io,
+            limit,
+            stalled: None,
+        }
+    }
+
+    fn progress<R>(
+        &mut self,
+        cx: &mut Context<'_>,
+        polled: Poll<std::io::Result<R>>,
+    ) -> Poll<std::io::Result<R>> {
+        if polled.is_ready() {
+            self.stalled = None;
+            return polled;
+        }
+        let limit = self.limit;
+        let stalled = self
+            .stalled
+            .get_or_insert_with(|| Box::pin(tokio::time::sleep(limit)));
+        match stalled.as_mut().poll(cx) {
+            Poll::Ready(()) => Poll::Ready(Err(std::io::ErrorKind::TimedOut.into())),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl<T: AsyncRead + Unpin> AsyncRead for WriteDeadline<T> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().io).poll_read(cx, buf)
+    }
+}
+
+impl<T: AsyncWrite + Unpin> AsyncWrite for WriteDeadline<T> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        let this = self.get_mut();
+        let polled = Pin::new(&mut this.io).poll_write(cx, buf);
+        this.progress(cx, polled)
+    }
+
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[std::io::IoSlice<'_>],
+    ) -> Poll<std::io::Result<usize>> {
+        let this = self.get_mut();
+        let polled = Pin::new(&mut this.io).poll_write_vectored(cx, bufs);
+        this.progress(cx, polled)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.io.is_write_vectored()
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        let polled = Pin::new(&mut this.io).poll_flush(cx);
+        this.progress(cx, polled)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        let polled = Pin::new(&mut this.io).poll_shutdown(cx);
+        this.progress(cx, polled)
     }
 }
 
@@ -937,6 +1111,15 @@ impl Inner {
         matches!(&*lock(&self.slot), Slot::Active(a) if a.sender.ip == ip)
     }
 
+    /// Whether `caller` made the pending offer or the running session.
+    fn is_party(&self, caller: &Caller) -> bool {
+        match &*lock(&self.slot) {
+            Slot::Free => false,
+            Slot::Pending { sender, .. } => sender.is(caller),
+            Slot::Active(a) => a.sender.is(caller),
+        }
+    }
+
     /// Frees the slot after the session `session_id`; stops a draining
     /// server.
     fn release(&self, session_id: &str) {
@@ -1165,6 +1348,88 @@ mod tests {
         }
         let fresh: IpAddr = "10.9.9.9".parse().unwrap();
         assert_eq!(p.check(fresh, Some("1234"), "1234", t0), PinCheck::Locked);
+    }
+
+    #[tokio::test]
+    async fn a_write_that_makes_no_progress_fails() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let limit = Duration::from_millis(300);
+        let (near, mut far) = tokio::io::duplex(64);
+        let mut w = WriteDeadline::new(near, limit);
+        // The peer reads, slowly: a write longer than the limit in all, but
+        // never stalled that long, goes through.
+        let reader = tokio::spawn(async move {
+            let mut buf = [0u8; 64];
+            for _ in 0..10 {
+                far.read_exact(&mut buf).await.unwrap();
+                tokio::time::sleep(Duration::from_millis(60)).await;
+            }
+            far
+        });
+        let start = Instant::now();
+        w.write_all(&[1; 640]).await.unwrap();
+        w.flush().await.unwrap();
+        assert!(start.elapsed() > limit);
+        let far = reader.await.unwrap();
+        // The peer stops reading: the write fails at the limit, not never.
+        let start = Instant::now();
+        let stuck = tokio::time::timeout(Duration::from_secs(10), w.write_all(&[2; 1024])).await;
+        assert!(
+            matches!(&stuck, Ok(Err(e)) if e.kind() == std::io::ErrorKind::TimedOut),
+            "{stuck:?}"
+        );
+        assert!(start.elapsed() < Duration::from_secs(5));
+        drop(far);
+    }
+
+    /// Receive switched back on just as a draining server's last session
+    /// ends. `resume` once checked `stopped` and then stored `accepting`, so
+    /// a session ending in between closed the listener with Receive
+    /// reported on. The test holds the drain lock to stop `resume` in its
+    /// first step -- where the old one had already checked -- and ends the
+    /// session there.
+    #[test]
+    fn receive_switched_on_as_the_last_session_ends_is_never_left_closed() {
+        let (_dir, shared) = crate::localsend::tests::shared_for_tests(true);
+        let identity = Arc::new(super::super::identity::tests::pair(0));
+        let config = tls::server_config(&identity).unwrap();
+        let inner = Arc::new(Inner::new(shared, identity, config));
+        let (uploads, _rx) = mpsc::channel(1);
+        *lock(&inner.slot) = Slot::Active(Active {
+            session_id: "s".into(),
+            sender: Party {
+                ip: "192.168.1.2".parse().unwrap(),
+                fingerprint: "F".into(),
+            },
+            uploads,
+            cancel: CancellationToken::new(),
+        });
+        // Receive off with the session running: the server drains.
+        assert!(!inner.drain());
+        assert!(!inner.closing.is_cancelled());
+
+        let held = lock(&inner.drain);
+        let resumer = std::thread::spawn({
+            let inner = inner.clone();
+            move || inner.resume()
+        });
+        std::thread::sleep(Duration::from_millis(200));
+        // The last file arrives: the session ends, and a server that is not
+        // accepting stops.
+        inner.release("s");
+        drop(held);
+        let resumed = resumer.join().unwrap();
+
+        let accepting = inner.accepting.load(Ordering::Acquire);
+        let stopped = inner.closing.is_cancelled();
+        assert!(
+            !(accepting && stopped),
+            "Receive reported on with the listener closed"
+        );
+        // Whichever won, the adapter is told the truth: resumed, or start
+        // a new server.
+        assert_eq!(resumed, !stopped);
+        assert_eq!(resumed, accepting);
     }
 
     #[test]

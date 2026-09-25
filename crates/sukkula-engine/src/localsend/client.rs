@@ -50,8 +50,11 @@ pub(super) struct Conn {
 /// Why a request failed, before it is mapped to what the UI shows.
 #[derive(Debug)]
 pub(super) enum Failure {
-    /// The certificate was not the pinned one (F-LS3).
-    Mismatch,
+    /// The certificate was not the pinned one (F-LS3). The fingerprint of
+    /// the one the server showed instead: what discovery learns about that
+    /// address (`discovery::Claims`). Shown, not proven -- the handshake
+    /// stopped before the server signed anything.
+    Mismatch(Option<String>),
     /// The address is not one we talk to (S7).
     NotPermitted,
     /// Timed out, refused, reset, or garbled.
@@ -64,7 +67,7 @@ impl Failure {
     /// What the UI is told.
     pub(super) fn into_error(self) -> ErrorInfo {
         match self {
-            Failure::Mismatch => ErrorInfo::new(
+            Failure::Mismatch(_) => ErrorInfo::new(
                 ErrorCode::PeerMismatch,
                 "the peer's certificate does not match the one it announced",
             ),
@@ -119,7 +122,7 @@ impl Conn {
             .map_err(|_| Failure::Network("the TLS handshake timed out"))?;
         let tls = match tls {
             Ok(tls) => tls,
-            Err(_) if verifier.mismatched() => return Err(Failure::Mismatch),
+            Err(_) if verifier.mismatched() => return Err(Failure::Mismatch(verifier.seen())),
             Err(_) => return Err(Failure::Network("the TLS handshake failed")),
         };
         let fingerprint = verifier

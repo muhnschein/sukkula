@@ -404,6 +404,133 @@ async fn discovery_lists_registrations_and_forgets_on_stop() {
     assert_eq!(e.code, ErrorCode::NotFound);
 }
 
+/// Registers with Sukkula at `to` the way upstream LocalSend does -- its
+/// reference client, as pool identity `id` -- saying its server is at
+/// `port`. This is what the other app's own subnet scan sends when it hears
+/// no multicast.
+async fn upstream_registers(to: u16, pinned: usize, id: usize, port: u16) {
+    use localsend::http::client::LsHttpClientV2;
+    use localsend::http::dto_v2::RegisterDtoV2;
+    use localsend::model::discovery::ProtocolType;
+    let me = identity(id);
+    let client = LsHttpClientV2::try_new(
+        &me.private_key_pem,
+        &me.certificate_pem,
+        Some(identity(pinned).fingerprint.clone()),
+        None,
+    )
+    .unwrap();
+    let info = RegisterDtoV2 {
+        alias: "Bob".into(),
+        version: "2.2".into(),
+        device_model: None,
+        device_type: None,
+        fingerprint: me.fingerprint.clone(),
+        port,
+        protocol: ProtocolType::Https,
+        download: false,
+    };
+    client
+        .register(ProtocolType::Https, "127.0.0.1", to, info)
+        .await
+        .unwrap();
+}
+
+fn peers_found(node: &Node, id: &str) -> usize {
+    node.events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|e| matches!(e, Event::PeerFound { peer } if peer.id == id))
+        .count()
+}
+
+/// F-LS1's HTTP register fallback, with no multicast anywhere and no
+/// `discover_at`: Bob's app registers with Alice while she is not looking
+/// for anyone; when she opens the Send page, discovery registers back with
+/// him, pinned to the certificate he registered with -- and does so again
+/// each time discovery starts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn discovery_registers_with_peers_it_knows_without_multicast() {
+    let a = Node::new(&NodeConfig::new(0, "Alice"));
+    let b = Node::new(&NodeConfig::new(1, "Bob"));
+    let a_port = a.receive().await;
+    let b_port = b.receive().await;
+    b.ls.start_discovery().await.unwrap();
+    upstream_registers(a_port, 0, 1, b_port).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!a.events_json().contains("peer_found"), "not looking yet");
+
+    a.ls.start_discovery().await.unwrap();
+    let bob = format!("ls:{}", identity(1).fingerprint);
+    let listed = a
+        .wait_event("Bob listed", |e| match e {
+            Event::PeerFound { peer } if peer.id == bob => Some(peer.clone()),
+            _ => None,
+        })
+        .await;
+    assert_eq!(listed.name, "Bob");
+    // The exchange runs both ways: Bob lists Alice from her registration.
+    let alice = format!("ls:{}", identity(0).fingerprint);
+    b.wait_event("Alice listed", |e| match e {
+        Event::PeerFound { peer } if peer.id == alice => Some(()),
+        _ => None,
+    })
+    .await;
+    // A peer found this way is one to send to.
+    let id =
+        a.ls.send(target(&bob), vec![Outgoing::Text("hi".into())])
+            .await
+            .unwrap();
+    let (offer, _) = b.offer().await;
+    b.answer(offer, true);
+    assert_eq!(a.finished(id).await.0, Outcome::Done);
+
+    // Discovery closes and opens again: Bob is asked first, and listed
+    // again, with nothing new heard from him.
+    a.ls.stop_discovery().await;
+    a.wait_event("Bob forgotten", |e| match e {
+        Event::PeerLost { peer } if *peer == bob => Some(()),
+        _ => None,
+    })
+    .await;
+    a.ls.start_discovery().await.unwrap();
+    wait("Bob listed again", || {
+        (peers_found(&a, &bob) == 2).then_some(())
+    })
+    .await;
+}
+
+/// A lead whose server did not answer is tried again in the next rounds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_peer_that_did_not_answer_is_asked_again() {
+    let mut cfg = NodeConfig::new(0, "Alice");
+    cfg.rounds = Duration::from_secs(2);
+    let a = Node::new(&cfg);
+    let a_port = a.receive().await;
+    // Where Bob will listen, before he does.
+    let b_port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    upstream_registers(a_port, 0, 1, b_port).await;
+    a.ls.start_discovery().await.unwrap();
+    // The first round finds nobody there.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(!a.events_json().contains("peer_found"));
+    let mut bcfg = NodeConfig::new(1, "Bob");
+    bcfg.port = b_port;
+    let b = Node::new(&bcfg);
+    assert_eq!(b.receive().await, b_port);
+    let bob = format!("ls:{}", identity(1).fingerprint);
+    a.wait_event("Bob listed by a later round", |e| match e {
+        Event::PeerFound { peer } if peer.id == bob => Some(()),
+        _ => None,
+    })
+    .await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_file_that_changed_after_it_was_chosen_is_not_sent() {
     use sukkula_engine::adapter::OutgoingFile;
