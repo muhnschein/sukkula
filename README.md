@@ -54,6 +54,12 @@ Qt/Silica shell links.
   cross-build and how a device RPM is made
 - [`docs/HARBOUR.md`](docs/HARBOUR.md) -- Jolla's store rules and the two
   CI gates that hold them
+- [`docs/SECURITY.md`](docs/SECURITY.md) -- the threat model, every
+  guarantee and what enforces it, and how to report a vulnerability
+- [`docs/FFI.md`](docs/FFI.md) -- the engine's C ABI and JSON messages
+- [`docs/MANUAL-TESTS.md`](docs/MANUAL-TESTS.md) -- the checklist for the phone
+- [`docs/STATUS.md`](docs/STATUS.md) -- what is built, what is verified, and
+  what waits on the owner or on hardware
 
 ## Building
 
