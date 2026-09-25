@@ -14,7 +14,7 @@ on an address the announcer chose).
  2 files changed, 27 insertions(+)
 
 diff --git a/src/service_daemon.rs b/src/service_daemon.rs
-index 53d5fdc..ad313b2 100644
+index 649a4fc..95daad4 100644
 --- a/src/service_daemon.rs
 +++ b/src/service_daemon.rs
 @@ -3225,6 +3225,17 @@ impl Zeroconf {

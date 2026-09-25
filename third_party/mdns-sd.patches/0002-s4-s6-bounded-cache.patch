@@ -892,7 +892,7 @@ index ca79e3f..5e6076e 100644
          InterfaceId {
              name: "test".to_string(),
 diff --git a/src/service_daemon.rs b/src/service_daemon.rs
-index de2c530..53d5fdc 100644
+index 9785bb4..649a4fc 100644
 --- a/src/service_daemon.rs
 +++ b/src/service_daemon.rs
 @@ -32,7 +32,7 @@

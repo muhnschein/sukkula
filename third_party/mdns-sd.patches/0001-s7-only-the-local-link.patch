@@ -26,12 +26,16 @@ replies are limited to 4 a second per address, for at most 64 addresses at
 once; at most 16 deferred responses wait. "Legacy" means a source port
 other than the daemon's own.
 
+Upstream's negative-answer tests send legacy queries from 127.0.0.1
+faster than that; their helper now starts each query with a fresh
+limiter, which local_link_tests covers on its own.
+
 Findings: Sukkula review 2026-09-25 kept[15] (S7 on the Quick Share mDNS
 responder).
 ---
  src/lib.rs            |   5 +-
- src/service_daemon.rs | 274 +++++++++++++++++++++++++++++++++++++++++-
- 2 files changed, 273 insertions(+), 6 deletions(-)
+ src/service_daemon.rs | 278 +++++++++++++++++++++++++++++++++++++++++-
+ 2 files changed, 277 insertions(+), 6 deletions(-)
 
 diff --git a/src/lib.rs b/src/lib.rs
 index fb98feb..b6e6baf 100644
@@ -50,7 +54,7 @@ index fb98feb..b6e6baf 100644
  pub use service_info::{
      AsIpAddrs, IntoTxtProperties, ResolvedService, ServiceInfo, TxtProperties, TxtProperty,
 diff --git a/src/service_daemon.rs b/src/service_daemon.rs
-index 5e50bcf..de2c530 100644
+index 5e50bcf..9785bb4 100644
 --- a/src/service_daemon.rs
 +++ b/src/service_daemon.rs
 @@ -133,6 +133,22 @@ const SHARED_RESPONSE_DELAY_MAX_MILLIS: u64 = 50;
@@ -351,7 +355,18 @@ index 5e50bcf..de2c530 100644
  fn notify_monitors(monitors: &mut Vec<Sender<DaemonEvent>>, event: DaemonEvent) {
      monitors.retain(|sender| {
          if let Err(e) = sender.try_send(event.clone()) {
-@@ -7282,3 +7465,86 @@ mod tests {
+@@ -7121,6 +7304,10 @@ mod tests {
+         };
+         let packets = out.to_data_on_wire(MAX_PKT_DEFAULT, true);
+         let incoming = DnsIncoming::new(packets[0].clone(), interface.clone()).unwrap();
++        // Sukkula: every query here is a legacy one from 127.0.0.1, more of
++        // them a second than UNICAST_REPLIES_PER_ADDR_PER_SEC lets through;
++        // the limiter is local_link_tests' subject, not these tests'.
++        daemon.unicast_replies = super::UnicastReplyLimiter::default();
+         daemon.handle_query(incoming, index, querier.local_addr().unwrap());
+         let mut data = [0; 4096];
+         match querier.recv_from(&mut data) {
+@@ -7282,3 +7469,86 @@ mod tests {
          );
      }
  }

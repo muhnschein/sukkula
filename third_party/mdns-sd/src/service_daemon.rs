@@ -7480,6 +7480,10 @@ mod tests {
         };
         let packets = out.to_data_on_wire(MAX_PKT_DEFAULT, true);
         let incoming = DnsIncoming::new(packets[0].clone(), interface.clone()).unwrap();
+        // Sukkula: every query here is a legacy one from 127.0.0.1, more of
+        // them a second than UNICAST_REPLIES_PER_ADDR_PER_SEC lets through;
+        // the limiter is local_link_tests' subject, not these tests'.
+        daemon.unicast_replies = super::UnicastReplyLimiter::default();
         daemon.handle_query(incoming, index, querier.local_addr().unwrap());
         let mut data = [0; 4096];
         match querier.recv_from(&mut data) {
