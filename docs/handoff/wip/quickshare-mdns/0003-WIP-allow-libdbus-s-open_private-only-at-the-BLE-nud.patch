@@ -1,7 +1,7 @@
 From a48e9f6341f42a9f54b53419cd2d3fc586b987c0 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Fri, 25 Sep 2026 09:31:04 +0000
-Subject: [PATCH 3/3] WIP: allow libdbus's open_private only at the BLE nudge's
+Subject: [PATCH 3/8] WIP: allow libdbus's open_private only at the BLE nudge's
  checked call site and in its test fixture (S8)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

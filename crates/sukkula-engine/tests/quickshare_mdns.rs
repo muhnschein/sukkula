@@ -160,10 +160,10 @@ async fn receiving_announces_the_phone_and_a_second_daemon_resolves_it() {
     rig.adapter.stop_receiving().await;
     tokio::time::timeout(WAIT, async {
         loop {
-            if let ServiceEvent::ServiceRemoved(_, name) = events.recv_async().await.unwrap() {
-                if name == fullname {
-                    return;
-                }
+            if let ServiceEvent::ServiceRemoved(_, name) = events.recv_async().await.unwrap()
+                && name == fullname
+            {
+                return;
             }
         }
     })

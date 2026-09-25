@@ -1,7 +1,7 @@
 From ff996f95ba1738a46d09f3645a73cc7d96c13ed1 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Fri, 25 Sep 2026 09:29:09 +0000
-Subject: [PATCH 2/3] WIP: mdns-sd as the published crate plus three patches;
+Subject: [PATCH 2/8] WIP: mdns-sd as the published crate plus three patches;
  vendor-check reads crate archives
 
 The vendored copy is now crates.io's mdns-sd 0.21.4 archive (sha256 as

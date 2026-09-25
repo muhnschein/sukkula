@@ -2,16 +2,18 @@
 # validator on it: the Harbour gate on the real package (spec §7).
 #
 # Not part of ci.yml: it pulls a multi-gigabyte SDK image and cross-builds
-# the whole engine, which is minutes of runner time nobody wants on every
-# push. It runs from the Actions tab, on a `v*` or `build-*` tag, and on
-# every pull request that touches what decides the package (the paths
-# below) -- because some Harbour rules only the built package can answer:
-# the Requires and Provides rpm generates from the binary, the libraries
-# and glibc versions the link ends up needing, whether main() survives the
-# strip. A dependency bump can change the first two without touching a line
-# of packaging, which is why Cargo.lock and every manifest are on the list.
-# UI-only changes (qml/, src/) are not: their Harbour questions are all
-# answerable from the sources, and ci.yml's `harbour` job asks them.
+# the whole engine, which is minutes of runner time nobody wants on a push
+# that cannot change the package. It runs from the Actions tab, on a `v*`
+# or `build-*` tag, and on every pull request that touches what the package
+# is built from (the paths below) -- because some Harbour rules only the
+# built package can answer: the Requires and Provides rpm generates from
+# the binary, the libraries and glibc versions the link ends up needing,
+# whether main() survives the strip, and the strings(1) the validator runs
+# over every file. A dependency bump can change the first two without
+# touching a line of packaging, which is why Cargo.lock and every manifest
+# are on the list; and a string in a Rust attribute or a C++ #define is
+# the binary's too, which is why the crates, the C++ shell and the QML are.
+# ci/harbour-check.sh's P.6 fails a tree whose list leaves one out.
 #
 # aarch64 and Sailfish OS 5.2 only (spec §2): the SDK image below carries
 # that one target, and nothing here has a second.
@@ -41,28 +43,38 @@ on:
     tags: ["v*", "build-*"]
   pull_request:
     paths:
+      # What the package is built from: the binary (the engine and the
+      # C++ shell), everything installed beside it, and the packaging.
+      - "crates/**"
+      - "third_party/**"
+      - "src/**"
+      - "qml/**"
+      - "icons/**"
+      - "translations/**"
       - "rpm/**"
       - "harbour-sukkula.pro"
       - "harbour-sukkula.desktop"
-      - "icons/**"
-      - "translations/**"
       - "Cargo.lock"
       - "**/Cargo.toml"
       - "**/build.rs"
       - "rust-toolchain.toml"
-      - "third_party/**"
+      # What builds and judges it.
       - ".github/workflows/rpm.yml"
       - "ci/build-sdk-image.sh"
+      - "ci/sdk-image.digests"
       - "ci/check-elf.sh"
       - "ci/harbour-validate-rpm.sh"
+      - "ci/harbour-waivers.sh"
       - "ci/harbour/**"
       - "scripts/build-rpm.sh"
       - "scripts/cross-build-rust.sh"
 
 # A pull request's new push supersedes its run in flight; tags and
-# dispatches are their own groups.
+# dispatches are their own groups. Keyed on the pull request's number, not
+# its branch: `head_ref` is a fork's bare branch name, so two forks' `main`
+# or `patch-1` would share a group and cancel each other's runs.
 concurrency:
-  group: rpm-${{ github.event_name }}-${{ github.head_ref || github.run_id }}
+  group: rpm-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 # Reading the tree is all the workflow as a whole needs; each job says what
@@ -76,10 +88,13 @@ jobs:
     timeout-minutes: 120
     permissions:
       contents: read
-      # The derived SDK image lives in this repository's registry, and a
-      # run that finds none there publishes the one it had to build -- never
-      # from a pull request (see "Get the SDK image").
-      packages: write
+      # To pull the derived SDK image from this repository's registry, and
+      # nothing more. This job runs a pull request's scripts and every
+      # crate's build script, so it holds no token that can publish: the
+      # image is published by sdk-image.yml alone, from main, and is pulled
+      # here only by the digest the reviewed tree pins ("Get the SDK
+      # image").
+      packages: read
     env:
       SFOS: "5.2.0.15"
       ARCH: aarch64
@@ -90,46 +105,45 @@ jobs:
       CARGO_INCREMENTAL: 0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The whole history, so that a `v*` tag can be proved to be on
+          # main (the stamp step below).
+          fetch-depth: 0
+          # Nothing after the checkout talks to the repository, and the
+          # build runs every crate's build script: no token is left behind
+          # in .git/config for one to find.
+          persist-credentials: false
 
-      # Named for its inputs: the image's tag carries a hash of
-      # ci/build-sdk-image.sh and the spec's BuildRequires, so a pull
-      # request that changes either derives an image of its own and cannot
-      # replace the one main builds with.
-      - name: Name the SDK image this tree wants
-        run: |
-          image=$(./scripts/build-rpm.sh image)
-          echo "IMAGE=$image" >> "$GITHUB_ENV"
-          echo "SDK image: $image"
-
-      - name: Sign in to the registry
+      # ci/build-sdk-image.sh says what this image is and why it is not
+      # upstream's; its name carries a hash of that script and the spec's
+      # BuildRequires (scripts/build-rpm.sh image). It is never pulled by
+      # that name. A tag is a pointer anyone who can write to the registry
+      # can move -- a branch's own workflow, a build script holding a
+      # token -- and this image compiles, links and packages what a
+      # release ships. So the image is pulled by the digest
+      # ci/sdk-image.digests pins for it, which docker checks as it pulls;
+      # with no digest pinned, or none this registry serves, it is derived
+      # here, from the upstream image ci/build-sdk-image.sh pins by digest.
+      # Nothing here publishes. docs/BUILDING.md, "The SDK image".
+      - name: Get the SDK image
         env:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ACTOR: ${{ github.actor }}
-        run: echo "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
-
-      # ci/build-sdk-image.sh says what this image is and why it is not
-      # upstream's. Deriving one takes about as long as the rest of this
-      # job, so it is done once and published; a run that finds none
-      # derives it rather than failing -- and publishes it, unless the run
-      # is a pull request's, whose image stays on its own runner.
-      - name: Get the SDK image
-        env:
-          EVENT: ${{ github.event_name }}
         run: |
-          if docker pull -q "$IMAGE"; then
-            echo "using $IMAGE"
-          else
-            echo "::notice::no $IMAGE published yet; deriving one, which makes this run slower"
+          image=$(./scripts/build-rpm.sh image)
+          echo "IMAGE=$image" >> "$GITHUB_ENV"
+          echo "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          pulled=0
+          ./scripts/build-rpm.sh pull "$image" && pulled=1
+          docker logout ghcr.io
+          if [ "$pulled" = 0 ]; then
+            echo "::notice::no pinned $image to pull; deriving it, which makes this run slower"
             # Room for the upstream image and the flattened one at once.
             sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
                         "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}"
-            ./ci/build-sdk-image.sh "$SFOS" "$ARCH" "$IMAGE"
-            if [ "$EVENT" != pull_request ]; then
-              docker push "$IMAGE" ||
-                echo "::warning::could not publish $IMAGE; the next run will derive it again"
-            fi
+            ./ci/build-sdk-image.sh "$SFOS" "$ARCH" "$image"
           fi
-          id=$(docker image inspect --format '{{.Id}}' "$IMAGE")
+          id=$(docker image inspect --format '{{.Id}}' "$image")
           echo "SDK_IMAGE_ID=${id#sha256:}" >> "$GITHUB_ENV"
 
       # Every build would otherwise produce harbour-sukkula-0.1.0-1: the
@@ -141,13 +155,28 @@ jobs:
       # Digits and periods only: Harbour rejects any other character in
       # Release (ci/harbour-check.sh reads the stamp below and checks it).
       # A test build is told apart by the short SHA in its artifact name.
+      #
+      # A release is cut from main, by either path: a dispatch has to run
+      # on main, and a `v*` tag has to name a commit main contains, so a
+      # tag pushed on an unreviewed branch commit is refused before
+      # anything is built or published. That guards against a mistake, not
+      # an attack: a tag runs the workflow file of the commit it names,
+      # which whoever pushed it controls; only a tag ruleset on `v*` stops
+      # that (docs/BUILDING.md, "Cutting a release").
       - name: Stamp the build so each one is its own package
         run: |
           short=$(git rev-parse --short HEAD)
           version=$(sed -n 's/^Version:[[:space:]]*//p' rpm/harbour-sukkula.spec)
           wanted=""
           case "$GITHUB_REF" in
-            refs/tags/v*) wanted=${GITHUB_REF#refs/tags/v} ;;
+            refs/tags/v*)
+              wanted=${GITHUB_REF#refs/tags/v}
+              main=refs/remotes/origin/main
+              git rev-parse -q --verify "$main" >/dev/null || {
+                echo "::error::$main was not fetched, so $GITHUB_REF cannot be proved to be on main"; exit 1; }
+              git merge-base --is-ancestor "$GITHUB_SHA" "$main" || {
+                echo "::error::$GITHUB_REF names $GITHUB_SHA, which main does not contain; a release is cut from main"; exit 1; }
+              ;;
           esac
           if [ -n "$RELEASE" ]; then
             [ "$GITHUB_REF" = "refs/heads/main" ] || {

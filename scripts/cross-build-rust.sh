@@ -243,8 +243,13 @@ done
 # -- the probe ----------------------------------------------------------------
 #
 # Linked the way harbour-sukkula.pro links the shell: PIE, RELRO, BIND_NOW,
-# as-needed, the archive and the libraries rustc named. A symbol the device
-# glibc lacks fails here, or shows up as a version above the ceiling.
+# as-needed, the archive and the libraries rustc named, and the export
+# flags -- the -rdynamic the SDK's sailfishapp feature adds, and
+# src/hardening.pri's dynamic list and --exclude-libs,ALL that hold the
+# exports to main() anyway. A symbol the device glibc lacks fails here, or
+# shows up as a version above the ceiling; a symbol of the engine's that
+# reaches .dynsym fails --only-main, on every pull request, against the
+# real archive rather than a stand-in.
 if [[ "$mode" = host && "$stub_dbus" = 1 ]]; then
     # The stand-in: every dbus_* symbol the archive needs, under libdbus-1's
     # soname and its LIBDBUS_1_3 version node, so the probe's version needs
@@ -278,12 +283,14 @@ probe="target/$TRIPLE/release/sukkula-link-probe"
 # shellcheck disable=SC2086 # word lists on purpose
 "$CC" $SYSFLAGS $HARDEN -fPIE -pie -I"$(dirname "$HEADER")" -o "$probe" "$BINDIR/probe.c" \
     $LINKDIRS -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack -Wl,--as-needed \
+    -rdynamic -Wl,--dynamic-list="$ROOT/src/dynamic.list" -Wl,--exclude-libs,ALL \
     "$LIB" $native || fail "the probe does not link against the engine"
 
 echo
 echo "== the probe, linked as the shell will be =="
 "$ROOT/ci/check-elf.sh" --readelf "$READELF" --glibc-ceiling "$CEILING" \
-    --libc-start-main 2.34 "$probe" || fail "the engine needs more than the phone provides; see above"
+    --libc-start-main 2.34 --main-export --only-main "$probe" ||
+    fail "the engine needs more than the phone provides, or leaks exports; see above"
 
 echo
 echo "cross-build-rust: ok -- $LIB"

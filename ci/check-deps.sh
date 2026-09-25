@@ -22,14 +22,23 @@
 #     security updates never reach. Visible in the lockfile as libdbus-sys
 #     depending on `cc`, which only that feature pulls;
 #   - an async runtime beside tokio and the smol pieces magic-wormhole
-#     brings.
+#     brings;
+#   - any crate but sukkula-engine using `dbus`, or any but `dbus` using
+#     libdbus-sys (S8: libdbus can start a process, and only the engine's
+#     connection code is held to clippy.toml's constructor bans).
 #
 # Refused unless ci/deps-allow.conf names them with a scope and a reason:
 #
 #   - Bluetooth stacks (bluer, btleplug): spec §2 reaches BlueZ over raw
 #     D-Bus from our own code;
-#   - process-spawning crates (S8), and tokio's `process` feature in the
-#     shipped graph.
+#   - process-spawning crates and URL- and file-openers (S8: no processes,
+#     no opening), and tokio's `process` feature in the shipped graph. A
+#     name list cannot be complete -- any crate can call
+#     std::process::Command itself, which is what the rqs_lib patches and
+#     the dependency review are for -- but it names every crate whose
+#     reason to exist is starting a process or opening something, so a
+#     dependency bump that pulls one in is a question with an answer
+#     written down, not a line nobody read in Cargo.lock.
 #
 # A `dev` entry is additionally proved absent from sukkula-ffi's aarch64
 # graph; an entry that matches nothing fails, like a stale waiver.
@@ -63,7 +72,15 @@ TLS='openssl openssl-sys openssl-src native-tls tokio-native-tls hyper-tls async
 DBUS='zbus zbus_macros zbus_names zvariant zvariant_derive rustbus'
 RUNTIMES='async-std async-global-executor glommio monoio actix-rt tokio-uring compio'
 BLUETOOTH='bluer btleplug bluez-async bluez-generated'
-SPAWN='async-process duct subprocess command-group process-wrap shared_child rusty-fork wait-timeout'
+# S8. Process runners and their wrappers, pseudo-terminals, fork/exec
+# bindings (nix's unistd and process modules), and the crates that open a
+# URL or a file in another program -- every one of them xdg-open, a
+# browser or a shell under the hood.
+SPAWN='async-process tokio-process duct duct_sh subprocess command-group command-fds
+       process-wrap process_control shared_child spawn-wait rusty-fork wait-timeout
+       xshell xshell-macros cmd_lib cmd_lib_macros execute run_script fork daemonize nix
+       portable-pty pty-process pty ptyprocess expectrl rexpect
+       open opener webbrowser that showfile xdg-utils'
 # Platform TLS and keychain bindings: locked for other targets, and never
 # to reach the aarch64 graph.
 FOREIGN='security-framework security-framework-sys schannel core-foundation'
@@ -117,13 +134,39 @@ if awk '
     bad "libdbus-sys is built 'vendored' (it depends on cc): a static libdbus instead of the system's (Q7)"
 fi
 
+# S8 through libdbus. libdbus starts a process for an `autolaunch:` address
+# (dbus-launch) or a `unixexec:` one (fork and exec), and falls back to
+# autolaunch: when it looks the session bus up itself. clippy.toml bans
+# every constructor of the dbus crate in our code and lifts the ban only
+# where the address has just been checked to be a plain unix: socket
+# (bluetooth::bus::Bus::connect, the Quick Share BLE nudge) -- but clippy
+# does not lint dependencies. So the engine is the one crate that may use
+# dbus, and dbus the one that may use libdbus-sys: a dependency that
+# opened a connection itself would be outside every check (finding "S8
+# gate does not cover libdbus"). `<crate>:<its only dependent>`.
+DBUS_USERS='dbus:sukkula-engine libdbus-sys:dbus'
+for pair in $DBUS_USERS; do
+    crate=${pair%%:*}
+    only=${pair#*:}
+    while IFS= read -r user; do
+        [[ -n "$user" && "$user" != "$only" ]] || continue
+        bad "'$user' depends on $crate: only $only may (S8: libdbus can autolaunch or unixexec, and clippy.toml's constructor bans do not reach dependencies)"
+    done < <(awk -v want="$crate" '
+        /^\[\[package\]\]/ { name = ""; deps = 0 }
+        /^name = "/ { name = $0; sub(/^name = "/, "", name); sub(/"$/, "", name) }
+        /^dependencies = \[/ { deps = 1; next }
+        deps && /^\]/ { deps = 0 }
+        deps && (index($0, "\"" want "\"") || index($0, "\"" want " ")) { print name }
+    ' "$lock" | sort -u)
+done
+
 for crate in $BLUETOOTH $SPAWN; do
     in_lock "$crate" || continue
     if [[ -n "${allow_scope[$crate]:-}" ]]; then
         allow_used[$crate]=1
         echo "check-deps: allowed $crate (${allow_scope[$crate]})"
     else
-        bad "'$crate' is in Cargo.lock and not in ci/deps-allow.conf: Bluetooth stacks and process-spawning crates need a reviewed reason (spec §2, S8)"
+        bad "'$crate' is in Cargo.lock and not in ci/deps-allow.conf: Bluetooth stacks, and crates that spawn processes or open URLs and files, need a reviewed reason (spec §2, S8)"
     fi
 done
 

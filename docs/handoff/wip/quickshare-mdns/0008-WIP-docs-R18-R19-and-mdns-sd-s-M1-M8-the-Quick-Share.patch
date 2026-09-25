@@ -1,0 +1,273 @@
+From 74fe724280c26ae5b32cfe96f1a1c938c6a8e1c3 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 25 Sep 2026 10:19:11 +0000
+Subject: [PATCH 8/8] WIP: docs: R18, R19 and mdns-sd's M1-M8; the Quick Share
+ and mDNS rows of SECURITY.md
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01ENZSCiAud5Vs29ugEacpyR
+---
+ crates/sukkula-engine/src/quickshare/mod.rs |   7 +-
+ docs/SECURITY.md                            |  23 +++-
+ docs/UPSTREAM-QUICKSHARE.md                 | 136 +++++++++++++++++++-
+ 3 files changed, 154 insertions(+), 12 deletions(-)
+
+diff --git a/crates/sukkula-engine/src/quickshare/mod.rs b/crates/sukkula-engine/src/quickshare/mod.rs
+index 54c9efd..6f75573 100644
+--- a/crates/sukkula-engine/src/quickshare/mod.rs
++++ b/crates/sukkula-engine/src/quickshare/mod.rs
+@@ -126,12 +126,13 @@ impl Default for Timeouts {
+ }
+ 
+ /// How the adapter reaches the network. Not a setting: the engine always
+-/// uses [`Options::default`]. Tests turn mDNS off and point the BLE nudge
+-/// at a private bus.
++/// uses [`Options::default`]. Tests turn mDNS off, or run it on loopback
++/// and a port of their own ([`adapter_with_mdns_port`]), and point the BLE
++/// nudge at a private bus.
+ #[doc(hidden)]
+ #[derive(Clone, Debug, PartialEq, Eq)]
+ pub struct Options {
+-    /// Announce and browse over mDNS. Off in tests: multicast is real
++    /// Announce and browse over mDNS. Off in most tests: multicast is real
+     /// network.
+     pub mdns: bool,
+     /// Where the TCP listener binds. IPv4, as Quick Share peers resolve us
+diff --git a/docs/SECURITY.md b/docs/SECURITY.md
+index 7a40086..46348f3 100644
+--- a/docs/SECURITY.md
++++ b/docs/SECURITY.md
+@@ -76,6 +76,12 @@ consent.**
+   mailbox connection that was minting hashcash when its transfer was
+   cancelled, or the engine stopped, finishes the mint (20 bits at most) on
+   its own thread before that thread ends; nothing waits for it.
++- **mDNS announcements are unauthenticated.** Any host on the link can
++  announce a Quick Share device under any name, or send a goodbye for
++  another device's announcement and take it off the Send page until it
++  next announces. Sukkula bounds what one source can take (four peers, a
++  fair share of a full list, a rate per source) but cannot tell a phone
++  from a claim to be one; the PIN both screens show is what does (F-QS3).
+ - **libdbus accepts messages up to 128 MiB.** Lowering it needs unsafe
+   FFI in the engine, which is forbidden. Replies from BlueZ and obexd are
+   walked in place and only small copies are kept.
+@@ -130,7 +136,10 @@ These are enforced in the code and checked in CI, not merely intended.
+ - **The LAN is private.** LocalSend and Quick Share drop a connection from
+   outside private, link-local and ULA ranges before the TLS handshake or
+   the first frame, and rate-limit discovery and offers per address, with
+-  a global limit on offers behind it.
++  a global limit on offers behind it. Quick Share's mDNS reads no packet
++  from outside the local link or the reach policy -- so it answers no
++  such querier, legacy unicast included -- and limits its unicast replies
++  per address.
+ - **LocalSend is HTTPS-only and pinned.** No plain-HTTP listener exists.
+   Sends are pinned, during the handshake, to the fingerprint the peer
+   announced. Uploads are accepted only from the address and certificate
+@@ -196,11 +205,12 @@ code or test it names.
+ | S1: a peer's name becomes one safe path component | `crates/sukkula-core/src/name.rs` tests; `tests/properties.rs` `sanitize_gives_one_safe_component`, `path_structure_never_survives`, `numbered_names_stay_safe`; `tests/hostile.rs` `names`; fuzz target `name_sanitize` (asserts the rule, against an independent oracle from the Unicode data) |
+ | S2: no control, bidi or invisible character reaches the screen; stacks and lengths capped | `text.rs` tests (full Cf and Default_Ignorable coverage, Unicode 16 mark table); `properties.rs` `display_keeps_its_promises`, `message_keeps_its_promises`; fuzz targets `text_display`, `text_message`; QML tests walking the item tree for `Text.PlainText`; `tests/qml/static_checks.py` |
+ | S3: only the inbox writes; staged, capped, verified, never clobbering or following links | `clippy.toml` bans (std, tokio and rustix; lifted only in `sukkula_core::{inbox,store,dirfd}`, per function); `inbox.rs` and `store.rs` tests (symlinked targets and staging, EXDEV copy fallback on tmpfs, a file system without hard links, cancel and kill mid-copy, spoiled writes, `leftover_temporaries_are_swept_and_nothing_else`); `sukkula-core/tests/chaos.rs`, after clove's `ci/chaos.sh`: the test binary re-run as a writer and SIGKILLed 30 times per part (settings and key writes, receives placed by link, receives placed by the copy fallback across mounts), every kill checked to be what ended it and required to land mid-work, and after each the next open leaves only whole files; `properties.rs` `the_inbox_writes_what_was_declared_or_nothing`; every adapter's hostile suite asserts nothing outside the download directory and no partial file |
+-| S4/S6: sizes and counts range-checked before allocation | `offer.rs` tests; `properties.rs` `validate_never_passes_a_bad_offer`, `negative_or_oversized_anywhere_is_refused`; fuzz target `offer_validate`; `localsend_hostile::impossible_sizes_and_counts_never_reach_the_user`, `oversized_json_is_refused_before_it_is_read`; `wormhole_hostile::negative_and_oversized_offers_never_reach_the_user`, `a_lying_record_length_is_refused_before_anything_is_allocated` |
++| S4/S6: sizes and counts range-checked before allocation | `offer.rs` tests; `properties.rs` `validate_never_passes_a_bad_offer`, `negative_or_oversized_anywhere_is_refused`; fuzz target `offer_validate`; `localsend_hostile::impossible_sizes_and_counts_never_reach_the_user`, `oversized_json_is_refused_before_it_is_read`; `wormhole_hostile::negative_and_oversized_offers_never_reach_the_user`, `a_lying_record_length_is_refused_before_anything_is_allocated`; Quick Share's mDNS: rqs_lib's `tests/mdns.rs` `a_flood_from_one_host_is_bounded_and_keeps_nobody_else_out` (1500 devices announced at the longest TTL there is, and records for names nobody browses, leave four services listed and a handful of records and timers in the daemon), mdns-sd's `bounded_cache_tests` and `a_received_ttl_is_capped` |
+ | S5: consent before any payload | `consent.rs` tests; `properties.rs` `consent_accounting_holds_under_any_schedule`; `localsend_hostile::uploads_without_consent_or_the_right_token_are_refused_unread`; `localsend_loopback::a_declined_offer_writes_nothing`; `wormhole::a_declined_offer_moves_no_data_and_leaves_no_file`; `ctx::tests::a_busy_engine_declines_without_asking` |
+ | S5 in the UI: only the user's Accept says yes, and nothing answers for them | `tests/qml/tst_consent.qml` (Decline, leaving, the countdown and an engine-closed offer all end in no, the last one unanswered); `tst_stack.qml` (a reply to a send or a code never pops or replaces a consent dialog, one dialog in the stack at a time and never a closed one left under the next, a closed offer never answered, no settings save and receiver restart under a dialog); `tst_engine.qml` (`Engine.answer` sends nothing for an offer that is not waiting); each guarded by a planted fault in `tests/qml/selftest.py` |
+-| Every read has a timeout; slow peers are cut off | `localsend_hostile::slow_handshakes_heads_and_bodies_are_cut_off`, `a_stalled_upload_times_out_and_is_cleaned_up`, `a_receiver_that_stops_reading_times_out`, `a_sender_that_stops_reading_is_cut_off` (32 connections held by peers that stop reading, cut off by the write deadline), `a_connection_kept_busy_is_retired`; `localsend::server::tests::a_write_that_makes_no_progress_fails`; `wormhole_hostile::a_slow_loris_record_times_out`, `a_sender_that_stalls_after_the_yes_times_out`; `bluetooth::a_stalled_transfer_times_out`, `bluez_that_never_answers_times_out` |
+-| S7: only private LAN peers, rate-limited | `reach.rs` tests; `properties.rs` `reach_agrees_with_the_ranges`, `the_limiter_is_bounded_and_exact_below_capacity`; `ctx::tests::offers_are_limited_per_peer_and_in_total`, `offers_the_user_asked_for_are_outside_the_global_limit`; `localsend_hostile::unpermitted_addresses_are_dropped_before_the_handshake`, `offers_are_rate_limited_per_address`, `one_address_cannot_fill_the_peer_list`; `localsend::discovery::tests::forged_announcements_cannot_hide_the_address_they_name`, `claims_naming_other_ports_cannot_use_up_localsends_own`, `a_forgery_answered_shows_the_device_it_named` (UDP announcements have a budget of their own and never spend the one TLS requests and Quick Share are held to); `localsend::peers::tests::one_address_cannot_fill_the_table`, `a_full_table_makes_room_from_the_address_holding_most`, `announced_leads_never_push_out_proven_ones` |
++| Every read has a timeout; slow peers are cut off | `localsend_hostile::slow_handshakes_heads_and_bodies_are_cut_off`, `a_stalled_upload_times_out_and_is_cleaned_up`, `a_receiver_that_stops_reading_times_out`, `a_sender_that_stops_reading_is_cut_off` (32 connections held by peers that stop reading, cut off by the write deadline), `a_connection_kept_busy_is_retired`; `localsend::server::tests::a_write_that_makes_no_progress_fails`; `quickshare::stalled_senders_are_given_up_on`, `a_sender_that_only_keeps_talking_is_given_up_on` (after the yes, keep-alives and empty chunks are not progress); `wormhole_hostile::a_slow_loris_record_times_out`, `a_sender_that_stalls_after_the_yes_times_out`; `bluetooth::a_stalled_transfer_times_out`, `bluez_that_never_answers_times_out` |
++| S7: only private LAN peers, rate-limited | `reach.rs` tests; `properties.rs` `reach_agrees_with_the_ranges`, `the_limiter_is_bounded_and_exact_below_capacity`; `ctx::tests::offers_are_limited_per_peer_and_in_total`, `offers_the_user_asked_for_are_outside_the_global_limit`; `localsend_hostile::unpermitted_addresses_are_dropped_before_the_handshake`, `offers_are_rate_limited_per_address`, `one_address_cannot_fill_the_peer_list`; `localsend::discovery::tests::forged_announcements_cannot_hide_the_address_they_name`, `claims_naming_other_ports_cannot_use_up_localsends_own`, `a_forgery_answered_shows_the_device_it_named` (UDP announcements have a budget of their own and never spend the one TLS requests and Quick Share are held to); `localsend::peers::tests::one_address_cannot_fill_the_table`, `a_full_table_makes_room_from_the_address_holding_most`, `announced_leads_never_push_out_proven_ones`; `quickshare::peers_are_bounded_and_reported` (four peers per source, a full table makes room from the source listing the most, an id stays its source's), `quickshare_mdns::a_host_announcing_without_end_keeps_no_phone_off_the_send_page` (announcements counted by the packets' source, on a budget of Quick Share's own); rqs_lib's `tests/mdns.rs` (`ci/rqs-lib-tests.sh`) `the_responder_answers_only_the_policy_and_not_without_limit`, and its cache's `make_room` tests; mdns-sd's `local_link_tests` (`third_party/mdns-sd.patches/test.sh`) |
++| F-QS1/F-QS4: a visible receiver is announced, and a refused announcement shows | `quickshare_mdns::receiving_announces_the_phone_and_a_second_daemon_resolves_it` (a real registration, on loopback and a port of the test's own, resolved by another mDNS daemon to the listener; `start_receiving` fails when mdns-sd refuses it); rqs_lib's `tests/mdns.rs` `the_announcement_registers_and_another_daemon_resolves_it` |
+ | F-LS2/F-LS3: HTTPS only, pinned | `localsend_hostile::plain_http_and_certificateless_clients_get_nothing`, `registrations_must_prove_their_fingerprint`, `the_fallback_sends_nothing_to_another_certificate`; `localsend_loopback::a_changed_certificate_is_refused_before_anything_is_sent`, `discovery_registers_with_peers_it_knows_without_multicast` (the F-LS1 register fallback) |
+ | S8: no processes, no opening, no Wi-Fi changes | `clippy.toml` `disallowed-methods`/`disallowed-types`; `ci/check-deps.sh` (and its selftest) over `Cargo.lock` and the shipped aarch64 graph; `tests/qml/static_checks.py` (no `openUrlExternally`, no `linkActivated`); Quick Share patches in `third_party/rqs_lib.patches/` |
+ | S9: key `0600`, never logged | `store.rs` `exposed_secrets_are_refused`, symlink refusal, and owner refusal run unprivileged in every `cargo test` (the test-only `dirfd::theirs` makes one inode another user's to the owner check, which then runs as in the app): `store.rs` `a_file_owned_by_someone_else_is_refused`, `a_store_directory_owned_by_someone_else_is_refused`, `dirfd.rs` and `inbox.rs` `a_directory_owned_by_someone_else_is_refused`; redacted `Debug` for the PIN, the key, and an offer's text and PIN (`offer.rs` `debug_hides_the_message_and_the_pin`) |
+@@ -211,7 +221,7 @@ code or test it names.
+ | The C boundary cannot be misused into memory unsafety | `crates/sukkula-ffi/tests/ffi.rs` (NULLs, stale handles, bad UTF-8, oversized commands, stop from the callback, hammering while stopping); `ci/ffi-harness/run.sh` under ASan, UBSan and LSan with no suppressions |
+ | Parsers survive hostile input | Deterministic mutation sweeps on every push: `sukkula-core/tests/hostile.rs`, `localsend_hostile::a_mutation_sweep_of_offers_breaks_nothing`, the wormhole `sweep` module, the Bluetooth reply sweeps; cargo-fuzz targets with seeds and dictionaries, 60 s each per pull request (`fuzz/README.md`), each asserting the S-rules on what it accepts rather than only survival: the core's `name_sanitize`, `text_display`, `text_message`, `offer_validate`, `settings_json`, `hex`, `command_json`, `start_config`, and every protocol parser that reads a peer's or a server's bytes, through the adapter's own code: `localsend_prepare_upload`, `localsend_discovery`, `wormhole_wire`, `wormhole_code`, `wormhole_mailbox`, `quickshare_handshake`, `quickshare_frame` (no payload byte before consent, S5), `quickshare_mdns` |
+ | Harbour, sandbox and linking | `ci/harbour-check.sh` (with a 106-case selftest) on every pull request; Jolla's `rpmvalidation.sh` on the built RPM (`ci/harbour-validate-rpm.sh`); `ci/check-elf.sh` (stripped, only `main` exported, RELRO/BIND_NOW/PIE, allowed libraries only) |
+-| Dependencies | `cargo deny` (licences, advisories, sources, bans including a vendored libdbus); `ci/check-deps.sh` (no OpenSSL, no second TLS or D-Bus stack, no process spawning); `ci/check-lockfile.sh`; `ci/vendor-check.sh` (the vendored Quick Share library is upstream plus its reviewed patches, byte for byte) |
++| Dependencies | `cargo deny` (licences, advisories, sources, bans including a vendored libdbus); `ci/check-deps.sh` (no OpenSSL, no second TLS or D-Bus stack, no process spawning); `ci/check-lockfile.sh`; `ci/vendor-check.sh` (the vendored Quick Share library and the mdns-sd under it are upstream -- open-quickshare at its commit, mdns-sd's published archive by its sha256 -- plus their reviewed patches, byte for byte) |
+ 
+ If you find a way to violate one of these, that is a vulnerability by
+ definition, even without a demonstrated exploit.
+@@ -247,7 +257,8 @@ Where it differs, and why:
+ - **Upstream code is patched or guarded, not trusted.** Where a protocol
+   library could not be made to hold a rule from outside -- LocalSend's
+   server (L1–L7), magic-wormhole's mailbox and transit handling (W1–W13),
+-  open-quickshare's file handling (Q1–Q7) -- Sukkula either drives the
++  open-quickshare's file handling (Q1–Q7) and the mDNS library under it
++  (M1–M8) -- Sukkula either drives the
+   underlying libraries itself, runs the library behind a size- and
+   shape-checking guard, or carries a reviewed patch, and says which in the
+   module docs.
+diff --git a/docs/UPSTREAM-QUICKSHARE.md b/docs/UPSTREAM-QUICKSHARE.md
+index bcaf888..b15ac10 100644
+--- a/docs/UPSTREAM-QUICKSHARE.md
++++ b/docs/UPSTREAM-QUICKSHARE.md
+@@ -9,19 +9,27 @@ upstream has an equivalent fix.
+   commit `5a31145163ee22ab9cf1c7d3dffd74355febe93f`
+   (`third_party/rqs_lib.UPSTREAM`). Every `file:line` below is at that
+   commit, relative to `core_lib/`.
+-- Sukkula's copy: `third_party/rqs_lib/` = upstream plus the 18 patches in
++- Sukkula's copy: `third_party/rqs_lib/` = upstream plus the 20 patches in
+   `third_party/rqs_lib.patches/`, applied in order;
+   `third_party/rqs_lib.patches/check.sh` (and `ci/vendor-check.sh` in CI)
+   prove it.
++- Under it, mdns-sd 0.21.4 as published on crates.io (the archive whose
++  sha256 Cargo.lock recorded) plus the 4 patches in
++  `third_party/mdns-sd.patches/`, vendored in `third_party/mdns-sd/`;
++  `ci/vendor-check.sh` proves that too, and
++  `third_party/mdns-sd.patches/test.sh` runs the crate's own unit tests,
++  upstream's and the patches'. Its findings are M1–M8, at the end.
+ - Q1–Q7 are the findings of Sukkula's spec (§5). R1–R17 were found while
+-  patching.
++  patching, R18–R19 in the review of 2026-09-25.
+ 
+-**Suggested handling.** Q3, Q4, R1, R2, R3, R4, R7 and R12 can be
++**Suggested handling.** Q3, Q4, R1, R2, R3, R4, R7, R12 and R19 can be
+ triggered by anyone on the same network as a receiver that is visible,
+ with no user interaction; Q1 needs one tap on "accept" for a name the
+ prompt shows, and Q6 a peer the user is exchanging files with. These
+ should go to the maintainer privately first (a GitHub security advisory
+ on the repository), with the rest as ordinary issues once fixes are out.
++The same goes for mdns-sd's M1, M3 and M4 (remote memory growth, and a
++reflector for spoofed queries), to its maintainer.
+ 
+ Several of Sukkula's patches do more than an upstream fix would need,
+ because Sukkula embeds the library in a different shape (0015 turns it
+@@ -51,6 +59,8 @@ could take in its own design, and the Sukkula patch that carries our fix.
+ | 0016-s7-mdns-to-the-lan | mDNS on accepted interfaces, bounded, no probing, stoppable | R12 |
+ | 0017-crate-metadata-and-licence | licence file and `license` field | -- |
+ | 0018-tests | hostile-frame unit tests, loopback test | -- |
++| 0019-f-qs1-announce-a-valid-host-name | a `.local.` host name; the service registered in `MDnsServer::new`, so a refusal reaches the caller | R18 |
++| 0020-s7-s4-vendored-mdns-sd | the patched mdns-sd; the reach policy as both daemons' source filter; the discovery cache fair per source | R19, M4 |
+ 
+ ---
+ 
+@@ -492,6 +502,126 @@ the hostname from `gethostname`/`uname`.
+ unmaintained get_if_addrs) and 0015 (sys_metrics gone with the global
+ device name).
+ 
++## R18. The announcement is refused, and nobody hears of it
++
++**Where.** `src/hdl/mdns.rs:98-105` (`build_service`) passes the bare
++instance name as the service's host name; `:58` (`run`) calls
++`register(...)?` before its loop.
++
++**Impact.** The fork of mdns-sd upstream depends on took any host name.
++mdns-sd since 0.11.0 refuses one that does not end in `.local.`
++(`service_daemon.rs:539-541`, `4712-4714`), so on any current mdns-sd
++`run` returns an error at once and nothing is announced: no phone ever
++lists the machine as a receiver. The error ends a spawned task; unless the
++caller awaits it, the receiver looks up and running.
++
++**Upstream fix.** `format!("{name}.local.")` as the host name; register
++where the error can be returned to whoever starts the server.
++
++**Sukkula.** Patch 0019. The engine reports the refusal as Quick Share
++failing to start (`receive.rs`); `tests/mdns.rs` registers for real and
++has a second daemon resolve it, and so does
++`crates/sukkula-engine/tests/quickshare_mdns.rs`.
++
++## R19. Discovery: first come, first served, by an address anyone names
++
++**Where.** `src/hdl/mdns_discovery.rs` (as patch 0016 bounded it): at 64
++services nobody new is remembered, and an announcement is known only by
++the address its A record names.
++
++**Impact.** One host on the link announcing 64 instance names, and
++re-announcing them, keeps every device that comes later off the list. An
++embedder counting or rate-limiting announcers by the named address lets
++one host spend another's budget by naming it.
++
++**Upstream fix.** Report where an announcement came from (mdns-sd M8 below)
++and cap services per source, a newcomer at a full cache replacing the
++oldest of the source holding the most.
++
++**Sukkula.** Patch 0020: at most 4 services per source, the rule above,
++replaced services reported gone, `EndpointInfo::source`. The engine keeps
++the same rule in its peer table and rate-limits by the source, on a budget
++of Quick Share's own (`quickshare/discovery.rs`).
++
++---
++
++## mdns-sd 0.21.4: defects found, and the patches Sukkula carries
++
++The same kind of draft, for <https://github.com/keepsimple1/mdns-sd>
++(`service_daemon.rs`, `dns_cache.rs`, `dns_parser.rs` of the 0.21.4
++release; line numbers are the release's). mdns-sd reads whatever reaches
++port 5353 on the interfaces it serves; everything below can be done by
++anyone on the link, with no user interaction, while the embedder browses
++or announces.
++
++| Patch | Concern | Findings |
++| --- | --- | --- |
++| 0001-s7-only-the-local-link | only on-link sources read; an embedder's source filter; responses only from the mDNS port; legacy-unicast replies limited per address; deferred responses capped; "legacy" meaning another port than the daemon's | M4, M5 |
++| 0002-s4-s6-bounded-cache | records judged one by one; caps per name, per host, per type, per source and in all; received TTLs capped; no timer per record; orphans forgotten and swept; resolve retries end with their instance; a read budget per wake-up | M1, M2, M3, M6, M7 |
++| 0003-announcing-source | `ResolvedService::source` | M8 |
++| 0004-a-workspace-of-its-own | an empty `[workspace]`, for the vendored copy | -- |
++
++**M1. The cache takes a response whole, and has no size limit.**
++`handle_response` (`3095-3190`) decides once per message whether it is
++"for us", and only a PTR answer for a type nobody browses makes it not, so
++a response of SRV, TXT and address records for made-up names goes into
++`DnsCache` entire (`dns_cache.rs:249-307`), which is bounded only by
++expiry. *Fix:* judge each record by what was asked (a browsed type's PTR,
++an SRV/TXT of such an instance, an address of such a host or of one being
++resolved), and cap records per name, per type and in all. Patch 0002
++(2 SRV/TXT/NSEC per name, 8 addresses per host, 64 instances per type,
++2048 records), and a new instance at a full type takes the place of the
++oldest of the source holding the most rather than being refused, as R19.
++
++**M2. The sender's TTL is kept.** A u32 TTL of up to 136 years makes a
++cached record permanent. *Fix:* cap received TTLs; patch 0002 uses 4500 s,
++RFC 6762 §10's figure.
++
++**M3. Two timers per record, per packet.** Every record added or
++refreshed pushes its expiry and refresh times onto the run loop's heap
++(`1820-1822`, `3187-3189`); a neighbour re-sending one set of records grows
++it by 16 bytes a record a packet. *Fix:* no timers for cached records --
++the loop sleeps until the earliest deadline among them
++(`DnsCache::next_deadline`) -- and a cap on the rest (4096; past it the
++loop wakes every second). Patch 0002.
++
++**M4. Any source is answered and believed.** `handle_read` (`2668-2765`)
++checks only that a packet arrived on a served interface. A query from any
++address is answered, a legacy-unicast one (source port not 5353) by a
++reply sent straight back to that address and port, which the kernel routes
++off the link if it must, and exempt from the once-per-second multicast
++limit (`3613-3645`, `4933`): a 50-byte query with a spoofed source gets a
++300-byte answer with the device's name and port, as often as it is sent.
++Responses from any port are believed. *Fix:* drop packets whose source is
++neither link-local nor on the receiving interface's subnet (RFC 6762 §5.5,
++§11), let the embedder add a source filter, ignore responses from another
++port than the daemon's (§6), limit legacy-unicast replies per address, cap
++deferred responses. Patch 0001 (4 replies a second per address, 64
++addresses, 16 deferred responses).
++
++**M5. "Legacy" compares with the constant 5353.** A daemon made with
++`new_with_port` takes its peers on that port for legacy queriers and
++answers them by unicast, which on a shared port may reach the wrong
++socket. *Fix:* compare with the daemon's own port. Patch 0001.
++
++**M6. Retries and resolutions outlive their instances.** A resolve's
++retries (`exec_command_resolve`) go on after the instance is gone, a query
++each; `resolved` keeps every instance name it ever saw; SRV, TXT and NSEC
++records of instances no PTR record points to, and addresses of hosts no
++SRV names, are never evicted. *Fix:* stop retries of instances not
++pending, forget a replaced instance's records at once, and sweep what
++nothing leads to (at least once a second, and whenever the cache is
++short of room). Patch 0002.
++
++**M7. A stream of packets starves the run loop.** Each socket is read
++until it is empty, so steady traffic keeps the loop from its commands,
++shutdown included. *Fix:* a read budget per wake-up (256). Patch 0002.
++
++**M8. The embedder cannot tell who announced a service.**
++`ResolvedService` carries the addresses the announcer wrote, which it
++chooses. *Fix:* report the source address of the packet that brought the
++instance's PTR record. Patch 0003.
++
+ ---
+ 
+ ## Not reported, not upstream's to fix
+-- 
+2.43.0
+

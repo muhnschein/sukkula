@@ -1,8 +1,9 @@
 # The gate (spec §7). A change merges only when every job here is green.
 #
-# `make check` runs the same commands, job for job, minus the two that need
-# the network rather than the tree: deny (the advisory database) and vendor
-# (the upstream fetch); the Makefile says which. The device RPM, and Jolla's
+# `make check` runs the same commands, job for job, minus the three that
+# need the network rather than the tree: deny (the advisory database),
+# vendor (the upstream fetch) and wormhole-interop (the Python client from
+# PyPI); the Makefile says which. The device RPM, and Jolla's
 # own validator on it, are rpm.yml's: they need the Sailfish SDK.
 name: ci
 
@@ -13,11 +14,13 @@ on:
   pull_request:
   workflow_dispatch:
 
-# A new push supersedes the run in flight. `github.ref`, not `run_id`:
-# `head_ref` is set only for pull_request, so on a push a `run_id` fallback
-# would give every run a group of its own and nothing would be cancelled.
+# A new push supersedes the run in flight. A pull request is keyed on its
+# number, never its branch: `head_ref` is a fork's bare branch name, so two
+# forks' `main` or `patch-1` shared a group and cancelled each other's
+# runs. A push or a dispatch is keyed on its ref, not `run_id`, or every
+# run would be a group of its own and nothing would be cancelled.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 # Nothing here writes: every job checks out, builds and reports through the
@@ -63,6 +66,11 @@ jobs:
       # the runner -- and clippy, which runs first, must not be the one to
       # rewrite it.
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # The bans in clippy.toml fire on what they were added for, in a
+      # crate of its own that breaks each one (and a ban lifted at its one
+      # call site, as Bus::connect lifts the D-Bus one, stays lifted).
+      # Offline, after the line above fetched the dependencies.
+      - run: ./ci/clippy-bans-selftest.sh
       - run: cargo test --workspace --locked
       # The vendored Quick Share library's own tests. third_party/ is not a
       # workspace member, so `cargo test --workspace` never runs them; the
@@ -149,6 +157,18 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Every target has its seeds and a dictionary libFuzzer can parse,
+      # before anything is built: a bad dictionary line makes libFuzzer
+      # exit before fuzzing, and a target with no seeds fuzzes nothing it
+      # exists for. The checker's own proof first. (scripts/fuzz-smoke.sh
+      # runs the check again, for `make`.)
+      - run: ./ci/check-dicts.sh --self-test
+      - run: ./ci/check-dicts.sh
+      # Each target's -max_len, its boundary inputs at and one past its cap,
+      # and the finding-or-broken-run verdict, proved offline: without the
+      # length, a 64 KiB cap could never be reached and its assertion never
+      # fail (fuzz/README.md, "Input length").
+      - run: ./scripts/fuzz-smoke.sh --self-test
       # libdbus-1-dev: the Quick Share targets build the engine's
       # quickshare feature, whose BLE nudge links the system libdbus-1.
       - run: ./ci/apt-install.sh libdbus-1-dev pkg-config
@@ -199,6 +219,46 @@ jobs:
         with:
           key: ffi-asan
       - run: ./ci/ffi-harness/run.sh
+
+  # Sukkula against the reference Magic Wormhole client, the Python one, in
+  # both directions (spec §7, the adapters layer: "Sukkula to the reference
+  # client on the same host"). Offline: the client is pointed at the
+  # tests' own mailbox and relay on loopback. The client and everything it
+  # pulls in are pinned by version and hash
+  # (ci/wormhole-interop-requirements.txt), on a pinned Python, so the test
+  # moves only when that file does. The LocalSend side of the layer runs
+  # in the `test` job; Quick Share has no reference-client test, a gap
+  # docs/BUILDING.md records.
+  wormhole-interop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: wormhole-interop
+      # Wheels only, every one checked against its hash: nothing from PyPI
+      # runs until it is exactly what was reviewed.
+      - name: The Python client, pinned
+        run: |
+          python -m venv "$RUNNER_TEMP/mw"
+          "$RUNNER_TEMP/mw/bin/pip" install --require-hashes --only-binary=:all: \
+            -r ci/wormhole-interop-requirements.txt
+          "$RUNNER_TEMP/mw/bin/wormhole" --version
+      # --include-ignored, and the count checked: the interop tests are
+      # #[ignore] for machines without the client, and a run that selected
+      # none of them would pass having proved nothing.
+      - name: Sukkula and the Python client, both ways
+        run: |
+          set -o pipefail
+          SUKKULA_PY_WORMHOLE="$RUNNER_TEMP/mw/bin/wormhole" \
+            cargo test -p sukkula-engine --no-default-features --features wormhole --locked \
+            --test wormhole_interop -- --include-ignored 2>&1 | tee "$RUNNER_TEMP/interop.log"
+          grep -qE '^test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored' "$RUNNER_TEMP/interop.log" || {
+            echo "::error::no interop test ran"; exit 1; }
 
   # The engine cross-compiled for aarch64 on every pull request: no x86-only
   # code, no host-only C dependency, the four entry points exported, and a

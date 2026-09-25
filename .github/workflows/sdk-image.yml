@@ -8,10 +8,20 @@
 # install -- and this publishes it to the repository's registry, under the
 # tag scripts/build-rpm.sh names for the current tree.
 #
-# Run it when the SDK version, ci/build-sdk-image.sh or the spec's
-# BuildRequires change -- or never: rpm.yml derives and publishes the image
-# itself when it finds none. This exists so that cost can be paid
-# deliberately rather than by whoever builds the next package.
+# Publishing is not enough for a build to use it: rpm.yml pulls the image
+# only by the digest ci/sdk-image.digests pins, never by its tag, and
+# derives its own when there is none. So run this when the SDK version,
+# ci/build-sdk-image.sh or the spec's BuildRequires change, and commit the
+# line the summary prints (docs/BUILDING.md, "The SDK image"). Or never:
+# every build then derives the image, which costs about as long as the
+# build itself.
+#
+# The one workflow holding `packages: write`, so it runs only from main:
+# the image it publishes is derived by main's reviewed scripts and nothing
+# else, and it is signed in to the registry only after the derivation is
+# done, for the push. A dispatch from another branch runs that branch's
+# copy of this file and could drop the check -- which is why rpm.yml
+# trusts the pinned digest and not whatever this last pushed.
 name: sdk-image
 
 on:
@@ -19,13 +29,16 @@ on:
 
 permissions:
   contents: read
-  # What this workflow is for.
-  packages: write
 
 jobs:
   image:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    permissions:
+      contents: read
+      # What this workflow is for.
+      packages: write
     env:
       # The Jolla Phone 2026's baseline, and the only version with a pinned
       # upstream digest in ci/build-sdk-image.sh.
@@ -33,6 +46,8 @@ jobs:
       ARCH: aarch64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # The upstream image unpacks to about 20 GB of layers, and the
       # flattened one is written beside it. A fresh runner has around 25 GB
@@ -44,12 +59,8 @@ jobs:
                       /usr/local/share/boost "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}"
           df -h / | tail -1
 
-      - name: Sign in to the registry
-        env:
-          TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ACTOR: ${{ github.actor }}
-        run: echo "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
-
+      # Before any credential is on the runner: the derivation runs the
+      # upstream SDK image privileged.
       - name: Derive the image
         run: |
           image=$(./scripts/build-rpm.sh image)
@@ -57,7 +68,24 @@ jobs:
           echo "IMAGE=$image" >> "$GITHUB_ENV"
 
       - name: Publish it
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
         run: |
+          echo "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
           docker push "$IMAGE"
-          echo "### \`$IMAGE\`" >> "$GITHUB_STEP_SUMMARY"
-          docker image inspect --format '- unpacked: {{.Size}} bytes' "$IMAGE" >> "$GITHUB_STEP_SUMMARY"
+          docker logout ghcr.io
+          repo=${IMAGE%:*}
+          digest=$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$IMAGE" |
+            sed -n "s|^$repo@\(sha256:[0-9a-f]\{64\}\)\$|\1|p" | head -1)
+          [ -n "$digest" ] || { echo "::error::the registry returned no digest for $IMAGE"; exit 1; }
+          {
+            echo "### \`$IMAGE\`"
+            docker image inspect --format '- unpacked: {{.Size}} bytes' "$IMAGE"
+            echo
+            echo "Pin it in \`ci/sdk-image.digests\` so builds use it:"
+            echo
+            echo '```'
+            echo "${IMAGE##*:}  $digest"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
