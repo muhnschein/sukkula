@@ -1,7 +1,7 @@
 From 5aac2ec0186b537068f09946b6555fe3f1ab3fef Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Fri, 25 Sep 2026 06:54:12 +0000
-Subject: [PATCH 3/3] WIP: hub tests for the switch and the wormhole receive
+Subject: [PATCH 3/5] WIP: hub tests for the switch and the wormhole receive
  budget
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

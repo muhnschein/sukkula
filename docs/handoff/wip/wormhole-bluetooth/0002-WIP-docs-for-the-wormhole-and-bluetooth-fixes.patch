@@ -1,7 +1,7 @@
 From 8084ab2929d198d4ea6e78e2140c2f1b11b42ae3 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Fri, 25 Sep 2026 06:53:19 +0000
-Subject: [PATCH 2/3] WIP: docs for the wormhole and bluetooth fixes
+Subject: [PATCH 2/4] WIP: docs for the wormhole and bluetooth fixes
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01ENZSCiAud5Vs29ugEacpyR

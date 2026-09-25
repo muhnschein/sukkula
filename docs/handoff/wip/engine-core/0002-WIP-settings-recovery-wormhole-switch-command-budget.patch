@@ -1,7 +1,7 @@
 From 57833896e5c4ead3b63782d30962a9c5d34d12a8 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Fri, 25 Sep 2026 06:50:43 +0000
-Subject: [PATCH 2/3] WIP: settings recovery, wormhole switch, command budgets,
+Subject: [PATCH 2/5] WIP: settings recovery, wormhole switch, command budgets,
  progress, requested offers
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

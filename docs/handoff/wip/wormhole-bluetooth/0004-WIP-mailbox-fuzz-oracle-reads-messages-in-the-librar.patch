@@ -1,0 +1,216 @@
+From 9fc8c251a7808add4407a9c68455821a25a4f52a Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 25 Sep 2026 09:12:02 +0000
+Subject: [PATCH 4/4] WIP: mailbox fuzz oracle reads messages in the library's
+ order
+
+The wormhole_mailbox target now restates how magic-wormhole 0.8.1 takes
+peer messages -- by arrival, skipping its own echoes and phases already
+taken -- and asserts the message in each place is safe there (kept[12]).
+A dictionary token for the side the harness binds as, and seeds for an
+honest exchange with echoes and for the W3 two-message attack.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01ENZSCiAud5Vs29ugEacpyR
+---
+ fuzz/dicts/wormhole_mailbox.dict      |  1 +
+ fuzz/fuzz_targets/wormhole_mailbox.rs | 94 +++++++++++++++++++++------
+ fuzz/seeds/wormhole_mailbox/09        | 11 ++++
+ fuzz/seeds/wormhole_mailbox/10        |  3 +
+ 4 files changed, 90 insertions(+), 19 deletions(-)
+ create mode 100644 fuzz/seeds/wormhole_mailbox/09
+ create mode 100644 fuzz/seeds/wormhole_mailbox/10
+
+diff --git a/fuzz/dicts/wormhole_mailbox.dict b/fuzz/dicts/wormhole_mailbox.dict
+index 01e49bb..4fd174f 100644
+--- a/fuzz/dicts/wormhole_mailbox.dict
++++ b/fuzz/dicts/wormhole_mailbox.dict
+@@ -15,6 +15,7 @@
+ "\"side\""
+ "\"phase\""
+ "\"body\""
++"\"5ec0ffee01\""
+ "\"id\""
+ "\"pake\""
+ "\"version\""
+diff --git a/fuzz/fuzz_targets/wormhole_mailbox.rs b/fuzz/fuzz_targets/wormhole_mailbox.rs
+index f592658..1915708 100644
+--- a/fuzz/fuzz_targets/wormhole_mailbox.rs
++++ b/fuzz/fuzz_targets/wormhole_mailbox.rs
+@@ -19,6 +19,12 @@
+ //!   (W2: `todo!()` otherwise) and a hex body; any but `pake` holds at
+ //!   least a nonce and a tag, 40 bytes (W3: `split_at(24)` otherwise), and
+ //!   a `pake` body at most 512 bytes;
++//! - read the way the library reads them -- by arrival, not by phase:
++//!   echoes of its own side (`fuzzing::LIBRARY_SIDE`) and phases it has
++//!   taken before are skipped, the first new peer message is the PAKE, the
++//!   second is decrypted as the version message, every later one must have
++//!   a numeric phase -- the message in each place is one the library
++//!   cannot panic on there (a short body second, or `pake` third, would);
+ //! - the connection's budget holds: at most 128 messages and 4 MiB, and
+ //!   once the guard refuses one the connection is closed, so nothing after
+ //!   it is read.
+@@ -27,12 +33,12 @@
+ // that is set; the S3 ban is for shipped code, and this is the harness.
+ #![allow(clippy::disallowed_methods)]
+ 
+-use std::collections::HashMap;
++use std::collections::{HashMap, HashSet};
+ 
+ use libfuzzer_sys::fuzz_target;
+ use serde::{Deserialize, Deserializer};
+ use sukkula_engine::wormhole::fuzzing::{
+-    self, HASHCASH_BITS, SERVER_BYTES, SERVER_MESSAGES, ServerBudget,
++    self, HASHCASH_BITS, LIBRARY_SIDE, SERVER_BYTES, SERVER_MESSAGES, ServerBudget,
+ };
+ 
+ // ---- magic-wormhole 0.8.1, core/server_messages.rs, as it deserialises ----
+@@ -114,7 +120,6 @@ struct HashcashPermission {
+ 
+ #[derive(Deserialize, Debug)]
+ struct EncryptedMessage {
+-    #[allow(dead_code)]
+     side: String,
+     phase: String,
+     #[serde(deserialize_with = "hex_body")]
+@@ -147,7 +152,52 @@ fn hex_body<'de, D: Deserializer<'de>>(de: D) -> Result<Vec<u8>, D::Error> {
+ /// A nonce and a Poly1305 tag: the least a sealed body holds.
+ const MIN_SEALED_BYTES: usize = 24 + 16;
+ 
+-fn library_safe(text: &str) {
++/// magic-wormhole 0.8.1 reading peer messages (`core.rs` `connect` and
++/// `receive`, `core/rendezvous.rs` `MailboxMachine::receive_message`):
++/// what it has taken, by phase alone, whatever the side.
++#[derive(Default)]
++struct Library {
++    processed: HashSet<String>,
++    taken: usize,
++}
++
++impl Library {
++    /// The library's use of `msg`, asserting that it reaches none of its
++    /// panics where it reads it.
++    fn read(&mut self, msg: &EncryptedMessage) {
++        // An echo of ours, or a phase already taken: skipped unread.
++        if msg.side == LIBRARY_SIDE || !self.processed.insert(msg.phase.clone()) {
++            return;
++        }
++        let place = self.taken;
++        self.taken += 1;
++        let bytes = msg.body.len();
++        match place {
++            // The PAKE: parsed as JSON, then SPAKE2; errors only.
++            0 => assert!(bytes <= 512, "a {bytes}-byte body taken as the PAKE"),
++            // The version message: `decrypt`, so `split_at(24)` (W3).
++            1 => assert!(
++                bytes >= MIN_SEALED_BYTES,
++                "a {bytes}-byte body taken as the version message (W3)"
++            ),
++            // `receive`: `todo!()` on a phase that is not a number (W2),
++            // then `decrypt`.
++            _ => {
++                assert!(
++                    msg.phase.parse::<u64>().is_ok(),
++                    "phase {:?} reaches todo!() in receive (W2)",
++                    msg.phase
++                );
++                assert!(
++                    bytes >= MIN_SEALED_BYTES,
++                    "a {bytes}-byte body reaches split_at in receive (W3)"
++                );
++            }
++        }
++    }
++}
++
++fn library_safe(text: &str, library: &mut Library) {
+     let Ok(m) = serde_json::from_str::<InboundMessage>(text) else {
+         // The library refuses it too: an error, not a hang or a panic.
+         return;
+@@ -167,27 +217,33 @@ fn library_safe(text: &str) {
+                 );
+             }
+         }
+-        InboundMessage::Message(msg) => match msg.phase.as_str() {
+-            "pake" => assert!(msg.body.len() <= 512, "a {}-byte PAKE body", msg.body.len()),
+-            "version" => assert!(msg.body.len() >= MIN_SEALED_BYTES, "a short version body"),
+-            phase => {
+-                assert!(
+-                    phase.parse::<u64>().is_ok(),
+-                    "phase {phase:?} would reach todo!()"
+-                );
+-                assert!(
+-                    msg.body.len() >= MIN_SEALED_BYTES,
+-                    "a {}-byte body would reach split_at",
+-                    msg.body.len()
+-                );
++        InboundMessage::Message(msg) => {
++            match msg.phase.as_str() {
++                "pake" => assert!(msg.body.len() <= 512, "a {}-byte PAKE body", msg.body.len()),
++                "version" => {
++                    assert!(msg.body.len() >= MIN_SEALED_BYTES, "a short version body");
++                }
++                phase => {
++                    assert!(
++                        phase.parse::<u64>().is_ok(),
++                        "phase {phase:?} would reach todo!()"
++                    );
++                    assert!(
++                        msg.body.len() >= MIN_SEALED_BYTES,
++                        "a {}-byte body would reach split_at",
++                        msg.body.len()
++                    );
++                }
+             }
+-        },
++            library.read(&msg);
++        }
+         _ => {}
+     }
+ }
+ 
+ fuzz_target!(|data: &[u8]| {
+     let mut budget = ServerBudget::default();
++    let mut library = Library::default();
+     let mut passed = 0usize;
+     let mut bytes = 0usize;
+     for line in data.split(|b| *b == b'\n') {
+@@ -208,6 +264,6 @@ fuzz_target!(|data: &[u8]| {
+         assert!(bytes <= SERVER_BYTES, "{bytes} bytes on one connection");
+         let v: serde_json::Value = serde_json::from_str(text).expect("let through, so JSON");
+         assert!(v["type"].is_string(), "let through without a type");
+-        library_safe(text);
++        library_safe(text, &mut library);
+     }
+ });
+diff --git a/fuzz/seeds/wormhole_mailbox/09 b/fuzz/seeds/wormhole_mailbox/09
+new file mode 100644
+index 0000000..d7955be
+--- /dev/null
++++ b/fuzz/seeds/wormhole_mailbox/09
+@@ -0,0 +1,11 @@
++{"type":"welcome","welcome":{}}
++{"type":"ack","id":null}
++{"type":"claimed","mailbox":"m"}
++{"type":"message","side":"5ec0ffee01","phase":"pake","body":"7b2270616b655f7631223a22353335383636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636227d"}
++{"type":"message","side":"0123456789","phase":"pake","body":"7b2270616b655f7631223a22353335383636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636227d"}
++{"type":"message","side":"5ec0ffee01","phase":"version","body":"abababababababababababababababababababababababababababababababababababababababababababababababab"}
++{"type":"message","side":"0123456789","phase":"version","body":"abababababababababababababababababababababababababababababababababababababababababababababababab"}
++{"type":"message","side":"0123456789","phase":"0","body":"abababababababababababababababababababababababababababababababababababababababababababababababab"}
++{"type":"message","side":"5ec0ffee01","phase":"0","body":"abababababababababababababababababababababababababababababababababababababababababababababababab"}
++{"type":"message","side":"0123456789","phase":"pake","body":"7b2270616b655f7631223a22353335383636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636227d"}
++{"type":"message","side":"0123456789","phase":"1","body":"abababababababababababababababababababababababababababababababababababababababababababababababab"}
+\ No newline at end of file
+diff --git a/fuzz/seeds/wormhole_mailbox/10 b/fuzz/seeds/wormhole_mailbox/10
+new file mode 100644
+index 0000000..f5fccf9
+--- /dev/null
++++ b/fuzz/seeds/wormhole_mailbox/10
+@@ -0,0 +1,3 @@
++{"type":"welcome","welcome":{}}
++{"type":"message","side":"0123456789","phase":"version","body":"7b2270616b655f7631223a22353335383636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636227d"}
++{"type":"message","side":"0123456789","phase":"pake","body":"7b7d"}
+\ No newline at end of file
+-- 
+2.43.0
+
