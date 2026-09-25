@@ -519,7 +519,7 @@ async fn stops_reading(port: u16, source: Option<Ipv4Addr>) -> tokio::task::Join
         .unwrap();
     tokio::spawn(async move {
         // About 1 MiB of answers; far more than every buffer between.
-        let requests = b"GET /x HTTP/1.1\r\nHost: x\r\n\r\n".repeat(8000);
+        let requests = b"GET /x HTTP/1.1\r\nHost: x\r\n\r\n".repeat(40000);
         let _ = s.write_all(&requests).await;
         std::future::pending::<()>().await;
     })
@@ -531,7 +531,7 @@ async fn stops_reading(port: u16, source: Option<Ipv4Addr>) -> tokio::task::Join
 /// for as long as they liked, and every honest peer was turned away.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_sender_that_stops_reading_is_cut_off() {
-    let b = receiver();
+    let mut cfg = NodeConfig::new(1, "Bob"); cfg.idle = Duration::from_secs(3); cfg.handshake = Duration::from_secs(8); let b = Node::new(&cfg);
     let port = b.receive().await;
     let listening = b.ls.tasks_running();
     let mut held = Vec::new();
@@ -540,12 +540,13 @@ async fn a_sender_that_stops_reading_is_cut_off() {
             held.push(stops_reading(port, src(90 + a)).await);
         }
     }
+    let t0 = Instant::now(); eprintln!("up: {}", b.ls.tasks_running());
     assert!(b.ls.tasks_running() > listening, "the connections are up");
     // Every one ends once its answers stop moving.
     wait("the stalled connections to be cut off", || {
         (b.ls.tasks_running() <= listening).then_some(())
     })
-    .await;
+    .await; eprintln!("cut off after {:?}", t0.elapsed());
     an_honest_transfer_still_works(&b).await;
     for h in held {
         h.abort();
