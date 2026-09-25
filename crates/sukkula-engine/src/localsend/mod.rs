@@ -16,7 +16,7 @@
 //! | --- | --- | --- | --- |
 //! | L1 | `http::server` has no peer-address hook; `start_with_port` binds `0.0.0.0`/`[::]` and serves everyone | S7 cannot hold: any address is TLS-handshaked and parsed | `server` checks the address at accept, before the handshake |
 //! | L2 | `CollectToJson` collects `register`, `prepare-upload` and `v3/nonce` bodies with no size limit (`internal::show` too) | Memory exhaustion from any peer, before consent, before any event | at most 64 KiB, idle timeout and deadline, then parse |
-//! | L3 | No TLS handshake timeout, no connection limit; hyper-util's auto builder without a timer, so no header timeout | Slow-loris on handshake or head holds a task and a descriptor forever | handshake deadline, header timeout, 32 connections, 8 per address, connect rate per address |
+//! | L3 | No TLS handshake timeout, no connection limit; hyper-util's auto builder without a timer, so no header timeout | Slow-loris on handshake or head -- or a peer that stops reading its answers -- holds a task and a descriptor forever | handshake deadline, header timeout, write deadline, a lifetime for connections outside the session, a small send buffer, 32 connections, 8 per address, connect rate per address |
 //! | L4 | `http::client` reads response bodies whole (`json()`, `text()` in `into_error`) | A hostile receiver -- or any announcer, see L5 -- makes us buffer without limit | responses capped at 64 KiB |
 //! | L5 | `discovery` answers every announcement, from any address, unthrottled, over plain HTTP if announced | Plain-HTTP traffic (F-LS2), unbounded outgoing connections, S7 | `discovery::screen` first; answers pinned, 4 at a time |
 //! | L6 | PIN lockout after 3 failures per address, never lifted; no global bound | A LAN attacker has as many addresses as it likes | per address and in all, lifted after 5 minutes |
@@ -29,12 +29,12 @@
 //!
 //! # Lifecycle
 //!
-//! Receiving runs the HTTPS server; discovery runs announcements and the
-//! peer table; the multicast socket runs while either does. Every task is
-//! tracked, and every one selects on a token that the engine's shutdown
-//! cancels. Stopping receiving with a transfer running lets that transfer
-//! finish (the adapter contract) but serves only its sender; the listener
-//! closes when it ends.
+//! Receiving runs the HTTPS server; discovery runs announcements, the HTTP
+//! register fallback and the peer table; the multicast socket runs while
+//! either does. Every task is tracked, and every one selects on a token
+//! that the engine's shutdown cancels. Stopping receiving with a transfer
+//! running lets that transfer finish (the adapter contract) but serves
+//! only its sender; the listener closes when it ends.
 
 mod client;
 mod discovery;
@@ -60,9 +60,9 @@ use tokio::sync::{Mutex as AsyncMutex, OnceCell};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
-use self::discovery::{Announced, Multicast};
+use self::discovery::{Announced, Claims, Multicast};
 use self::identity::Identity;
-use self::peers::{Peers, Sighting};
+use self::peers::{Leads, Peers, Sighting};
 use self::server::Server;
 use crate::adapter::{Adapter, BoxFuture, Outgoing};
 use crate::api::{Direction, ErrorCode, ErrorInfo, Event, Peer, SendTarget, TransferId};
@@ -94,7 +94,14 @@ pub struct Options {
     /// Longest a sender waits for the receiving user to answer. Capped at
     /// [`OFFER_TIMEOUT`] plus [`NETWORK_IDLE_TIMEOUT`].
     pub prepare_timeout: Duration,
+    /// How often discovery announces itself and runs a round of the HTTP
+    /// register fallback. At least [`MIN_ANNOUNCE_INTERVAL`], so no peer is
+    /// asked more than once a second.
+    pub announce_interval: Duration,
 }
+
+/// The shortest [`Options`] `announce_interval`.
+pub const MIN_ANNOUNCE_INTERVAL: Duration = Duration::from_secs(1);
 
 impl Default for Options {
     fn default() -> Self {
@@ -105,6 +112,7 @@ impl Default for Options {
             idle_timeout: NETWORK_IDLE_TIMEOUT,
             handshake_timeout: HANDSHAKE_TIMEOUT,
             prepare_timeout: max_prepare_timeout(),
+            announce_interval: discovery::ANNOUNCE_INTERVAL,
         }
     }
 }
@@ -141,6 +149,10 @@ impl Options {
     fn prepare_timeout(&self) -> Duration {
         self.prepare_timeout.min(max_prepare_timeout())
     }
+
+    fn announce_interval(&self) -> Duration {
+        self.announce_interval.max(MIN_ANNOUNCE_INTERVAL)
+    }
 }
 
 /// The adapter, as the hub uses it.
@@ -176,6 +188,8 @@ pub fn adapter_with(ctx: Arc<Ctx>, opts: Options) -> Arc<LocalSend> {
             receiving: AtomicBool::new(false),
             discovering: AtomicBool::new(false),
             peers: Mutex::new(Peers::default()),
+            leads: Mutex::new(Leads::default()),
+            claims: Mutex::new(Claims::default()),
             outgoing: Mutex::new(HashMap::new()),
             multicast: Mutex::new(None),
         }),
@@ -209,6 +223,12 @@ pub(crate) struct Shared {
     /// The port we tell peers our server is on.
     port: AtomicU16,
     peers: Mutex<Peers>,
+    /// Servers the HTTP register fallback registers with. Kept across
+    /// discovery sessions, unlike `peers`.
+    leads: Mutex<Leads>,
+    /// The budget announcements are answered from, and what each server
+    /// showed (S7).
+    claims: Mutex<Claims>,
     /// Sends in flight, so a receiver's `POST /cancel` can reach them.
     outgoing: Mutex<HashMap<TransferId, OutgoingSend>>,
     /// The current multicast handle, for announcing.
@@ -296,15 +316,25 @@ impl Shared {
         }
     }
 
-    /// A peer proved its fingerprint; list it while discovering.
+    /// A peer proved its fingerprint: list it while discovering. When not
+    /// discovering, or when the table has no room for it, keep it as a lead
+    /// for the fallback, so the next discovery registers with it.
     fn saw_peer(&self, sighting: &Sighting<'_>) {
-        if !self.discovering() {
-            return;
+        let now = Instant::now();
+        if self.discovering() {
+            let upsert = lock(&self.peers).upsert(sighting, now);
+            if let Some(peer) = upsert.lost {
+                self.ctx.emit(Event::PeerLost { peer });
+            }
+            if let Some(peer) = upsert.found {
+                self.ctx.emit(Event::PeerFound { peer });
+            }
+            if upsert.listed {
+                lock(&self.leads).settle(sighting.addr, sighting.fingerprint);
+                return;
+            }
         }
-        let found = lock(&self.peers).upsert(sighting, Instant::now());
-        if let Some(peer) = found {
-            self.ctx.emit(Event::PeerFound { peer });
-        }
+        lock(&self.leads).add(sighting.addr, sighting.fingerprint, true, now);
     }
 
     fn expire_peers(&self) {
@@ -314,9 +344,18 @@ impl Shared {
         }
     }
 
+    /// Forgets every peer; each stays a lead, so the next discovery asks
+    /// them first (F-LS1's fallback).
     fn clear_peers(&self) {
         let lost = lock(&self.peers).clear();
-        for peer in lost {
+        let now = Instant::now();
+        {
+            let mut leads = lock(&self.leads);
+            for (_, target) in &lost {
+                leads.add(target.addr, &target.fingerprint, true, now);
+            }
+        }
+        for (peer, _) in lost {
             self.ctx.emit(Event::PeerLost { peer });
         }
     }
@@ -469,6 +508,7 @@ pub fn from_peer(
         };
         Peers::default()
             .upsert(&sighting, Instant::now())
+            .found
             .map(|peer| FromPeer::Peer { peer, port })
     };
     match kind {
@@ -591,6 +631,10 @@ impl LocalSend {
     /// address (LocalSend's "favourites"). The certificate is trusted on
     /// first use and pinned from then on. Returns the peer id.
     ///
+    /// No command reaches this; discovery finds peers by multicast and the
+    /// HTTP register fallback. It is kept for the tests that set up a peer
+    /// by address, as a favourite would be.
+    ///
     /// # Errors
     ///
     /// Not discovering, the address is not permitted (S7), or the device did
@@ -654,15 +698,14 @@ impl Adapter for LocalSend {
         Box::pin(async move {
             let identity = self.identity().await?;
             let mut state = self.state.lock().await;
-            match state.server.as_ref() {
-                Some(server) if !server.stopped() => server.resume(),
-                _ => {
-                    if let Some(old) = state.server.take() {
-                        old.wait().await;
-                    }
-                    state.server =
-                        Some(Server::start(self.shared.clone(), identity.clone()).await?);
+            // A draining server takes offers again, unless it stopped --
+            // decided in one step, since its last session can end at any
+            // moment (`Server::resume`).
+            if !state.server.as_ref().is_some_and(Server::resume) {
+                if let Some(old) = state.server.take() {
+                    old.wait().await;
                 }
+                state.server = Some(Server::start(self.shared.clone(), identity.clone()).await?);
             }
             self.shared.receiving.store(true, Ordering::Release);
             self.update_multicast(&mut state, &identity).await;
@@ -698,10 +741,11 @@ impl Adapter for LocalSend {
             self.update_multicast(&mut state, &identity).await;
             if state.discovery.is_none() {
                 let cancel = self.shared.ctx.shutdown_token().child_token();
-                let task = self
-                    .shared
-                    .tasks
-                    .spawn(discovery::run(self.shared.clone(), cancel.clone()));
+                let task = self.shared.tasks.spawn(discovery::run(
+                    self.shared.clone(),
+                    identity.clone(),
+                    cancel.clone(),
+                ));
                 state.discovery = Some((cancel, task));
             }
             Ok(())
@@ -798,17 +842,47 @@ pub(crate) mod tests {
         (dir, adapter.shared.clone())
     }
 
+    /// An adapter over a throwaway context that answers loopback, with the
+    /// pre-made identity `pair` and [`Options::hermetic`] with short
+    /// timeouts.
+    pub(crate) fn seeded_adapter(pair: usize) -> (tempfile::TempDir, Arc<LocalSend>) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("data")).unwrap();
+        identity::tests::seed(&store, pair, pair);
+        let inbox = Inbox::open(&dir.path().join("dl")).unwrap();
+        let consent = ConsentBroker::new(Arc::new(|_| {}));
+        let ctx = Arc::new(Ctx::new(
+            Settings::default(),
+            "Test".into(),
+            store,
+            inbox,
+            consent,
+            ReachPolicy {
+                allow_loopback: true,
+            },
+            Arc::new(|_| {}),
+        ));
+        let opts = Options {
+            idle_timeout: Duration::from_secs(5),
+            handshake_timeout: Duration::from_secs(5),
+            ..Options::hermetic()
+        };
+        (dir, adapter_with(ctx, opts))
+    }
+
     #[test]
     fn timeouts_never_exceed_the_spec() {
         let o = Options {
             idle_timeout: Duration::from_secs(3600),
             handshake_timeout: Duration::from_secs(3600),
             prepare_timeout: Duration::from_secs(3600),
+            announce_interval: Duration::ZERO,
             ..Options::default()
         };
         assert_eq!(o.idle_timeout(), NETWORK_IDLE_TIMEOUT);
         assert_eq!(o.handshake_timeout(), HANDSHAKE_TIMEOUT);
         assert_eq!(o.prepare_timeout(), max_prepare_timeout());
+        assert_eq!(o.announce_interval(), MIN_ANNOUNCE_INTERVAL);
     }
 
     #[test]
