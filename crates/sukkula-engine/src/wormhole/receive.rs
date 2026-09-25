@@ -27,7 +27,7 @@ use sukkula_core::offer::{Offer, OfferError};
 use tokio::time::Instant;
 
 use super::session::{
-    CatchUnwind, Panicked, Servers, Session, lib, panicked, protocol, wormhole_error,
+    CatchUnwind, Panicked, Servers, Session, lib, off_runtime, panicked, protocol, wormhole_error,
 };
 use super::transit::{self, Role};
 use super::wire::{self, OfferMsg, PeerMsg, TheirTransit};
@@ -96,7 +96,8 @@ async fn until_accepted(
     let guard = mailbox::open(&servers.mailbox, &t, inner.ctx.shutdown_token()).await?;
     let config = APP_CONFIG.rendezvous_url(guard.url.clone().into());
     // `false`: a nameplate nobody holds is a wrong code, not a new mailbox.
-    let mailbox = lib(
+    // Off the runtime: this is where the library mints hashcash (W1).
+    let mailbox = off_runtime(
         t.handshake,
         "connecting to the mailbox",
         MailboxConnection::connect(config, code, false),

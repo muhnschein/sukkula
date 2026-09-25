@@ -86,6 +86,15 @@ pub struct FakeMailbox {
     pub url: String,
     /// Connections accepted so far.
     pub connections: Arc<AtomicUsize>,
+    /// The `type` of every client message received, in order.
+    pub received: Arc<Mutex<Vec<String>>>,
+}
+
+impl FakeMailbox {
+    /// Whether a client has sent a message of type `ty`.
+    pub fn has_received(&self, ty: &str) -> bool {
+        self.received.lock().unwrap().iter().any(|t| t == ty)
+    }
 }
 
 #[derive(Default)]
@@ -124,6 +133,8 @@ pub async fn mailbox(behaviour: Behaviour) -> FakeMailbox {
         state.lock().unwrap().mailbox_for(n);
     }
     let counter = connections.clone();
+    let received: Arc<Mutex<Vec<String>>> = Arc::default();
+    let log = received.clone();
     tokio::spawn(async move {
         let mut conn_id = 0u64;
         loop {
@@ -137,12 +148,14 @@ pub async fn mailbox(behaviour: Behaviour) -> FakeMailbox {
                 state.clone(),
                 behaviour.clone(),
                 conn_id,
+                log.clone(),
             ));
         }
     });
     FakeMailbox {
         url: format!("ws://{addr}/v1"),
         connections,
+        received,
     }
 }
 
@@ -151,6 +164,7 @@ async fn serve_mailbox(
     state: Arc<Mutex<MailboxState>>,
     behaviour: Behaviour,
     conn: u64,
+    received: Arc<Mutex<Vec<String>>>,
 ) {
     let Ok(mut ws) = async_tungstenite::accept_async(stream.compat()).await else {
         return;
@@ -193,6 +207,7 @@ async fn serve_mailbox(
             break;
         }
         let ty = m["type"].as_str().unwrap_or("");
+        received.lock().unwrap().push(ty.to_owned());
         let mut replies: Vec<Value> = Vec::new();
         let mut raw_after: Vec<String> = Vec::new();
         {
