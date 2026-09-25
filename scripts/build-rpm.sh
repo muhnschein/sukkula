@@ -201,10 +201,13 @@ package() {
 # The package, judged: the binary rules first (they say *why* a link is
 # wrong), then Jolla's validator, which decides.
 check() {
-    local rpm=$1 dir=$2 unpack ceiling=""
+    local rpm=$1 dir=$2 unpack ceiling="" abs
     [[ -f "$rpm" ]] || fail "no such RPM: $rpm"
+    # Made absolute here, not in the subshell below: after its cd, a
+    # relative path such as rpm.yml's RPMS/... no longer names the file.
+    abs="$(cd "$(dirname "$rpm")" && pwd)/$(basename "$rpm")"
     unpack=$(mktemp -d)
-    (cd "$unpack" && rpm2cpio "$(cd "$(dirname "$rpm")" && pwd)/$(basename "$rpm")" | cpio -idm --quiet)
+    (cd "$unpack" && rpm2cpio "$abs" | cpio -idm --quiet)
     if [[ -f "$dir/sysroot/usr/include/features.h" ]]; then
         local major minor
         major=$(sed -n 's/^#define[[:space:]]\{1,\}__GLIBC__[[:space:]]\{1,\}\([0-9]\{1,\}\).*/\1/p' "$dir/sysroot/usr/include/features.h")
