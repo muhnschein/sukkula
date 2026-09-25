@@ -26,23 +26,25 @@ disallowed-methods = [
     # (finding "S8 gate does not cover libdbus"). The `nonblock`
     # connections have no constructor of their own (they are made from a
     # Channel), and dbus-tokio is not in the graph.
-    # ci/clippy-bans-selftest.sh proves each of these fires. Absent from
-    # builds without the bluetooth or quickshare feature.
-    { path = "dbus::blocking::Connection::new_session", reason = "S8: libdbus may autolaunch or unixexec; open a checked unix: address (Bus::connect)", allow-invalid = true },
-    { path = "dbus::blocking::Connection::new_system", reason = "S8: libdbus may unixexec; open a checked unix: address (Bus::connect)", allow-invalid = true },
-    { path = "dbus::blocking::Connection::new_address", reason = "S8: libdbus may autolaunch or unixexec; open a checked unix: address (Bus::connect)", allow-invalid = true },
-    { path = "dbus::blocking::LocalConnection::new_session", reason = "S8: libdbus may autolaunch or unixexec; open a checked unix: address (Bus::connect)", allow-invalid = true },
-    { path = "dbus::blocking::LocalConnection::new_system", reason = "S8: libdbus may unixexec; open a checked unix: address (Bus::connect)", allow-invalid = true },
-    { path = "dbus::blocking::LocalConnection::new_address", reason = "S8: libdbus may autolaunch or unixexec; open a checked unix: address (Bus::connect)", allow-invalid = true },
-    { path = "dbus::blocking::SyncConnection::new_session", reason = "S8: libdbus may autolaunch or unixexec; open a checked unix: address (Bus::connect)", allow-invalid = true },
-    { path = "dbus::blocking::SyncConnection::new_system", reason = "S8: libdbus may unixexec; open a checked unix: address (Bus::connect)", allow-invalid = true },
-    { path = "dbus::blocking::SyncConnection::new_address", reason = "S8: libdbus may autolaunch or unixexec; open a checked unix: address (Bus::connect)", allow-invalid = true },
-    { path = "dbus::channel::Channel::get_private", reason = "S8: libdbus may autolaunch or unixexec; open a checked unix: address (Bus::connect)", allow-invalid = true },
-    { path = "dbus::channel::Channel::open_private", reason = "S8: libdbus may autolaunch or unixexec; only Bus::connect opens, after check_address", allow-invalid = true },
-    { path = "dbus::ffidisp::Connection::new_session", reason = "S8: libdbus may autolaunch or unixexec; open a checked unix: address (Bus::connect)", allow-invalid = true },
-    { path = "dbus::ffidisp::Connection::new_system", reason = "S8: libdbus may unixexec; open a checked unix: address (Bus::connect)", allow-invalid = true },
-    { path = "dbus::ffidisp::Connection::get_private", reason = "S8: libdbus may autolaunch or unixexec; open a checked unix: address (Bus::connect)", allow-invalid = true },
-    { path = "dbus::ffidisp::Connection::open_private", reason = "S8: libdbus may autolaunch or unixexec; only Bus::connect opens, after check_address", allow-invalid = true },
+    # ci/clippy-bans-selftest.sh proves each of these fires. No
+    # `allow-invalid`: a crate that does not depend on dbus (a build
+    # without the bluetooth and quickshare features) skips these paths
+    # silently, and one that does is told if a path stops resolving.
+    { path = "dbus::blocking::Connection::new_session", reason = "S8: libdbus may autolaunch or unixexec; open a checked unix: address (Bus::connect)" },
+    { path = "dbus::blocking::Connection::new_system", reason = "S8: libdbus may unixexec; open a checked unix: address (Bus::connect)" },
+    { path = "dbus::blocking::Connection::new_address", reason = "S8: libdbus may autolaunch or unixexec; open a checked unix: address (Bus::connect)" },
+    { path = "dbus::blocking::LocalConnection::new_session", reason = "S8: libdbus may autolaunch or unixexec; open a checked unix: address (Bus::connect)" },
+    { path = "dbus::blocking::LocalConnection::new_system", reason = "S8: libdbus may unixexec; open a checked unix: address (Bus::connect)" },
+    { path = "dbus::blocking::LocalConnection::new_address", reason = "S8: libdbus may autolaunch or unixexec; open a checked unix: address (Bus::connect)" },
+    { path = "dbus::blocking::SyncConnection::new_session", reason = "S8: libdbus may autolaunch or unixexec; open a checked unix: address (Bus::connect)" },
+    { path = "dbus::blocking::SyncConnection::new_system", reason = "S8: libdbus may unixexec; open a checked unix: address (Bus::connect)" },
+    { path = "dbus::blocking::SyncConnection::new_address", reason = "S8: libdbus may autolaunch or unixexec; open a checked unix: address (Bus::connect)" },
+    { path = "dbus::channel::Channel::get_private", reason = "S8: libdbus may autolaunch or unixexec; open a checked unix: address (Bus::connect)" },
+    { path = "dbus::channel::Channel::open_private", reason = "S8: libdbus may autolaunch or unixexec; only Bus::connect opens, after check_address" },
+    { path = "dbus::ffidisp::Connection::new_session", reason = "S8: libdbus may autolaunch or unixexec; open a checked unix: address (Bus::connect)" },
+    { path = "dbus::ffidisp::Connection::new_system", reason = "S8: libdbus may unixexec; open a checked unix: address (Bus::connect)" },
+    { path = "dbus::ffidisp::Connection::get_private", reason = "S8: libdbus may autolaunch or unixexec; open a checked unix: address (Bus::connect)" },
+    { path = "dbus::ffidisp::Connection::open_private", reason = "S8: libdbus may autolaunch or unixexec; only Bus::connect opens, after check_address" },
 
     # S3: only sukkula-core's inbox and store (and the dirfd module they
     # share) create, change or remove anything in the file system. Every
