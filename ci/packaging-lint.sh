@@ -211,6 +211,8 @@ fi
 
 # Every docs/<name>.md a comment, a script or a document points at has to
 # exist; a reference to a file that is not there sends a reader nowhere.
+# Not docs/handoff/: the agents' working notes, which cite the sibling
+# projects' own docs/ by the same relative names.
 ran=$((ran + 1))
 missing=$(grep -rhoE 'docs/[A-Za-z0-9_-]+\.md' "$root" \
         --include='*.rs' --include='*.qml' --include='*.js' --include='*.sh' \
@@ -218,7 +220,7 @@ missing=$(grep -rhoE 'docs/[A-Za-z0-9_-]+\.md' "$root" \
         --include='*.conf' --include='*.cpp' --include='*.h' --include='*.pro' \
         --include='Makefile' --include='.gitignore' \
         --exclude-dir=.git --exclude-dir=target --exclude-dir=vendor \
-        --exclude-dir=third_party --exclude-dir=fixtures |
+        --exclude-dir=third_party --exclude-dir=fixtures --exclude-dir=handoff |
     sort -u | while read -r ref; do
         [ -f "$root/$ref" ] || echo "  $ref"
     done)
