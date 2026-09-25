@@ -93,7 +93,7 @@ nothing.
 | `cross` | `cross` | the aarch64 engine, with a probe linked against it (below) |
 | `qml` | `qml` | qmllint over `qml/` and `qml-stubs/`; the UI's QML tests, offscreen |
 | `cpp` | `cpp` | the Qt bridge's tests under ASan and UBSan, the shell booted offscreen, and the ELF and install-layout checks of `harbour-sukkula.pro`, against the stub engine and then the real one (`tests/run-cpp-tests.sh`) |
-| `packaging` | `packaging` | spec parses and builds out of tree, desktop entry, catalogs, shellcheck on every script, actionlint on every workflow |
+| `packaging` | `packaging` | spec parses and builds out of tree, desktop entry, catalogs, shellcheck on every script, actionlint on every workflow; `scripts/sonar-report.sh` against a stub server (`ci/sonar-report-selftest.sh`) |
 | `vendor` | `vendor` | `third_party/rqs_lib` is upstream plus its patches (with the checker's selftest) |
 | `wormhole-interop` | `wormhole-interop` | Sukkula against the Python magic-wormhole client, both ways (below, "Interop with the reference clients") |
 | `harbour` | `harbour` | the source-level Harbour gate, then its selftest (`docs/HARBOUR.md`) |
@@ -303,6 +303,40 @@ a release keeps the spec's `Release: 1`, has to match the spec's
 `v*` tag has to name a commit `main` contains: `git merge-base
 --is-ancestor`, on the job's full-history checkout), and is published by
 a job of its own after the package passed the validator.
+
+## Static analysis
+
+SonarQube Cloud reads the tree on every push to `main` and every pull
+request from this repository (`.github/workflows/build.yml`, configured by
+`sonar-project.properties`). It is a **report, not a gate**: `ci.yml`
+decides what is allowed in, and nothing Sonar says can turn a red build
+green or a green build red. That is why it is a workflow of its own.
+
+The scanner **imports** coverage; it does not measure it. `make
+sonar-reports` writes `target/sonar/lcov.info` with `cargo llvm-cov` over
+the workspace's tests, and the workflow runs it before the scan. It needs
+`cargo-llvm-cov`, so it is not part of `make check`:
+
+```sh
+rustup component add llvm-tools-preview
+cargo install --locked cargo-llvm-cov
+make sonar-reports
+```
+
+`sonar-project.properties` says what is analysed and why: test code apart
+from the application, upstream's `third_party/` and the generated
+`translations/` left out, Sonar's own Clippy pass off (the gate's is the
+one that counts), and `src/` and `qml/` out of the coverage arithmetic,
+since nothing measures them. C and C++ are analysed without a build
+wrapper (SonarQube Cloud deduces the compiler options itself).
+
+The scanner uploads a report and exits; the server processes it
+afterwards, so the run that produced an analysis finishes knowing nothing
+about its result. `scripts/sonar-report.sh` asks the server from the
+runner that just fed it and prints the quality gate, the measures and the
+open issues into the job log and the step summary, where they can be read
+without a sonarcloud.io login. The step is `continue-on-error`: a Sonar
+outage costs a warning, not a build.
 
 ## Cutting a release
 

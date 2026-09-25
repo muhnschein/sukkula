@@ -1,10 +1,11 @@
 # Sends the tree to SonarQube Cloud, which reads it and reports back on the
 # pull request, and then prints what it made of it into the job log.
 #
-# This is a REPORT, not the gate. Spec §7 lists what a change must pass to
-# merge, and SonarQube is not on that list: its quality gate is advice. That
-# is why it has a workflow of its own -- folding it into the gate would make
-# a hosted service part of the rule.
+# ci.yml is the GATE (spec §7); this is a REPORT. It cannot fail a change
+# on its own findings, and the quality gate it publishes is advice, not
+# intake. That is why it has a workflow of its own: folding it into ci.yml
+# would make a hosted service part of the rule that a green `make check` is
+# a green CI (docs/BUILDING.md).
 #
 # Every action is pinned to a full commit SHA, the version it resolved to
 # named beside it. A tag can be moved by whoever controls the action, and
@@ -39,6 +40,7 @@ jobs:
   sonarqube:
     name: SonarQube
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     # A pull request from a fork gets no secrets, so SONAR_TOKEN would be
     # empty and the scan would fail with an authentication error that looks
     # like a broken setup. Skip it instead; the merge is analysed when it
@@ -53,13 +55,11 @@ jobs:
           # clone makes every line look as though it landed in this commit.
           fetch-depth: 0
 
-      # The bluetooth feature links the system libdbus-1 (spec §6), and
-      # libdbus-sys finds it through pkg-config. Without the headers the
-      # workspace does not build, so there is nothing to measure.
-      - name: Install libdbus-1
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libdbus-1-dev pkg-config
+      # The coverage run is ci.yml's `test` job instrumented, so it needs
+      # that job's packages: libdbus-1-dev, which the bluetooth feature links
+      # through pkg-config, and dbus, whose daemon the Bluetooth tests start
+      # with a fake BlueZ on it.
+      - run: ./ci/apt-install.sh dbus libdbus-1-dev pkg-config
 
       # The toolchain comes from rust-toolchain.toml rather than a second copy
       # of the pin here: `rustup toolchain install` with no argument installs
@@ -80,15 +80,8 @@ jobs:
 
       # The scanner imports coverage; it does not measure it. Without this
       # step there is no report to import and the reading is a confident
-      # 0.0%. third_party/ and vendor/ are upstream's code, not ours to cover.
-      #
-      # The same command runs on a laptop with cargo-llvm-cov installed.
-      - name: Coverage
-        run: |
-          mkdir -p target/sonar
-          cargo llvm-cov --workspace \
-            --ignore-filename-regex '(^|/)(third_party|vendor)/' \
-            --lcov --output-path target/sonar/lcov.info
+      # 0.0%. A target of the Makefile, so what runs here runs on a laptop.
+      - run: make sonar-reports
 
       # One version, in Cargo.toml. This keeps SonarQube from becoming a
       # second copy to forget at release time.
@@ -125,13 +118,3 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: ./scripts/sonar-report.sh
 
-  # scripts/sonar-report.sh talks to a service no test can reach, so it is
-  # proved against a stub server instead. It belongs with the gate's other
-  # script checks, and moves there once ci.yml exists.
-  report-script:
-    name: sonar-report.sh selftest
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: ./ci/sonar-report-selftest.sh

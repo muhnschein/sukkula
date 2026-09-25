@@ -34,7 +34,7 @@ export SUKKULA_NIGHTLY
 
 .PHONY: all check fmt fmt-check lint test rqs-lib-tests doc features deny deps \
         lockfile fuzz-lint fuzz-smoke ffi-asan cross qml cpp packaging vendor harbour \
-        wormhole-interop rpm sdk-image clean help
+        wormhole-interop sonar-reports rpm sdk-image clean help
 
 all: check
 
@@ -154,10 +154,12 @@ cpp:
 		echo "SUKKULA_ENGINE=rust SUKKULA_RUST_LIB=$$t/debug/libsukkula_ffi.a ./tests/run-cpp-tests.sh"; \
 		SUKKULA_ENGINE=rust SUKKULA_RUST_LIB="$$t/debug/libsukkula_ffi.a" ./tests/run-cpp-tests.sh
 
-## packaging: spec, desktop entry, catalogs, shellcheck, actionlint
+## packaging: spec, desktop entry, catalogs, shellcheck, actionlint; then
+## the proofs for ci/apt-install.sh and scripts/sonar-report.sh
 packaging:
 	PACKAGING_LINT_STRICT=1 ./ci/packaging-lint.sh
 	./ci/apt-install-selftest.sh
+	./ci/sonar-report-selftest.sh
 
 ## vendor: third_party/rqs_lib is upstream plus its patches. Network.
 vendor:
@@ -177,6 +179,26 @@ wormhole-interop:
 		SUKKULA_PY_WORMHOLE="$$v/bin/wormhole" $(CARGO) test -p sukkula-engine \
 			--no-default-features --features wormhole --locked \
 			--test wormhole_interop -- --include-ignored
+
+## sonar-reports: the coverage report SonarQube Cloud imports
+## (.github/workflows/build.yml), written to target/sonar/lcov.info: the
+## workspace's tests under `cargo llvm-cov`, minus third_party/ and vendor/,
+## which are upstream's code and not ours to cover. The scanner only imports
+## coverage, so without this the reading is 0.0%. A report, not part of
+## `check`; it needs:
+##   rustup component add llvm-tools-preview
+##   cargo install --locked cargo-llvm-cov
+sonar-reports:
+	@command -v cargo-llvm-cov >/dev/null 2>&1 || { \
+		echo "cargo-llvm-cov is not installed:" >&2; \
+		echo "    rustup component add llvm-tools-preview" >&2; \
+		echo "    cargo install --locked cargo-llvm-cov" >&2; \
+		exit 1; }
+	@mkdir -p target/sonar
+	$(CARGO) llvm-cov --workspace --locked \
+		--ignore-filename-regex '(^|/)(third_party|vendor)/' \
+		--lcov --output-path target/sonar/lcov.info
+	@echo "== wrote target/sonar/lcov.info =="
 
 ## harbour: the source-level Harbour gate, then the proof that it bites
 harbour:

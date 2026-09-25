@@ -13,7 +13,7 @@
 # answer into the job log and the step summary. The numbers land beside the
 # commit that earned them.
 #
-# It reports and never gates: spec §7 decides what is allowed in, and nothing
+# It reports and never gates: ci.yml decides what is allowed in, and nothing
 # here can turn a red build green or a green build red. The workflow marks
 # the step continue-on-error, so a Sonar outage costs a warning, not a build.
 #
