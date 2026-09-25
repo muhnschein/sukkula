@@ -13,7 +13,7 @@ use tokio::io::AsyncReadExt;
 use tokio::time::Instant;
 
 use super::session::{
-    CatchUnwind, Panicked, Servers, Session, cancellable, lib, panicked, protocol,
+    CatchUnwind, Panicked, Servers, Session, cancellable, lib, off_runtime, panicked, protocol,
 };
 use super::transit::{self, Role};
 use super::wire::{self, Answer, PeerMsg};
@@ -84,9 +84,10 @@ async fn run(
     };
     let guard = mailbox::open(&servers.mailbox, &t, token).await?;
     let config = APP_CONFIG.rendezvous_url(guard.url.clone().into());
+    // Off the runtime: this is where the library mints hashcash (W1).
     let mailbox = cancellable(
         token,
-        lib(
+        off_runtime(
             t.handshake,
             "allocating a code",
             MailboxConnection::create(config, CODE_WORDS),

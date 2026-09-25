@@ -17,6 +17,20 @@
 //! else closes both sides; the library then fails with an I/O error and the
 //! session reports the guard's verdict instead.
 //!
+//! "Shaped" is judged the way the library reads, not message by message.
+//! magic-wormhole does not look at a peer message's phase during the key
+//! exchange: `Wormhole::connect` takes the first new peer message as the
+//! PAKE and the second as the version message (and decrypts it), and only
+//! then does `Wormhole::receive` look at phases -- `todo!()` on any that is
+//! not a number. "New" is the library's own rule: from a side other than
+//! its own, with a phase it has not taken before. So the guard learns the
+//! library's side from its `bind`, keeps the phases the library will have
+//! taken, in order, and lets a new peer message through only in the place
+//! the library will use it: first `pake`, then `version` with a sealed
+//! body, then numbers with sealed bodies. Echoes of our own messages and
+//! repeats of a phase already taken, which the library skips unread, still
+//! get the per-message checks.
+//!
 //! The guard also carries `wss://` (F-MW4) over rustls and tokio-rustls,
 //! the stack LocalSend already uses, so the library needs no TLS of its
 //! own.
@@ -62,8 +76,11 @@ pub(crate) const MAX_SERVER_MESSAGES: usize = 128;
 pub(crate) const MAX_SERVER_BYTES: usize = 4 * 1024 * 1024;
 
 /// Hardest hashcash a server may ask for. The library mints it in a
-/// synchronous loop; 20 bits is about a million SHA-1s, well under a
-/// second on the phone. No public server asks for any.
+/// synchronous loop that never yields: 20 bits is about a million SHA-1s
+/// on average over a stamp of up to ~310 bytes, seconds on the phone and
+/// more in the geometric tail. That is why the library's mailbox
+/// connection runs on a thread of its own (`session::off_runtime`), never
+/// on an engine worker. No public server asks for any.
 pub(crate) const MAX_HASHCASH_BITS: u64 = 20;
 
 /// Longest hashcash resource string accepted.
@@ -279,11 +296,13 @@ impl Guard {
     /// Forwards until either side closes. The library's messages go out
     /// as they are; the server's are checked first.
     async fn pump(&self, local: &mut Local, upstream: &mut Upstream) -> Result<(), ErrorInfo> {
-        let mut budget = Budget::default();
+        let mut seen = Conversation::default();
         loop {
             tokio::select! {
                 m = next(local) => match m {
                     Some(Ok(Message::Text(t))) => {
+                        // Before it goes out: its echo can come right back.
+                        seen.note_library_message(t.as_str());
                         send(upstream, Message::Text(t), self.tuning.idle).await?;
                     }
                     // The library never sends binary.
@@ -296,7 +315,7 @@ impl Guard {
                 },
                 m = next(upstream) => match m {
                     Some(Ok(Message::Text(t))) => {
-                        check_server_message(t.as_str(), &mut budget)?;
+                        check_server_message(t.as_str(), &mut seen)?;
                         send(local, Message::Text(t), self.tuning.idle).await?;
                     }
                     Some(Ok(Message::Binary(_))) => {
@@ -391,11 +410,43 @@ fn bad_server(message: &'static str) -> ErrorInfo {
     ErrorInfo::new(ErrorCode::Network, message)
 }
 
-/// What the server has sent so far over one connection.
+/// What the guard knows of one mailbox connection: how much the server has
+/// sent, the library's side, and the peer phases the library will have
+/// taken, in the order it takes them.
 #[derive(Debug, Default)]
-pub(crate) struct Budget {
+pub(crate) struct Conversation {
     messages: usize,
     bytes: usize,
+    /// The library's side, from its `bind`. The server echoes our own
+    /// messages back under it, and the library skips those unread.
+    ours: Option<String>,
+    /// The phases of the new peer messages let through, in order: what the
+    /// library's `processed` set will hold, and so how many it will have
+    /// taken. At most [`MAX_SERVER_MESSAGES`] entries of at most
+    /// [`MAX_PHASE_DIGITS`] bytes.
+    taken: Vec<String>,
+}
+
+impl Conversation {
+    /// Notes a message the library sends: its `bind` says which side is
+    /// ours. Anything else, and anything unreadable, goes out as it is.
+    pub(crate) fn note_library_message(&mut self, text: &str) {
+        if self.ours.is_some() {
+            return;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(text) else {
+            return;
+        };
+        if v.get("type").and_then(Value::as_str) != Some("bind") {
+            return;
+        }
+        if let Some(side) = v.get("side").and_then(Value::as_str)
+            && !side.is_empty()
+            && side.len() <= MAX_SIDE_BYTES
+        {
+            self.ours = Some(side.to_owned());
+        }
+    }
 }
 
 /// Checks one message from the server before the library sees it.
@@ -404,18 +455,18 @@ pub(crate) struct Budget {
 ///
 /// Over the budget, not a JSON object with a `type`, a `welcome` that asks
 /// for too much work, or a `message` whose phase or body the library would
-/// panic on.
-pub(crate) fn check_server_message(text: &str, budget: &mut Budget) -> Result<(), ErrorInfo> {
-    budget.messages = budget.messages.saturating_add(1);
-    budget.bytes = budget.bytes.saturating_add(text.len());
-    if budget.messages > MAX_SERVER_MESSAGES || budget.bytes > MAX_SERVER_BYTES {
+/// panic on where it will read it.
+pub(crate) fn check_server_message(text: &str, seen: &mut Conversation) -> Result<(), ErrorInfo> {
+    seen.messages = seen.messages.saturating_add(1);
+    seen.bytes = seen.bytes.saturating_add(text.len());
+    if seen.messages > MAX_SERVER_MESSAGES || seen.bytes > MAX_SERVER_BYTES {
         return Err(bad_server("the mailbox server sent too much"));
     }
     let v: Value = serde_json::from_str(text)
         .map_err(|_| bad_server("the mailbox server sent malformed JSON"))?;
     match v.get("type").and_then(Value::as_str) {
         Some("welcome") => check_welcome(&v),
-        Some("message") => check_peer_message(&v),
+        Some("message") => check_peer_message(&v, seen),
         Some(_) => Ok(()),
         None => Err(bad_server(
             "the mailbox server sent a message without a type",
@@ -450,10 +501,18 @@ fn check_welcome(v: &Value) -> Result<(), ErrorInfo> {
 }
 
 /// A peer message as the server relays it: `side`, `phase` and a hex
-/// `body`. The library would reach `todo!()` on a phase that is neither
-/// `pake`, `version` nor a `u64`, and slice out of bounds on an encrypted
-/// body shorter than a nonce.
-fn check_peer_message(v: &Value) -> Result<(), ErrorInfo> {
+/// `body`.
+///
+/// Each message on its own must have a phase that is `pake`, `version` or
+/// a `u64` and, but for `pake`, a body that holds a nonce and a tag. That
+/// is necessary, not enough: the library uses a new peer message by its
+/// place, not its phase (see the module docs), so a new one must also be
+/// the one the library expects next. Out of order, a `version` carrying a
+/// PAKE is taken as the PAKE and a short `pake` after it is decrypted as
+/// the version message, `split_at(24)` past its end (W3); and a `pake` or
+/// `version` phase the key exchange did not take reaches `todo!()` in
+/// `receive` (W2).
+fn check_peer_message(v: &Value, seen: &mut Conversation) -> Result<(), ErrorInfo> {
     let bad = || bad_server("the mailbox server relayed a malformed message");
     let side = v.get("side").and_then(Value::as_str).ok_or_else(bad)?;
     if side.is_empty() || side.len() > MAX_SIDE_BYTES {
@@ -475,7 +534,37 @@ fn check_peer_message(v: &Value) -> Result<(), ErrorInfo> {
                 && body.len() >= MIN_SEALED_BODY_HEX
         }
     };
-    if ok { Ok(()) } else { Err(bad()) }
+    if !ok {
+        return Err(bad());
+    }
+    // The library reads peer messages only once its mailbox is open, and
+    // it binds before it opens: a message before the bind is none it could
+    // take, and an echo could not be told from the peer.
+    let Some(ours) = seen.ours.as_deref() else {
+        return Err(bad_server(
+            "the mailbox server relayed a message before the mailbox was open",
+        ));
+    };
+    // Skipped unread by the library: an echo of ours, or a phase it has
+    // already taken (its dedup is by phase alone, whatever the side).
+    if side == ours || seen.taken.iter().any(|p| p == phase) {
+        return Ok(());
+    }
+    let in_place = match seen.taken.len() {
+        // `Wormhole::connect`: the PAKE, then the sealed version message.
+        0 => phase == "pake",
+        1 => phase == "version",
+        // `Wormhole::receive`: numbers only. `pake` and `version` were
+        // taken first, so here they would be repeats.
+        _ => phase != "pake" && phase != "version",
+    };
+    if !in_place {
+        return Err(bad_server(
+            "the mailbox server relayed a message out of order",
+        ));
+    }
+    seen.taken.push(phase.to_owned());
+    Ok(())
 }
 
 #[cfg(test)]
@@ -561,8 +650,19 @@ mod tests {
         assert!(client(&guard.url).await.is_err(), "the port is closed");
     }
 
+    /// A connection on which the library has bound as side "us".
+    fn bound() -> Conversation {
+        let mut c = Conversation::default();
+        c.note_library_message(r#"{"type":"bind","appid":"a","side":"us"}"#);
+        c
+    }
+
     fn check(s: &str) -> Result<(), ErrorInfo> {
-        check_server_message(s, &mut Budget::default())
+        check_server_message(s, &mut bound())
+    }
+
+    fn msg(side: &str, phase: &str, body: &str) -> String {
+        format!(r#"{{"type":"message","side":"{side}","phase":"{phase}","body":"{body}"}}"#)
     }
 
     #[test]
@@ -577,20 +677,84 @@ mod tests {
         );
         assert!(check(r#"{"type":"ack","id":null}"#).is_ok());
         assert!(check(r#"{"type":"nameplates","nameplates":[{"id":"7"}]}"#).is_ok());
+        // A whole exchange as the library sees it, echoes of ours between.
         let body = "ab".repeat(40);
-        assert!(
-            check(&format!(
-                r#"{{"type":"message","side":"0123456789","phase":"0","body":"{body}"}}"#
-            ))
-            .is_ok()
+        let mut c = bound();
+        for m in [
+            msg("us", "pake", "7b7d"),
+            msg("0123456789", "pake", "7b7d"),
+            msg("us", "version", &body),
+            msg("0123456789", "version", &body),
+            msg("us", "0", &body),
+            msg("0123456789", "0", &body),
+            msg("0123456789", "1", &body),
+        ] {
+            check_server_message(&m, &mut c).unwrap();
+        }
+    }
+
+    #[test]
+    fn peer_messages_pass_only_in_the_order_the_library_takes_them() {
+        let body = "ab".repeat(40);
+        let out_of_order = "the mailbox server relayed a message out of order";
+        // W3, as a server or anyone on the ws:// path can send it: a PAKE
+        // under "version" (long enough to pass as sealed), then a short
+        // "pake" the library would decrypt as the version message.
+        let pake = hex::encode(
+            br#"{"pake_v1":"535866666666666666666666666666666666666666666666666666666666666666"}"#,
         );
-        assert!(
-            check(&format!(
-                r#"{{"type":"message","side":"s","phase":"version","body":"{body}"}}"#
-            ))
-            .is_ok()
+        let mut c = bound();
+        let e = check_server_message(&msg("x", "version", &pake), &mut c).unwrap_err();
+        assert_eq!(e.message, out_of_order);
+        // W2, as a peer holding the code can send it: its PAKE under a
+        // number, or a "pake" the key exchange did not take.
+        for first in ["7", "0"] {
+            let e = check_server_message(&msg("x", first, &pake), &mut bound()).unwrap_err();
+            assert_eq!(e.message, out_of_order, "{first}");
+        }
+        let mut c = bound();
+        check_server_message(&msg("x", "pake", "7b7d"), &mut c).unwrap();
+        for second in ["7", "0"] {
+            let mut c2 = bound();
+            check_server_message(&msg("x", "pake", "7b7d"), &mut c2).unwrap();
+            let e = check_server_message(&msg("x", second, &body), &mut c2).unwrap_err();
+            assert_eq!(e.message, out_of_order, "{second}");
+        }
+        check_server_message(&msg("x", "version", &body), &mut c).unwrap();
+        // Repeats of a phase taken are skipped by the library, from any
+        // side; the per-message checks still hold for them.
+        check_server_message(&msg("y", "pake", "7b7d"), &mut c).unwrap();
+        check_server_message(&msg("x", "version", &body), &mut c).unwrap();
+        assert!(check_server_message(&msg("x", "version", "abcd"), &mut c).is_err());
+        check_server_message(&msg("x", "0", &body), &mut c).unwrap();
+        check_server_message(&msg("x", "0", &body), &mut c).unwrap();
+        check_server_message(&msg("x", "5", &body), &mut c).unwrap();
+        assert_eq!(c.taken, ["pake", "version", "0", "5"]);
+        // Echoes of ours are skipped and change nothing.
+        let mut c = bound();
+        check_server_message(&msg("us", "0", &body), &mut c).unwrap();
+        check_server_message(&msg("us", "version", &body), &mut c).unwrap();
+        assert!(c.taken.is_empty());
+        check_server_message(&msg("x", "pake", "7b7d"), &mut c).unwrap();
+        // Before the library has bound, nothing can be told apart.
+        let e = check_server_message(&msg("x", "pake", "7b7d"), &mut Conversation::default())
+            .unwrap_err();
+        assert_eq!(
+            e.message,
+            "the mailbox server relayed a message before the mailbox was open"
         );
-        assert!(check(r#"{"type":"message","side":"s","phase":"pake","body":"7b7d"}"#).is_ok());
+    }
+
+    #[test]
+    fn only_the_librarys_bind_names_our_side() {
+        let mut c = Conversation::default();
+        c.note_library_message(r#"{"type":"add","phase":"pake","side":"nope","body":""}"#);
+        c.note_library_message("not json");
+        c.note_library_message(r#"{"type":"bind","side":""}"#);
+        assert_eq!(c.ours, None);
+        c.note_library_message(r#"{"type":"bind","appid":"a","side":"0a1b2c3d4e"}"#);
+        c.note_library_message(r#"{"type":"bind","appid":"a","side":"other"}"#);
+        assert_eq!(c.ours.as_deref(), Some("0a1b2c3d4e"));
     }
 
     #[test]
@@ -633,12 +797,12 @@ mod tests {
 
     #[test]
     fn the_budget_is_per_connection() {
-        let mut b = Budget::default();
+        let mut b = Conversation::default();
         for _ in 0..MAX_SERVER_MESSAGES {
             check_server_message(r#"{"type":"ack"}"#, &mut b).unwrap();
         }
         assert!(check_server_message(r#"{"type":"ack"}"#, &mut b).is_err());
-        let mut b = Budget::default();
+        let mut b = Conversation::default();
         let pad = "a".repeat(MAX_WS_MESSAGE_BYTES.checked_sub(32).unwrap());
         let big = format!(r#"{{"type":"x","pad":"{pad}"}}"#);
         for _ in 0..4 {

@@ -29,10 +29,12 @@
 //! kept from ever being reached:
 //!
 //! - the library talks to the mailbox through a loopback WebSocket proxy
-//!   (`mailbox.rs`) that holds the server to size, count and shape limits;
+//!   (`mailbox.rs`) that holds the server to size, count and shape limits,
+//!   and peer messages to the order the library reads them in;
 //! - every transit connection goes through a loopback TCP guard
-//!   (`transit.rs`) that caps record lengths, and the library is told
-//!   relay-only, so it neither listens nor asks STUN;
+//!   (`transit.rs`) that caps record lengths and makes at most three
+//!   connection attempts per transfer to addresses the peer chose, and the
+//!   library is told relay-only, so it neither listens nor asks STUN;
 //! - every library future runs inside `session::CatchUnwind` and a
 //!   timeout, so a panic that is still reachable fails the transfer rather
 //!   than the task.
@@ -41,9 +43,9 @@
 //!
 //! | # | Where | What | Reachable from | Here |
 //! | --- | --- | --- | --- | --- |
-//! | W1 | `util::hashcash` | mints hashcash of any `bits` in a loop that never yields | mailbox server, anyone on the `ws://` path | guard refuses `bits` > 20 |
-//! | W2 | `Wormhole::receive` | `todo!()` on a non-numeric phase | server, peer | guard drops such phases |
-//! | W3 | `key::decrypt_data` | `split_at(24)` on a shorter body | server, peer | guard drops short bodies |
+//! | W1 | `util::hashcash` | mints hashcash of any `bits` in a loop that never yields | mailbox server, anyone on the `ws://` path | guard refuses `bits` > 20; the mailbox connection runs on a thread of its own (`session::off_runtime`), so a mint holds no engine worker, timeout or cancel |
+//! | W2 | `Wormhole::receive` | `todo!()` on a non-numeric phase -- including a `pake` or `version` the key exchange did not take, since `connect` takes the first two new peer messages whatever their phase | server, peer | guard lets a new peer message through only in the place the library reads it: `pake`, `version`, then numbers |
+//! | W3 | `key::decrypt_data` | `split_at(24)` on a shorter body -- including a short `pake` that arrives second and is decrypted as the version message | server, peer | guard drops short sealed bodies, and holds messages to that order |
 //! | W4 | `WsConnection::receive_message` | `expect` when the stream ends | server closing | contained (`session::CatchUnwind`) |
 //! | W5 | rendezvous | 64 MiB messages, unbounded queue and phase set | server | guard: 1 MiB, 128 messages, 4 MiB |
 //! | W6 | `read_transit_message` | `Vec::with_capacity(len)` from the unauthenticated length prefix (up to 4 GiB) | peer, relay, path | transit guard caps records |
@@ -70,6 +72,14 @@
 //! has no API to stop it, so it outlives `Engine::stop`. Host-name lookups
 //! by the library go through the `blocking` crate's pool, whose threads
 //! exit on their own once idle.
+//!
+//! The library's mailbox connection (`MailboxConnection::create` and
+//! `connect`) runs on a thread of its own, "sukkula-mailbox", because it
+//! mints the server's hashcash without yielding (W1). The engine waits for
+//! it on a channel, bounded by the handshake timeout and ended at once by a
+//! cancel or `Engine::stop`; the thread is then told to stop and does so at
+//! its next poll, which is after the mint if one is running (20 bits at
+//! most). At most `session::MAX_OFF_RUNTIME` such threads exist at once.
 //!
 //! # Sending (F-MW1)
 //!
