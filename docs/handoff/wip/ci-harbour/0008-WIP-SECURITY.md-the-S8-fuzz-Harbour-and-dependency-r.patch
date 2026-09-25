@@ -1,0 +1,67 @@
+From bf11c2ba8b4bd3350dacf7c7e50d0021c0147927 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 25 Sep 2026 09:46:00 +0000
+Subject: [PATCH 8/8] WIP: SECURITY.md: the S8, fuzz, Harbour and dependency
+ rows for the gate fixes
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01ENZSCiAud5Vs29ugEacpyR
+---
+ docs/SECURITY.md | 28 +++++++++++++++++-----------
+ 1 file changed, 17 insertions(+), 11 deletions(-)
+
+diff --git a/docs/SECURITY.md b/docs/SECURITY.md
+index eb7be1f..75c577a 100644
+--- a/docs/SECURITY.md
++++ b/docs/SECURITY.md
+@@ -151,13 +151,19 @@ These are enforced in the code and checked in CI, not merely intended.
+   Quick Share BLE nudge checks its system-bus address the same way); the
+   dbus crate's constructors that let libdbus choose the address are never
+   called.
+-- **No side effects.** No process is spawned (`clippy.toml` bans
+-  `std::process::Command` and `tokio::process::Command`;
+-  `ci/check-deps.sh` bans process-spawning crates in the shipped graph,
+-  with one recorded exception: tokio's `process` module, which the LocalSend
+-  core's `tokio/full` compiles in and nothing calls), no shell, no URL or file is opened (the UI
+-  has no `Qt.openUrlExternally` and no `linkActivated`), and no Wi-Fi
+-  setting is touched (Quick Share's Wi-Fi Direct and hotspot upgrade is
++- **No side effects.** No process is spawned. `clippy.toml` bans
++  `std::process::Command` and `tokio::process::Command`, and every
++  constructor of the `dbus` crate: libdbus is the one S8-relevant library
++  in the build, since it runs dbus-launch for an `autolaunch:` address
++  and forks and execs for a `unixexec:` one, so the ban is lifted only in
++  `bluetooth::bus::Bus::connect` and the Quick Share BLE nudge, right
++  after each checks that its address is a plain `unix:` socket.
++  `ci/check-deps.sh` bans process-spawning and URL- or file-opening crates
++  in the shipped graph, and lets no crate but the engine use `dbus`, with
++  one recorded exception: tokio's `process` module, which the LocalSend
++  core's `tokio/full` compiles in and nothing calls. There is no shell;
++  no URL or file is opened (the UI has no `Qt.openUrlExternally` and no
++  `linkActivated`); and no Wi-Fi setting is touched (Quick Share's Wi-Fi Direct and hotspot upgrade is
+   compiled out, credential payloads are refused).
+ - **Plain text only.** Every QML text item showing peer data sets
+   `textFormat: Text.PlainText`, and the QML tests walk the live item tree
+@@ -197,16 +203,16 @@ code or test it names.
+ | Every read has a timeout; slow peers are cut off | `localsend_hostile::slow_handshakes_heads_and_bodies_are_cut_off`, `a_stalled_upload_times_out_and_is_cleaned_up`, `a_receiver_that_stops_reading_times_out`; `wormhole_hostile::a_slow_loris_record_times_out`, `a_sender_that_stalls_after_the_yes_times_out`; `bluetooth::a_stalled_transfer_times_out`, `bluez_that_never_answers_times_out` |
+ | S7: only private LAN peers, rate-limited | `reach.rs` tests; `properties.rs` `reach_agrees_with_the_ranges`, `the_limiter_is_bounded_and_exact_below_capacity`; `ctx::tests::offers_are_limited_per_peer_and_in_total`, `offers_the_user_asked_for_are_outside_the_global_limit`; `localsend_hostile::unpermitted_addresses_are_dropped_before_the_handshake`, `offers_are_rate_limited_per_address` |
+ | F-LS2/F-LS3: HTTPS only, pinned | `localsend_hostile::plain_http_and_certificateless_clients_get_nothing`, `registrations_must_prove_their_fingerprint`; `localsend_loopback::a_changed_certificate_is_refused_before_anything_is_sent` |
+-| S8: no processes, no opening, no Wi-Fi changes | `clippy.toml` `disallowed-methods`/`disallowed-types`; `ci/check-deps.sh` (and its selftest) over `Cargo.lock` and the shipped aarch64 graph; `tests/qml/static_checks.py` (no `openUrlExternally`, no `linkActivated`); Quick Share patches in `third_party/rqs_lib.patches/` |
++| S8: no processes, no opening, no Wi-Fi changes | `clippy.toml` `disallowed-methods`/`disallowed-types`: process spawning, and all fifteen dbus-crate connection constructors, lifted only in `Bus::connect` and the BLE nudge behind their address checks (`bus.rs` `only_unix_addresses_are_accepted`, `quickshare/ble.rs` `only_unix_addresses_are_used`, `tests/bluetooth.rs` `missing_bluez_or_system_bus_is_unavailable`); `ci/clippy-bans-selftest.sh` (every ban fires on a call it exists for, by the path it names); `ci/check-deps.sh` (and its selftest) over `Cargo.lock` and the shipped aarch64 graph: process runners, pseudo-terminals, `nix`, URL and file openers, and any crate but the engine using `dbus` (libdbus can start a process); `tests/qml/static_checks.py` (no `openUrlExternally`, no `linkActivated`); Quick Share patches in `third_party/rqs_lib.patches/` |
+ | S9: key `0600`, never logged | `store.rs` `exposed_secrets_are_refused`, symlink refusal, and owner refusal run unprivileged in every `cargo test` (the test-only `dirfd::theirs` makes one inode another user's to the owner check, which then runs as in the app): `store.rs` `a_file_owned_by_someone_else_is_refused`, `a_store_directory_owned_by_someone_else_is_refused`, `dirfd.rs` and `inbox.rs` `a_directory_owned_by_someone_else_is_refused`; redacted `Debug` for the PIN, the key, and an offer's text and PIN (`offer.rs` `debug_hides_the_message_and_the_pin`) |
+ | S9: logging off by default, to stderr only, nothing private at info or above | `logging.rs` tests (the level table off and on, a runtime switch per engine, escaping and the line cap, the `log` bridge); `hub.rs` `every_engine_thread_logs_to_the_engine_log_and_the_setting_switches_it`, `a_bad_settings_file_is_logged_by_kind_never_by_content`; `tests/s9_logs.rs`: LocalSend (wrong and right PIN, a declined offer, a file, a text), Quick Share (a file, a text, a declined offer) and wormhole (a text, a file, against a mailbox server that writes into the log) transfers with distinctive values, every event of every crate captured and judged by the engine's own table, off and on, and two engines' real log lines read back |
+ | F-C1: a protocol switched off in the settings is used by nothing; a settings file that does not read is never more permissive than it was | `hub.rs` `a_protocol_switched_off_in_the_settings_is_used_by_no_command` (each of the four off in turn: receive, discovery, sends, a receive by code, the device list), `a_settings_file_that_does_not_read_fails_closed_and_the_ui_is_told`; `config.rs` `one_bad_part_costs_only_that_part`, `a_bad_section_is_switched_off_not_reset_to_its_defaults`, `an_unknown_key_switches_every_protocol_off`, `a_file_that_cannot_be_read_one_way_is_locked_down`, `damage_never_opens_anything_up` |
+ | The UI's interface is strict and bounded | `api.rs` `unknown_fields_and_versions_are_refused`, `variants_without_fields_refuse_fields` (every command and target, field-less ones included); `hub.rs` `a_flood_of_commands_is_refused_not_queued`, `the_queue_is_bounded_and_waits_for_room`, `every_command_has_its_time_limit`, `a_switch_that_waited_long_still_finishes_and_says_so` (a receive switch is never cut off half-way), `receive_wormhole_may_wait_for_the_user_as_long_as_the_offer_does`; `ctx::tests::empty_chunks_cost_nothing_and_each_value_is_reported_once` (a peer's empty chunks put nothing on the event path) |
+ | S10: `unsafe` only in `sukkula-ffi`; lints | `#![forbid(unsafe_code)]` in core and engine; workspace lints in `Cargo.toml` (`-D warnings`, no `unwrap`/`expect`/`panic`/indexing/unchecked arithmetic); overflow checks in release |
+ | The C boundary cannot be misused into memory unsafety | `crates/sukkula-ffi/tests/ffi.rs` (NULLs, stale handles, bad UTF-8, oversized commands, stop from the callback, hammering while stopping); `ci/ffi-harness/run.sh` under ASan, UBSan and LSan with no suppressions |
+-| Parsers survive hostile input | Deterministic mutation sweeps on every push: `sukkula-core/tests/hostile.rs`, `localsend_hostile::a_mutation_sweep_of_offers_breaks_nothing`, the wormhole `sweep` module, the Bluetooth reply sweeps; cargo-fuzz targets with seeds and dictionaries, 60 s each per pull request (`fuzz/README.md`), each asserting the S-rules on what it accepts rather than only survival: the core's `name_sanitize`, `text_display`, `text_message`, `offer_validate`, `settings_json`, `hex`, `command_json`, `start_config`, and every protocol parser that reads a peer's or a server's bytes, through the adapter's own code: `localsend_prepare_upload`, `localsend_discovery`, `wormhole_wire`, `wormhole_code`, `wormhole_mailbox`, `quickshare_handshake`, `quickshare_frame` (no payload byte before consent, S5), `quickshare_mdns` |
+-| Harbour, sandbox and linking | `ci/harbour-check.sh` (with a 106-case selftest) on every pull request; Jolla's `rpmvalidation.sh` on the built RPM (`ci/harbour-validate-rpm.sh`); `ci/check-elf.sh` (stripped, only `main` exported, RELRO/BIND_NOW/PIE, allowed libraries only) |
+-| Dependencies | `cargo deny` (licences, advisories, sources, bans including a vendored libdbus); `ci/check-deps.sh` (no OpenSSL, no second TLS or D-Bus stack, no process spawning); `ci/check-lockfile.sh`; `ci/vendor-check.sh` (the vendored Quick Share library is upstream plus its reviewed patches, byte for byte) |
++| Parsers survive hostile input | Deterministic mutation sweeps on every push: `sukkula-core/tests/hostile.rs`, `localsend_hostile::a_mutation_sweep_of_offers_breaks_nothing`, the wormhole `sweep` module, the Bluetooth reply sweeps; cargo-fuzz targets with seeds and dictionaries (`ci/check-dicts.sh`, with its self-test, fails a target without either and a dictionary libFuzzer cannot parse), 60 s each per pull request at each target's own `-max_len`, the 64 KiB-capped ones from inputs at the cap and one byte past it (`scripts/fuzz-smoke.sh`, with its self-test; `fuzz/README.md`), each asserting the S-rules on what it accepts rather than only survival: the core's `name_sanitize`, `text_display`, `text_message`, `offer_validate`, `settings_json`, `hex`, `command_json`, `start_config`, and every protocol parser that reads a peer's or a server's bytes, through the adapter's own code: `localsend_prepare_upload`, `localsend_discovery`, `wormhole_wire`, `wormhole_code`, `wormhole_mailbox`, `quickshare_handshake`, `quickshare_frame` (no payload byte before consent, S5), `quickshare_mdns` |
++| Harbour, sandbox and linking | `ci/harbour-check.sh` (with a 130-case selftest) on every pull request; Jolla's `rpmvalidation.sh` on the built RPM (`ci/harbour-validate-rpm.sh`), on every pull request that touches the crates, `src/`, `qml/` or the packaging (P.6); one waiver file with a namespace per check, every field matched (`ci/harbour-waivers.sh`); `ci/check-elf.sh` (stripped, only `main` exported (`--only-main`, on the packaged binary and on every pull request's probe link), RELRO/BIND_NOW/PIE, allowed libraries only; with its selftest); the SDK image pulled only by the digest `ci/sdk-image.digests` pins, and published only from `main` (`ci/packaging-lint.sh`) |
++| Dependencies | `cargo deny` (licences, advisories, sources, bans including a vendored libdbus); `ci/check-deps.sh` (no OpenSSL, no second TLS or D-Bus stack, no process-spawning or opening crate, `dbus` for the engine alone); `ci/check-lockfile.sh`; `ci/vendor-check.sh` (the vendored Quick Share library is upstream plus its reviewed patches, byte for byte) |
+ 
+ If you find a way to violate one of these, that is a vulnerability by
+ definition, even without a demonstrated exploit.
+-- 
+2.43.0
+

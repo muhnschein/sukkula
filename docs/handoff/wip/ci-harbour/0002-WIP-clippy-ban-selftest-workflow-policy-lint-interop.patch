@@ -1,7 +1,7 @@
 From 8c44013121e74fea1ab4a90f48459688d8ef8960 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Fri, 25 Sep 2026 06:54:20 +0000
-Subject: [PATCH 2/3] WIP: clippy ban selftest, workflow policy lint, interop
+Subject: [PATCH 2/8] WIP: clippy ban selftest, workflow policy lint, interop
  make target
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

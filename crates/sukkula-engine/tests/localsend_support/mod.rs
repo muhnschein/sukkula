@@ -47,7 +47,7 @@ use tokio_rustls::client::TlsStream;
 pub const DEADLINE: Duration = Duration::from_secs(20);
 
 /// Identities in the pool.
-const POOL: usize = 5;
+const POOL: usize = 6;
 
 /// Pre-made identities; index them per role so peers in one test differ.
 pub fn identity(i: usize) -> &'static SelfSignedCert {
@@ -74,6 +74,8 @@ pub struct NodeConfig {
     pub idle: Duration,
     pub handshake: Duration,
     pub prepare: Duration,
+    /// How often discovery announces and runs a fallback round.
+    pub rounds: Duration,
 }
 
 impl NodeConfig {
@@ -88,6 +90,9 @@ impl NodeConfig {
             idle: Duration::from_secs(5),
             handshake: Duration::from_secs(5),
             prepare: Duration::from_secs(15),
+            // The adapter's own: no fallback round but the first, at the
+            // start of discovery, within a test.
+            rounds: Options::default().announce_interval,
         }
     }
 }
@@ -152,6 +157,7 @@ impl Node {
                 idle_timeout: cfg.idle,
                 handshake_timeout: cfg.handshake,
                 prepare_timeout: cfg.prepare,
+                announce_interval: cfg.rounds,
             },
         );
         Node {

@@ -10,7 +10,7 @@
 //! and the process; a line is
 //!
 //! ```text
-//! sukkula: WARN sukkula_engine::hub: settings unreadable; using defaults why="malformed"
+//! sukkula: WARN sukkula_engine::hub: settings file not usable as saved; what could not be read is off parts=["wormhole"]
 //! ```
 //!
 //! Every character S2 would not show -- line breaks, other controls, bidi

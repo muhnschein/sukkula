@@ -644,6 +644,7 @@ mod tests {
         let s = Servers::from_settings(&WormholeSettings {
             mailbox_url: Some("wss://m.example/v1".into()),
             relay_url: Some("tcp://r.example:9".into()),
+            enabled: true, // CONTRACT: Settings.wormhole.enabled (F-C1)
         })
         .unwrap();
         assert!(s.custom_mailbox);
@@ -652,6 +653,7 @@ mod tests {
             Servers::from_settings(&WormholeSettings {
                 mailbox_url: Some("wss://m.example/v1#x".into()),
                 relay_url: None,
+                enabled: true, // CONTRACT: Settings.wormhole.enabled (F-C1)
             })
             .unwrap_err()
             .code,

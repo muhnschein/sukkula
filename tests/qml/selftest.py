@@ -48,7 +48,7 @@ MUTATIONS = [
      ["static"]),
     ("Accept that does not accept", "qml/pages/ConsentDialog.qml",
      """    onAccepted: dialog.answer(true)""",
-     """    onAccepted: dialog.finished()""",
+     """    onAccepted: {}""",
      ["tst_consent.qml"]),
     ("a countdown that never declines", "qml/pages/ConsentDialog.qml",
      """            if (dialog.remaining <= 0) {
@@ -59,8 +59,13 @@ MUTATIONS = [
             }""",
      ["tst_consent.qml"]),
     ("leaving the dialog without an answer", "qml/pages/ConsentDialog.qml",
-     """    Component.onDestruction: dialog.answer(false)""",
-     """    Component.onDestruction: {}""",
+     """    Component.onDestruction: {
+        dialog.answer(false)
+        dialog.gone()
+    }""",
+     """    Component.onDestruction: {
+        dialog.gone()
+    }""",
      ["tst_consent.qml"]),
     ("KeepAlive held all the time", "qml/harbour-sukkula.qml",
      """        enabled: sukkula.activeTransfers > 0""",
@@ -111,6 +116,64 @@ import QtQuick.Controls 2.0""",
      """qsTr("Built on")""",
      """qsTr("Built upon")""",
      ["static"]),
+    # The page stack's races (review kept[4], kept[5], kept[21], kept[22]).
+    ("Settings saved whenever a page covers them", "qml/pages/SettingsPage.qml",
+     """    Component.onDestruction: page.save()""",
+     """    onStatusChanged: {
+        if (page.status === PageStatus.Deactivating) {
+            page.save()
+        }
+    }""",
+     ["tst_settings.qml", "tst_stack.qml"]),
+    ("discovery stopped by any page that leaves", "qml/engine/Engine.qml",
+     """        if (engine.discoveryUsers > 0) {
+            return 0
+        }""",
+     """        if (false) {
+            return 0
+        }""",
+     ["tst_engine.qml", "tst_stack.qml"]),
+    ("a send's reply that pops whatever is on top", "qml/pages/SendPage.qml",
+     """        if (pageStack.currentPage !== page || page.status !== PageStatus.Active) {
+            return
+        }""",
+     """        if (false) {
+            return
+        }""",
+     ["tst_stack.qml"]),
+    ("a code's reply that pops whatever is on top", "qml/pages/WormholeReceivePage.qml",
+     """        if (pageStack.currentPage !== page || page.status !== PageStatus.Active) {
+            return
+        }""",
+     """        if (false) {
+            return
+        }""",
+     ["tst_stack.qml"]),
+    ("the next dialog let in while the last is still on the stack", "qml/pages/ConsentDialog.qml",
+     """            dialog.engine.answer(dialog.offerId, accept)
+        }
+    }""",
+     """            dialog.engine.answer(dialog.offerId, accept)
+        }
+        dialog.gone()
+    }""",
+     ["tst_stack.qml"]),
+    ("a closed offer answered", "qml/engine/Engine.qml",
+     """        if (engine.offer(offerId) === null) {
+            return 0
+        }""",
+     """        if (false) {
+            return 0
+        }""",
+     ["tst_engine.qml", "tst_stack.qml"]),
+    ("Magic Wormhole that cannot be switched off", "qml/engine/Engine.qml",
+     """            return !(s.wormhole && s.wormhole.enabled === false)""",
+     """            return true""",
+     ["tst_send.qml"]),
+    ("the Magic Wormhole switch never saved", "qml/pages/SettingsPage.qml",
+     """        s.wormhole.enabled = wormholeSwitch.checked""",
+     """        s.wormhole.enabled = true""",
+     ["tst_settings.qml"]),
 ]
 
 COPY = ["qml", "qml-stubs", "tests/qml", "translations", "harbour-sukkula.desktop", "src"]

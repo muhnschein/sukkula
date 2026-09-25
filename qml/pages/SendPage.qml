@@ -34,6 +34,10 @@ Page {
     property bool discovering: false
     property bool alive: true
     property bool listingDevices: false
+    /// Where to go once a send has started: {code: true, transfer} for the
+    /// wormhole code page, {code: false} for back to the transfers; null
+    /// while there is nowhere to go. See leave().
+    property var leaving: null
 
     /// The protocols offered: in this build and switched on in Settings.
     readonly property var available: page.availableProtocols(page.engine.protocols, page.engine.settings)
@@ -123,14 +127,47 @@ Page {
             self.sending = false
             if (!ok) {
                 banner.show(self.engine.errorText(error))
-            } else if (wormhole) {
-                pageStack.replace(Qt.resolvedUrl("WormholeCodePage.qml"),
-                                  { engine: self.engine, transferId: transfer })
-            } else {
-                // Progress is on the main page, with the other transfers.
-                pageStack.pop()
+                return
             }
+            // The code page for a wormhole; otherwise back to the main
+            // page, where the progress is, with the other transfers.
+            self.leaving = wormhole ? { code: true, transfer: transfer } : { code: false }
+            self.leave()
         })
+    }
+
+    /// Goes where `leaving` says -- from the top of the stack only. The
+    /// reply that asks for it can come while another page is over this
+    /// one: an offer's consent dialog comes up over whatever is showing
+    /// (F-C2), and a bare pop() or replace() then took the dialog instead,
+    /// declining that offer unanswered. So this page leaves only while it
+    /// is the current page and the stack is still, and otherwise once it
+    /// is on top again (onStatusChanged).
+    function leave() {
+        if (page.leaving === null || page.alive !== true) {
+            return
+        }
+        if (pageStack.currentPage !== page || page.status !== PageStatus.Active) {
+            return
+        }
+        if (pageStack.busy) {
+            leaveLater.restart()
+            return
+        }
+        var to = page.leaving
+        page.leaving = null
+        if (to.code) {
+            pageStack.replace(Qt.resolvedUrl("WormholeCodePage.qml"),
+                              { engine: page.engine, transferId: to.transfer })
+        } else {
+            pageStack.pop(pageStack.previousPage(page))
+        }
+    }
+
+    Timer {
+        id: leaveLater
+        interval: 100
+        onTriggered: page.leave()
     }
 
     function listDevices() {
@@ -163,10 +200,14 @@ Page {
 
     onStatusChanged: {
         // Discovery runs while the page exists, not only while it is on
-        // top: the file picker comes and goes above it.
+        // top: the file picker comes and goes above it. Engine.qml counts
+        // who asked, so a Send page replacing this one keeps it running.
         if (page.status === PageStatus.Active && !page.discovering && page.engine.running) {
             page.discovering = true
             page.engine.startDiscovery()
+        }
+        if (page.status === PageStatus.Active) {
+            page.leave()
         }
     }
 

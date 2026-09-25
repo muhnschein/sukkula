@@ -177,7 +177,14 @@ pub(crate) mod tests {
         })
     }
 
-    fn seed(store: &Store, cert_of: usize, key_of: usize) {
+    /// Pre-made pair `i` as an identity.
+    pub(crate) fn pair(i: usize) -> Identity {
+        let p = &test_pairs()[i];
+        Identity::from_pem(p.certificate_pem.as_bytes(), p.private_key_pem.as_bytes()).unwrap()
+    }
+
+    /// Writes pair `cert_of`'s certificate and pair `key_of`'s key.
+    pub(crate) fn seed(store: &Store, cert_of: usize, key_of: usize) {
         let pairs = test_pairs();
         store
             .write(CERT_FILE, pairs[cert_of].certificate_pem.as_bytes())

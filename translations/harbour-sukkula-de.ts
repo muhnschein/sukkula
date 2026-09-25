@@ -453,13 +453,8 @@ Opens the file picker.</extracomment>
     </message>
     <message>
         <source>Bluetooth nudge</source>
-        <extracomment>Settings: advertise over Bluetooth LE so Android phones look for this one (F-QS2).</extracomment>
+        <extracomment>Settings: while sending, a Bluetooth LE signal makes nearby Android phones announce themselves on the Wi-Fi (F-QS2).</extracomment>
         <translation>Bluetooth-Hinweis</translation>
-    </message>
-    <message>
-        <source>Announce over Bluetooth that this phone is receiving, so Android phones look for it.</source>
-        <extracomment>Settings: what the Bluetooth nudge does.</extracomment>
-        <translation>Per Bluetooth ankündigen, dass dieses Telefon empfängt, damit Android-Telefone danach suchen.</translation>
     </message>
     <message>
         <source>Mailbox server</source>
@@ -510,6 +505,21 @@ Opens the file picker.</extracomment>
         <source>Only for finding faults. Leave it off otherwise.</source>
         <extracomment>Settings: what debug logging does.</extracomment>
         <translation>Nur zur Fehlersuche. Sonst ausgeschaltet lassen.</translation>
+    </message>
+    <message>
+        <source>While the Send page looks for devices, a Bluetooth signal prompts Android phones nearby to show up.</source>
+        <extracomment>Settings: what the Bluetooth nudge does. It works only while the Send page looks for devices; it does not make this phone visible.</extracomment>
+        <translation>Während die Senden-Seite nach Geräten sucht, bringt ein Bluetooth-Signal Android-Telefone in der Nähe dazu, sich zu zeigen.</translation>
+    </message>
+    <message>
+        <source>Use Magic Wormhole</source>
+        <extracomment>Settings: switch a protocol on or off.</extracomment>
+        <translation>Magic Wormhole verwenden</translation>
+    </message>
+    <message>
+        <source>Send and receive with a code, through a server on the internet.</source>
+        <extracomment>Settings: what the Magic Wormhole switch covers (F-C1): sending to a code and receiving with one.</extracomment>
+        <translation>Mit einem Code senden und empfangen, über einen Server im Internet.</translation>
     </message>
 </context>
 <context>
