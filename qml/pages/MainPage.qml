@@ -78,9 +78,12 @@ Page {
                 }
             }
             MenuItem {
+                objectName: "receiveWithCode"
                 //: Pulley menu: receive over Magic Wormhole by typing the sender's code.
                 text: qsTr("Receive with a code")
-                enabled: page.engine.running && page.engine.hasProtocol("wormhole")
+                // Gone with Magic Wormhole switched off in Settings (F-C1).
+                visible: page.engine.protocolEnabled("wormhole")
+                enabled: page.engine.running
                 onClicked: pageStack.push(Qt.resolvedUrl("WormholeReceivePage.qml"),
                                           { engine: page.engine })
             }

@@ -453,13 +453,8 @@ Opens the file picker.</extracomment>
     </message>
     <message>
         <source>Bluetooth nudge</source>
-        <extracomment>Settings: advertise over Bluetooth LE so Android phones look for this one (F-QS2).</extracomment>
+        <extracomment>Settings: while sending, a Bluetooth LE signal makes nearby Android phones announce themselves on the Wi-Fi (F-QS2).</extracomment>
         <translation>Bluetooth-knuff</translation>
-    </message>
-    <message>
-        <source>Announce over Bluetooth that this phone is receiving, so Android phones look for it.</source>
-        <extracomment>Settings: what the Bluetooth nudge does.</extracomment>
-        <translation>Meddela via Bluetooth att telefonen tar emot, så att Android-telefoner letar efter den.</translation>
     </message>
     <message>
         <source>Mailbox server</source>
@@ -510,6 +505,21 @@ Opens the file picker.</extracomment>
         <source>Only for finding faults. Leave it off otherwise.</source>
         <extracomment>Settings: what debug logging does.</extracomment>
         <translation>Bara för felsökning. Låt den annars vara av.</translation>
+    </message>
+    <message>
+        <source>While the Send page looks for devices, a Bluetooth signal prompts Android phones nearby to show up.</source>
+        <extracomment>Settings: what the Bluetooth nudge does. It works only while the Send page looks for devices; it does not make this phone visible.</extracomment>
+        <translation>Medan Skicka-sidan letar efter enheter får en Bluetooth-signal Android-telefoner i närheten att visa sig.</translation>
+    </message>
+    <message>
+        <source>Use Magic Wormhole</source>
+        <extracomment>Settings: switch a protocol on or off.</extracomment>
+        <translation>Använd Magic Wormhole</translation>
+    </message>
+    <message>
+        <source>Send and receive with a code, through a server on the internet.</source>
+        <extracomment>Settings: what the Magic Wormhole switch covers (F-C1): sending to a code and receiving with one.</extracomment>
+        <translation>Skicka och ta emot med en kod, via en server på internet.</translation>
     </message>
 </context>
 <context>

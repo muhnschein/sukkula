@@ -6,8 +6,8 @@ import "../components"
 /*
  * Settings, saved when the page is left: the device name (F-C7), each
  * protocol on or off (F-C1), the LocalSend PIN (F-LS4), Quick Share
- * visibility and the BLE nudge (F-QS4, F-QS2), the wormhole servers
- * (F-MW4), and debug logging, off by default (S9).
+ * visibility and the BLE nudge (F-QS4, F-QS2), Magic Wormhole and its
+ * servers (F-MW4), and debug logging, off by default (S9).
  *
  * The fields are checked here the way sukkula-core checks them
  * (config.rs), so a bad value is caught while it can still be fixed; the
@@ -65,6 +65,7 @@ Page {
         quickShareSwitch.checked = qs.enabled !== false
         visibilityBox.currentIndex = qs.visibility === "hidden" ? 1 : 0
         nudgeSwitch.checked = qs.ble_nudge !== false
+        wormholeSwitch.checked = mw.enabled !== false
         mailboxField.text = typeof mw.mailbox_url === "string" ? mw.mailbox_url : ""
         relayField.text = typeof mw.relay_url === "string" ? mw.relay_url : ""
         bluetoothSwitch.checked = bt.enabled !== false
@@ -87,6 +88,7 @@ Page {
         s.quickshare.enabled = quickShareSwitch.checked
         s.quickshare.visibility = visibilityBox.currentIndex === 1 ? "hidden" : "everyone"
         s.quickshare.ble_nudge = nudgeSwitch.checked
+        s.wormhole.enabled = wormholeSwitch.checked
         var mailbox = page.trimmed(mailboxField.text)
         var relay = page.trimmed(relayField.text)
         s.wormhole.mailbox_url = mailbox.length > 0 ? mailbox : null
@@ -97,7 +99,7 @@ Page {
     }
 
     function save() {
-        if (!page.loaded || !page.valid || !page.engine.settingsKnown) {
+        if (!page.loaded || !page.valid || !page.engine || !page.engine.settingsKnown) {
             return
         }
         var next = page.collect()
@@ -111,11 +113,15 @@ Page {
 
     Component.onCompleted: page.load()
 
-    onStatusChanged: {
-        if (page.status === PageStatus.Deactivating) {
-            page.save()
-        }
-    }
+    // Saved when the page is left for good, and only then. Not on
+    // `Deactivating`, which fires just the same when a page is pushed over
+    // this one -- and the consent dialog comes up over whatever is showing
+    // (F-C2). A save then restarted the receivers (set_settings does,
+    // while receiving), which withdrew the very offer the dialog showed,
+    // and made a half-typed PIN or server live. Destruction is the honest
+    // signal for leaving: a popped page is destroyed, and so is one that a
+    // share replaces (harbour-sukkula.qml, navigate()).
+    Component.onDestruction: page.save()
 
     SilicaFlickable {
         anchors.fill: parent
@@ -254,16 +260,26 @@ Page {
             }
             TextSwitch {
                 id: nudgeSwitch
+                objectName: "nudgeSwitch"
                 visible: page.engine.hasProtocol("quick_share")
-                //: Settings: advertise over Bluetooth LE so Android phones look for this one (F-QS2).
+                //: Settings: while sending, a Bluetooth LE signal makes nearby Android phones announce themselves on the Wi-Fi (F-QS2).
                 text: qsTr("Bluetooth nudge")
-                //: Settings: what the Bluetooth nudge does.
-                description: qsTr("Announce over Bluetooth that this phone is receiving, so Android phones look for it.")
+                //: Settings: what the Bluetooth nudge does. It works only while the Send page looks for devices; it does not make this phone visible.
+                description: qsTr("While the Send page looks for devices, a Bluetooth signal prompts Android phones nearby to show up.")
             }
 
             SectionHeader {
                 text: "Magic Wormhole"
                 visible: page.engine.hasProtocol("wormhole")
+            }
+            TextSwitch {
+                id: wormholeSwitch
+                objectName: "wormholeSwitch"
+                visible: page.engine.hasProtocol("wormhole")
+                //: Settings: switch a protocol on or off.
+                text: qsTr("Use Magic Wormhole")
+                //: Settings: what the Magic Wormhole switch covers (F-C1): sending to a code and receiving with one.
+                description: qsTr("Send and receive with a code, through a server on the internet.")
             }
             TextField {
                 id: mailboxField

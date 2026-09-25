@@ -35,7 +35,10 @@ Dialog {
     /// The engine closed the offer (timed out, withdrawn): nothing to answer.
     property bool closedByEngine: false
 
-    signal finished()
+    /// The dialog has left the stack for good. The window shows the next
+    /// offer only then -- not when this one is answered, while it may
+    /// still be on the stack -- so a dialog is never pushed over another.
+    signal gone()
 
     function secondsLeft() {
         if (!dialog.offer) {
@@ -44,6 +47,8 @@ Dialog {
         return Math.max(0, Math.ceil((dialog.offer.expiresAt - Date.now()) / 1000))
     }
 
+    /// The one answer this dialog gives. The engine answers only an offer
+    /// that still waits (Engine.answer), so a closed one gets nothing.
     function answer(accept) {
         if (dialog.answered) {
             return
@@ -52,19 +57,25 @@ Dialog {
         if (!dialog.closedByEngine && dialog.offerId >= 0 && dialog.engine) {
             dialog.engine.answer(dialog.offerId, accept)
         }
-        dialog.finished()
     }
 
-    /// Closes the dialog from code, answering no if nobody has.
+    /// Closes the dialog from code, answering no if nobody has. Until it
+    /// is off the stack its Accept does nothing, rather than look as if it
+    /// could still say yes to an offer that is over. (Only here: the
+    /// user's own Accept must not change canAccept under Silica's feet.)
     function dismiss() {
         dialog.answer(false)
+        dialog.canAccept = false
         closer.start()
     }
 
     onAccepted: dialog.answer(true)
     onRejected: dialog.answer(false)
     // Popped some other way -- the stack cleared, the app closing: no.
-    Component.onDestruction: dialog.answer(false)
+    Component.onDestruction: {
+        dialog.answer(false)
+        dialog.gone()
+    }
 
     Connections {
         target: dialog.engine
@@ -93,7 +104,13 @@ Dialog {
         }
     }
 
-    // A dialog can only leave the stack once it has finished arriving.
+    // A dialog can only leave the stack once it has finished arriving, and
+    // only from the top: what Silica's reject() does to a covered dialog
+    // is not ours to rely on. So this keeps trying until the dialog is on
+    // top and the stack still, and never gives up -- giving up once left a
+    // closed dialog in the stack, a stale offer with a frozen countdown
+    // under the next one. The window pushes nothing over a dialog, so the
+    // wait is for a transition to end.
     Timer {
         id: closer
         interval: 100
@@ -102,8 +119,8 @@ Dialog {
             if (dialog.pageStack && dialog.pageStack.busy) {
                 return
             }
-            stop()
             if (dialog.status === PageStatus.Active || dialog.status === PageStatus.Activating) {
+                stop()
                 dialog.reject()
             }
         }

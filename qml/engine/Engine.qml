@@ -48,7 +48,7 @@ QtObject {
         device_name: "",
         localsend: { enabled: true, pin: null },
         quickshare: { enabled: true, visibility: "everyone", ble_nudge: true },
-        wormhole: { mailbox_url: null, relay_url: null },
+        wormhole: { enabled: true, mailbox_url: null, relay_url: null },
         bluetooth: { enabled: true },
         logging: false
     })
@@ -77,6 +77,9 @@ QtObject {
     property ListModel offers: ListModel {}
     /// Paired Bluetooth devices that take Object Push. Roles: address, name.
     property ListModel bluetoothDevices: ListModel {}
+    /// How many pages have asked for discovery and not yet given it back
+    /// (startDiscovery / stopDiscovery).
+    property int discoveryUsers: 0
     /// Received texts (F-C4), newest first. Roles: transferId, from, text,
     /// receivedAt.
     property ListModel texts: ListModel {}
@@ -183,19 +186,42 @@ QtObject {
     function getSettings() {
         return engine.command({ type: "get_settings" })
     }
+    /// Asks for discovery (F-LS1, F-QS1); every call is given back by one
+    /// stopDiscovery(). Counted, because two pages can want it at once: a
+    /// share that arrives while a Send page is open replaces that page, and
+    /// the old page is destroyed only after the new one has asked. Without
+    /// the count the old page's stop came last, and the new page showed
+    /// "Looking for devices" over empty lists with discovery off.
+    /// start_discovery goes out every time: for what already runs it is a
+    /// no-op, and it starts a protocol switched on since.
     function startDiscovery() {
+        engine.discoveryUsers = engine.discoveryUsers + 1
         return engine.command({ type: "start_discovery" }, engine._quiet)
     }
-    /// Stops discovery and forgets the peers: nothing keeps them fresh.
+    /// Gives discovery back. The last one out stops it and forgets the
+    /// peers, since nothing keeps them fresh then; a stop nobody asked
+    /// for does nothing.
     function stopDiscovery() {
+        if (engine.discoveryUsers <= 0) {
+            return 0
+        }
+        engine.discoveryUsers = engine.discoveryUsers - 1
+        if (engine.discoveryUsers > 0) {
+            return 0
+        }
         engine.localSendPeers.clear()
         engine.quickSharePeers.clear()
         return engine.command({ type: "stop_discovery" }, engine._quiet)
     }
     /// Answers an offer (F-C2). It leaves the queue here at once, so the
-    /// same offer is never shown twice; an offer that closed meanwhile
-    /// answers "not_found", which is nobody's business.
+    /// same offer is never shown twice. Only an offer still waiting is
+    /// answered: one the engine closed (timed out, withdrawn) or that was
+    /// answered already gets nothing, whatever a stale dialog asks.
+    /// Returns the command id, or 0 when nothing was sent.
     function answer(offerId, accept) {
+        if (engine.offer(offerId) === null) {
+            return 0
+        }
         engine._removeOffer(offerId)
         return engine.command({ type: "answer", offer: offerId, accept: accept === true },
                               engine._quiet)
@@ -270,6 +296,9 @@ QtObject {
         }
         if (protocol === "quick_share") {
             return !(s.quickshare && s.quickshare.enabled === false)
+        }
+        if (protocol === "wormhole") {
+            return !(s.wormhole && s.wormhole.enabled === false)
         }
         if (protocol === "bluetooth") {
             return !(s.bluetooth && s.bluetooth.enabled === false)
