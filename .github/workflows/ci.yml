@@ -78,6 +78,11 @@ jobs:
       # no Cargo.lock or target/ in the vendored tree for the vendor check
       # to trip over.
       - run: ./ci/rqs-lib-tests.sh
+      # The vendored mdns-sd's own tests: upstream's, proving the patches
+      # did not break the daemon, and the patches' own (cache caps, TTL cap,
+      # local-link check, reply limiter). Run on a copy, against the lockfile
+      # upstream published, from the sha256-pinned archive.
+      - run: ./third_party/mdns-sd.patches/test.sh
       # Broken intra-doc links are errors.
       - run: cargo doc --workspace --no-deps --locked
         env:

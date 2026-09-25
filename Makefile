@@ -66,11 +66,14 @@ test:
 	@echo "== tests =="
 	$(CARGO) test --workspace --locked
 
-## rqs-lib-tests: the vendored Quick Share library's own tests, from a copy,
-## on the versions Cargo.lock ships; third_party/ is left untouched
+## rqs-lib-tests: the vendored Quick Share library's and mdns-sd's own tests,
+## from copies; third_party/ is left untouched. mdns-sd's test-only crates
+## come from cargo's cache or crates.io (third_party/mdns-sd.patches/test.sh)
 rqs-lib-tests:
 	@echo "== rqs_lib's own tests =="
 	./ci/rqs-lib-tests.sh
+	@echo "== the vendored mdns-sd's own tests =="
+	./third_party/mdns-sd.patches/test.sh
 
 ## doc: rustdoc, with broken intra-doc links as errors
 doc:
