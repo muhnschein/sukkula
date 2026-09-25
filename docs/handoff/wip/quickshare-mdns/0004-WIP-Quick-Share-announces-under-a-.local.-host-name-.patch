@@ -1,7 +1,7 @@
 From b6e4ebe62ed3370da07f6fe93c2e1e1aad53754f Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Fri, 25 Sep 2026 10:02:15 +0000
-Subject: [PATCH 4/4] WIP: Quick Share announces under a .local. host name;
+Subject: [PATCH 4/8] WIP: Quick Share announces under a .local. host name;
  mdns-sd vendored and wired in
 
 rqs_lib 0019 gives the service a valid host name and registers it in
