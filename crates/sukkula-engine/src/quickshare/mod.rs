@@ -25,8 +25,12 @@
 //! - **Sending** (F-QS1) — `send.rs`: files, or one text, to a peer found by
 //!   discovery.
 //! - **Discovery** — `discovery.rs`: mDNS browsing, peers reported as
-//!   `qs:<endpoint id>` with sanitised names, at most [`MAX_PEERS`], each
-//!   source rate-limited ([`Ctx::allow_discovery`]).
+//!   `qs:<endpoint id>` with sanitised names, at most [`MAX_PEERS`] and a
+//!   few per source, a newcomer at a full table taking the place of the
+//!   oldest peer of the source listing the most, each source rate-limited
+//!   by a budget of Quick Share's own. mDNS itself is the patched mdns-sd
+//!   under rqs_lib (`third_party/mdns-sd.patches`): a bounded cache, only
+//!   the local link and the reach policy's sources read (S7).
 //! - **The BLE nudge** (F-QS2) — [`ble`]: while discovery runs and
 //!   `Settings.quickshare.ble_nudge` is on, the Quick Share "a device
 //!   nearby is sharing" advertisement goes out through BlueZ on the system
@@ -61,7 +65,10 @@ use std::time::Duration;
 use rqs_lib::hdl::AddrFilter;
 use sukkula_core::Protocol;
 use sukkula_core::config::Visibility;
-use sukkula_core::limits::{HANDSHAKE_TIMEOUT, NETWORK_IDLE_TIMEOUT, OFFER_TIMEOUT};
+use sukkula_core::limits::{
+    DISCOVERY_BURST, DISCOVERY_WINDOW, HANDSHAKE_TIMEOUT, NETWORK_IDLE_TIMEOUT, OFFER_TIMEOUT,
+};
+use sukkula_core::reach::RateLimiter;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -81,6 +88,9 @@ pub const MAX_CONNECTIONS_PER_IP: usize = 2;
 /// inside are shorter still: 0.5 s each for the mDNS goodbye and daemon,
 /// 0.5 s and a tick for the BLE nudge to unregister.
 const STOP_WAIT: Duration = Duration::from_millis(1250);
+
+/// mDNS's own UDP port (RFC 6762), where the engine announces and browses.
+const MDNS_PORT: u16 = 5353;
 
 /// How long to wait for a peer's TCP connection when sending.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -116,12 +126,13 @@ impl Default for Timeouts {
 }
 
 /// How the adapter reaches the network. Not a setting: the engine always
-/// uses [`Options::default`]. Tests turn mDNS off and point the BLE nudge
-/// at a private bus.
+/// uses [`Options::default`]. Tests turn mDNS off, or run it on loopback
+/// and a port of their own ([`adapter_with_mdns_port`]), and point the BLE
+/// nudge at a private bus.
 #[doc(hidden)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Options {
-    /// Announce and browse over mDNS. Off in tests: multicast is real
+    /// Announce and browse over mDNS. Off in most tests: multicast is real
     /// network.
     pub mdns: bool,
     /// Where the TCP listener binds. IPv4, as Quick Share peers resolve us
@@ -156,11 +167,26 @@ pub fn adapter(ctx: Arc<Ctx>) -> Arc<dyn Adapter> {
 #[doc(hidden)]
 #[must_use]
 pub fn adapter_with(ctx: Arc<Ctx>, options: Options) -> Arc<QuickShareAdapter> {
+    adapter_with_mdns_port(ctx, options, MDNS_PORT)
+}
+
+/// [`adapter_with`], with mDNS on another UDP port than 5353: for tests
+/// that run mDNS for real (loopback only, under the test switch) without
+/// taking part in the machine's own.
+#[doc(hidden)]
+#[must_use]
+pub fn adapter_with_mdns_port(
+    ctx: Arc<Ctx>,
+    options: Options,
+    mdns_port: u16,
+) -> Arc<QuickShareAdapter> {
     Arc::new(QuickShareAdapter {
         shared: Arc::new(Shared {
             ctx,
             options,
+            mdns_port,
             peers: Mutex::new(discovery::Peers::default()),
+            announcements: Mutex::new(RateLimiter::new(DISCOVERY_BURST, DISCOVERY_WINDOW)),
             slots: Mutex::new(Slots::default()),
             own_endpoint: Mutex::new(None),
         }),
@@ -173,7 +199,14 @@ pub fn adapter_with(ctx: Arc<Ctx>, options: Options) -> Arc<QuickShareAdapter> {
 pub(crate) struct Shared {
     ctx: Arc<Ctx>,
     options: Options,
+    /// The UDP port mDNS runs on: 5353, but in tests.
+    mdns_port: u16,
     peers: Mutex<discovery::Peers>,
+    /// Announcements taken per source address (S7): a budget of Quick
+    /// Share's own, so that mDNS -- unauthenticated, and open to anyone on
+    /// the link -- never spends what LocalSend's TLS requests from the same
+    /// address are allowed ([`Ctx::allow_discovery`]).
+    announcements: Mutex<RateLimiter>,
     slots: Mutex<Slots>,
     /// The endpoint id we announce, so discovery can skip ourselves.
     own_endpoint: Mutex<Option<[u8; 4]>>,
@@ -246,8 +279,9 @@ impl QuickShareAdapter {
         self.receiving.lock().await.as_ref().and_then(|r| r.port)
     }
 
-    /// Adds a peer as if discovery had found it at `addr`, and returns its
-    /// id. For tests, which have no mDNS.
+    /// Adds a peer as if discovery had found it at `addr`, announced from
+    /// `addr`'s own address, and returns its id. For tests, which have no
+    /// mDNS.
     #[doc(hidden)]
     #[must_use]
     pub fn insert_peer(
@@ -260,6 +294,7 @@ impl QuickShareAdapter {
             &self.shared,
             endpoint_id,
             addr,
+            addr.ip(),
             name,
             rqs_lib::DeviceType::Phone,
         )

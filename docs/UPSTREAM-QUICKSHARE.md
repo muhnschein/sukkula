@@ -9,19 +9,27 @@ upstream has an equivalent fix.
   commit `5a31145163ee22ab9cf1c7d3dffd74355febe93f`
   (`third_party/rqs_lib.UPSTREAM`). Every `file:line` below is at that
   commit, relative to `core_lib/`.
-- Sukkula's copy: `third_party/rqs_lib/` = upstream plus the 18 patches in
+- Sukkula's copy: `third_party/rqs_lib/` = upstream plus the 20 patches in
   `third_party/rqs_lib.patches/`, applied in order;
   `third_party/rqs_lib.patches/check.sh` (and `ci/vendor-check.sh` in CI)
   prove it.
+- Under it, mdns-sd 0.21.4 as published on crates.io (the archive whose
+  sha256 Cargo.lock recorded) plus the 4 patches in
+  `third_party/mdns-sd.patches/`, vendored in `third_party/mdns-sd/`;
+  `ci/vendor-check.sh` proves that too, and
+  `third_party/mdns-sd.patches/test.sh` runs the crate's own unit tests,
+  upstream's and the patches'. Its findings are M1–M8, at the end.
 - Q1–Q7 are the findings of Sukkula's spec (§5). R1–R17 were found while
-  patching.
+  patching, R18–R19 in the review of 2026-09-25.
 
-**Suggested handling.** Q3, Q4, R1, R2, R3, R4, R7 and R12 can be
+**Suggested handling.** Q3, Q4, R1, R2, R3, R4, R7, R12 and R19 can be
 triggered by anyone on the same network as a receiver that is visible,
 with no user interaction; Q1 needs one tap on "accept" for a name the
 prompt shows, and Q6 a peer the user is exchanging files with. These
 should go to the maintainer privately first (a GitHub security advisory
 on the repository), with the rest as ordinary issues once fixes are out.
+The same goes for mdns-sd's M1, M3 and M4 (remote memory growth, and a
+reflector for spoofed queries), to its maintainer.
 
 Several of Sukkula's patches do more than an upstream fix would need,
 because Sukkula embeds the library in a different shape (0015 turns it
@@ -51,6 +59,8 @@ could take in its own design, and the Sukkula patch that carries our fix.
 | 0016-s7-mdns-to-the-lan | mDNS on accepted interfaces, bounded, no probing, stoppable | R12 |
 | 0017-crate-metadata-and-licence | licence file and `license` field | -- |
 | 0018-tests | hostile-frame unit tests, loopback test | -- |
+| 0019-f-qs1-announce-a-valid-host-name | a `.local.` host name; the service registered in `MDnsServer::new`, so a refusal reaches the caller | R18 |
+| 0020-s7-s4-vendored-mdns-sd | the patched mdns-sd; the reach policy as both daemons' source filter; the discovery cache fair per source | R19, M4 |
 
 ---
 
@@ -491,6 +501,126 @@ the hostname from `gethostname`/`uname`.
 **Sukkula.** Patch 0007 (mdns-sd 0.21, if-addrs 0.15 instead of the
 unmaintained get_if_addrs) and 0015 (sys_metrics gone with the global
 device name).
+
+## R18. The announcement is refused, and nobody hears of it
+
+**Where.** `src/hdl/mdns.rs:98-105` (`build_service`) passes the bare
+instance name as the service's host name; `:58` (`run`) calls
+`register(...)?` before its loop.
+
+**Impact.** The fork of mdns-sd upstream depends on took any host name.
+mdns-sd since 0.11.0 refuses one that does not end in `.local.`
+(`service_daemon.rs:539-541`, `4712-4714`), so on any current mdns-sd
+`run` returns an error at once and nothing is announced: no phone ever
+lists the machine as a receiver. The error ends a spawned task; unless the
+caller awaits it, the receiver looks up and running.
+
+**Upstream fix.** `format!("{name}.local.")` as the host name; register
+where the error can be returned to whoever starts the server.
+
+**Sukkula.** Patch 0019. The engine reports the refusal as Quick Share
+failing to start (`receive.rs`); `tests/mdns.rs` registers for real and
+has a second daemon resolve it, and so does
+`crates/sukkula-engine/tests/quickshare_mdns.rs`.
+
+## R19. Discovery: first come, first served, by an address anyone names
+
+**Where.** `src/hdl/mdns_discovery.rs` (as patch 0016 bounded it): at 64
+services nobody new is remembered, and an announcement is known only by
+the address its A record names.
+
+**Impact.** One host on the link announcing 64 instance names, and
+re-announcing them, keeps every device that comes later off the list. An
+embedder counting or rate-limiting announcers by the named address lets
+one host spend another's budget by naming it.
+
+**Upstream fix.** Report where an announcement came from (mdns-sd M8 below)
+and cap services per source, a newcomer at a full cache replacing the
+oldest of the source holding the most.
+
+**Sukkula.** Patch 0020: at most 4 services per source, the rule above,
+replaced services reported gone, `EndpointInfo::source`. The engine keeps
+the same rule in its peer table and rate-limits by the source, on a budget
+of Quick Share's own (`quickshare/discovery.rs`).
+
+---
+
+## mdns-sd 0.21.4: defects found, and the patches Sukkula carries
+
+The same kind of draft, for <https://github.com/keepsimple1/mdns-sd>
+(`service_daemon.rs`, `dns_cache.rs`, `dns_parser.rs` of the 0.21.4
+release; line numbers are the release's). mdns-sd reads whatever reaches
+port 5353 on the interfaces it serves; everything below can be done by
+anyone on the link, with no user interaction, while the embedder browses
+or announces.
+
+| Patch | Concern | Findings |
+| --- | --- | --- |
+| 0001-s7-only-the-local-link | only on-link sources read; an embedder's source filter; responses only from the mDNS port; legacy-unicast replies limited per address; deferred responses capped; "legacy" meaning another port than the daemon's | M4, M5 |
+| 0002-s4-s6-bounded-cache | records judged one by one; caps per name, per host, per type, per source and in all; received TTLs capped; no timer per record; orphans forgotten and swept; resolve retries end with their instance; a read budget per wake-up | M1, M2, M3, M6, M7 |
+| 0003-announcing-source | `ResolvedService::source` | M8 |
+| 0004-a-workspace-of-its-own | an empty `[workspace]`, for the vendored copy | -- |
+
+**M1. The cache takes a response whole, and has no size limit.**
+`handle_response` (`3095-3190`) decides once per message whether it is
+"for us", and only a PTR answer for a type nobody browses makes it not, so
+a response of SRV, TXT and address records for made-up names goes into
+`DnsCache` entire (`dns_cache.rs:249-307`), which is bounded only by
+expiry. *Fix:* judge each record by what was asked (a browsed type's PTR,
+an SRV/TXT of such an instance, an address of such a host or of one being
+resolved), and cap records per name, per type and in all. Patch 0002
+(2 SRV/TXT/NSEC per name, 8 addresses per host, 64 instances per type,
+2048 records), and a new instance at a full type takes the place of the
+oldest of the source holding the most rather than being refused, as R19.
+
+**M2. The sender's TTL is kept.** A u32 TTL of up to 136 years makes a
+cached record permanent. *Fix:* cap received TTLs; patch 0002 uses 4500 s,
+RFC 6762 §10's figure.
+
+**M3. Two timers per record, per packet.** Every record added or
+refreshed pushes its expiry and refresh times onto the run loop's heap
+(`1820-1822`, `3187-3189`); a neighbour re-sending one set of records grows
+it by 16 bytes a record a packet. *Fix:* no timers for cached records --
+the loop sleeps until the earliest deadline among them
+(`DnsCache::next_deadline`) -- and a cap on the rest (4096; past it the
+loop wakes every second). Patch 0002.
+
+**M4. Any source is answered and believed.** `handle_read` (`2668-2765`)
+checks only that a packet arrived on a served interface. A query from any
+address is answered, a legacy-unicast one (source port not 5353) by a
+reply sent straight back to that address and port, which the kernel routes
+off the link if it must, and exempt from the once-per-second multicast
+limit (`3613-3645`, `4933`): a 50-byte query with a spoofed source gets a
+300-byte answer with the device's name and port, as often as it is sent.
+Responses from any port are believed. *Fix:* drop packets whose source is
+neither link-local nor on the receiving interface's subnet (RFC 6762 §5.5,
+§11), let the embedder add a source filter, ignore responses from another
+port than the daemon's (§6), limit legacy-unicast replies per address, cap
+deferred responses. Patch 0001 (4 replies a second per address, 64
+addresses, 16 deferred responses).
+
+**M5. "Legacy" compares with the constant 5353.** A daemon made with
+`new_with_port` takes its peers on that port for legacy queriers and
+answers them by unicast, which on a shared port may reach the wrong
+socket. *Fix:* compare with the daemon's own port. Patch 0001.
+
+**M6. Retries and resolutions outlive their instances.** A resolve's
+retries (`exec_command_resolve`) go on after the instance is gone, a query
+each; `resolved` keeps every instance name it ever saw; SRV, TXT and NSEC
+records of instances no PTR record points to, and addresses of hosts no
+SRV names, are never evicted. *Fix:* stop retries of instances not
+pending, forget a replaced instance's records at once, and sweep what
+nothing leads to (at least once a second, and whenever the cache is
+short of room). Patch 0002.
+
+**M7. A stream of packets starves the run loop.** Each socket is read
+until it is empty, so steady traffic keeps the loop from its commands,
+shutdown included. *Fix:* a read budget per wake-up (256). Patch 0002.
+
+**M8. The embedder cannot tell who announced a service.**
+`ResolvedService` carries the addresses the announcer wrote, which it
+chooses. *Fix:* report the source address of the packet that brought the
+instance's PTR record. Patch 0003.
 
 ---
 

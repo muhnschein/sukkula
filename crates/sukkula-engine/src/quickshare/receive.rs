@@ -65,18 +65,30 @@ pub(super) async fn start(shared: &Arc<Shared>) -> Result<Running, ErrorInfo> {
 
     let mut tasks = Vec::new();
     if shared.options.mdns {
-        let server = MDnsServer::new(
+        // F-QS1, F-QS4: the announcement is registered here, so that one
+        // mdns-sd refuses fails Receive for Quick Share (the protocol shows
+        // as failed) instead of ending a task nobody watches: a host name
+        // mdns-sd refused made every phone invisible, and only a debug line
+        // said so. Returning drops the listener.
+        let server = MDnsServer::with_port(
+            shared.mdns_port,
             endpoint,
             port,
             &shared.ctx.device_name(),
             DeviceType::Phone,
             shared.addr_filter(),
         )
-        .map_err(|_| ErrorInfo::new(ErrorCode::Network, "cannot announce over mDNS"))?;
+        .map_err(|e| {
+            tracing::warn!("quickshare: mDNS refused the announcement");
+            tracing::debug!(error = %e, "quickshare: the announcement was refused");
+            ErrorInfo::new(ErrorCode::Network, "cannot announce over mDNS")
+        })?;
         let t = token.clone();
         tasks.push(tokio::spawn(async move {
             let mut server = server;
             if let Err(e) = server.run(t).await {
+                // Its daemon went away: the phone is not visible any more.
+                tracing::warn!("quickshare: the mDNS announcement stopped");
                 tracing::debug!(error = %e, "quickshare: mDNS announcement ended");
             }
         }));
@@ -307,6 +319,12 @@ fn protocol_error() -> Ended {
     ))
 }
 
+/// When a transfer that makes no progress from now on is given up on.
+fn progress_deadline(idle: Duration) -> tokio::time::Instant {
+    let now = tokio::time::Instant::now();
+    now.checked_add(idle).unwrap_or(now)
+}
+
 /// Receives an accepted transfer: every file into the inbox, the text into
 /// an event. The names the files were saved under, on success.
 async fn receive(
@@ -326,11 +344,17 @@ async fn receive(
     let mut text_pending = text_id.is_some();
     let mut open: HashMap<i64, ReceivingFile<'_>> = HashMap::new();
     let mut saved = Vec::with_capacity(files.len());
+    // S6: the sender has to make progress, not just keep talking. A frame
+    // that moves nothing -- a keep-alive, an empty file chunk -- does not
+    // push the deadline back, so it cannot hold the transfer and its slot
+    // for ever; each one used to count as activity, and the idle limit
+    // never came.
+    let mut deadline = progress_deadline(idle);
 
     while !pending.is_empty() || text_pending {
         let frame = tokio::select! {
             () = transfer.token().cancelled() => return Err(Ended::CancelledHere),
-            f = tokio::time::timeout(idle, ir.read_frame()) => f,
+            f = tokio::time::timeout_at(deadline, ir.read_frame()) => f,
         };
         let frame = match frame {
             Ok(Ok(f)) => f,
@@ -343,7 +367,7 @@ async fn receive(
             Err(_) => {
                 return Err(Ended::Failed(ErrorInfo::new(
                     ErrorCode::Network,
-                    "the sender stopped responding",
+                    "the sender stopped sending",
                 )));
             }
         };
@@ -357,6 +381,9 @@ async fn receive(
             Some(InboundEvent::FileChunk(chunk)) => {
                 if !pending.contains(&chunk.payload_id) {
                     return Err(protocol_error());
+                }
+                if !chunk.body.is_empty() || chunk.last {
+                    deadline = progress_deadline(idle);
                 }
                 if !open.contains_key(&chunk.payload_id) {
                     if open.len() >= MAX_OPEN_FILES {
@@ -402,6 +429,7 @@ async fn receive(
                     return Err(protocol_error());
                 }
                 text_pending = false;
+                deadline = progress_deadline(idle);
                 // F-C4: plain text after S2, shown with a Copy button and
                 // never opened, URLs included.
                 shared.ctx.emit(Event::TextReceived {

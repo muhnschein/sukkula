@@ -22,10 +22,22 @@
 #     to be a patch.
 #
 #   VENDOR_UPSTREAM_DIR  a local clone of the upstream to read the commit
-#                        from instead of fetching it (one crate at a time)
+#                        from instead of fetching it (one crate at a time;
+#                        git lines only)
 #
-# Needs git and patch, and the network unless VENDOR_UPSTREAM_DIR is set.
-# Missing inputs fail: a vendored crate that is not there is not a pass.
+# CONTRACT: a line may name a crates.io release instead of a git commit
+# (mdns-sd, vendored by the Quick Share fix round): the URL of its .crate
+# file and that file's 64-hex sha256 in place of the commit -- the checksum
+# Cargo.lock recorded for it -- and, as the subdirectory, the directory the
+# archive unpacks to (`<name>-<version>`). The archive is taken from cargo's
+# download cache ($CARGO_HOME/registry/cache/*/) when a file of that name is
+# there, else fetched with curl, and used only if its sha256 is the pinned
+# one: the published crate, byte for byte, is the upstream.
+#
+# Needs git and patch, the network unless VENDOR_UPSTREAM_DIR is set (and,
+# for a crate line, unless cargo has the archive), and sha256sum for crate
+# lines. Missing inputs fail: a vendored crate that is not there is not a
+# pass.
 set -u
 
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
@@ -45,8 +57,12 @@ checked=0
 while read -r name url commit subdir vendored _; do
     [[ -n "${name:-}" && "$name" != '#'* ]] || continue
     checked=$((checked + 1))
-    if [[ ! $commit =~ ^[0-9a-f]{40}$ ]]; then
-        bad "$name: '$commit' is not a full commit id"
+    if [[ $commit =~ ^[0-9a-f]{64}$ ]]; then
+        kind=crate
+    elif [[ $commit =~ ^[0-9a-f]{40}$ ]]; then
+        kind=git
+    else
+        bad "$name: '$commit' is not a full commit id (or a crate's sha256)"
         continue
     fi
     vdir="$root/$vendored"
@@ -91,19 +107,51 @@ while read -r name url commit subdir vendored _; do
     # working tree or its line-ending settings leaks in.
     up="$work/$name-upstream"
     mkdir -p "$up"
-    if [[ -n "${VENDOR_UPSTREAM_DIR:-}" ]]; then
-        src_repo=$VENDOR_UPSTREAM_DIR
-    else
-        src_repo="$work/$name.git"
-        if ! { git init -q --bare "$src_repo" &&
-               git -C "$src_repo" fetch -q --depth 1 "$url" "$commit"; } >&2; then
-            bad "$name: could not fetch $url at $commit"
+    if [[ "$kind" = crate ]]; then
+        # CONTRACT: a crates.io release, pinned by its sha256 (see the top).
+        if [[ $subdir == */* || $subdir == .* ]]; then
+            bad "$name: '$subdir' must be the one directory the crate unpacks to"
             continue
         fi
-    fi
-    if ! git -C "$src_repo" archive --format=tar "$commit" "$subdir" | tar -x -C "$up"; then
-        bad "$name: $commit has no $subdir"
-        continue
+        command -v sha256sum >/dev/null 2>&1 || { bad "$name: sha256sum not found"; continue; }
+        archive="$work/$name.crate"
+        cached=""
+        for c in "${CARGO_HOME:-$HOME/.cargo}"/registry/cache/*/"${url##*/}"; do
+            [[ -f "$c" ]] && cached=$c && break
+        done
+        if [[ -n "$cached" ]]; then
+            cp "$cached" "$archive"
+        elif ! command -v curl >/dev/null 2>&1; then
+            bad "$name: curl not found, and cargo has no ${url##*/}"
+            continue
+        elif ! curl -fsSL --proto '=https,file' -o "$archive" "$url" >&2; then
+            bad "$name: could not fetch $url"
+            continue
+        fi
+        got=$(sha256sum "$archive" | cut -d' ' -f1)
+        if [[ "$got" != "$commit" ]]; then
+            bad "$name: ${url##*/} has sha256 $got, not the pinned $commit"
+            continue
+        fi
+        if ! tar -xzf "$archive" -C "$up" || [[ ! -d "$up/$subdir" ]]; then
+            bad "$name: ${url##*/} does not unpack to $subdir"
+            continue
+        fi
+    else
+        if [[ -n "${VENDOR_UPSTREAM_DIR:-}" ]]; then
+            src_repo=$VENDOR_UPSTREAM_DIR
+        else
+            src_repo="$work/$name.git"
+            if ! { git init -q --bare "$src_repo" &&
+                   git -C "$src_repo" fetch -q --depth 1 "$url" "$commit"; } >&2; then
+                bad "$name: could not fetch $url at $commit"
+                continue
+            fi
+        fi
+        if ! git -C "$src_repo" archive --format=tar "$commit" "$subdir" | tar -x -C "$up"; then
+            bad "$name: $commit has no $subdir"
+            continue
+        fi
     fi
     base="$up/$subdir"
 

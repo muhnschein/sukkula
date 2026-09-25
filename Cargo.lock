@@ -1851,8 +1851,6 @@ checksum = "490cc448043f947bae3cbee9c203358d62dbee0db12107a74be5c30ccfd09771"
 [[package]]
 name = "mdns-sd"
 version = "0.21.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1067efe2aadc6967f84c95977dca910e98f3edfd6403efc8fa8508d289ce012d"
 dependencies = [
  "fastrand",
  "flume",
@@ -3119,6 +3117,7 @@ dependencies = [
  "hyper-util",
  "localsend",
  "magic-wormhole",
+ "mdns-sd",
  "p256",
  "proptest",
  "prost",
@@ -3131,6 +3130,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "socket2",
  "sukkula-core",
  "tempfile",
  "thiserror",
