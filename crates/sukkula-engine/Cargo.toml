@@ -125,6 +125,12 @@ prost = "0.13"
 p256 = { version = "0.13", features = ["ecdh"] }
 hmac = "0.12"
 sha2.workspace = true
+# tests/quickshare_mdns.rs: mDNS for real, on loopback and a port of the
+# test's own -- a second daemon (the vendored mdns-sd rqs_lib uses) that
+# must resolve our announcement, and hostile hosts sending from a source
+# address and the mDNS port of their choosing. Both already in the tree.
+mdns-sd = { version = "0.21.4", path = "../../third_party/mdns-sd" }
+socket2 = { version = "0.6", features = ["all"] }
 
 [lints]
 workspace = true

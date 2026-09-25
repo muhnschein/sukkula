@@ -538,55 +538,85 @@ async fn hidden_means_no_listener() {
     );
 }
 
-/// Peers are reported as PeerFound, at most MAX_PEERS of them, with
-/// showable names and plain-ASCII ids; a new round of discovery reports the
-/// old ones lost.
+/// Peers are reported as PeerFound, with showable names and plain-ASCII
+/// ids, at most MAX_PEERS of them and MAX_PEERS_PER_SOURCE from one
+/// source; a full table still takes a device from a source of its own,
+/// and a listed id stays its source's (kept[6]); a new round of discovery
+/// reports the old ones lost.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn peers_are_bounded_and_reported() {
+    use std::collections::HashSet;
     use sukkula_core::limits::MAX_PEERS;
+    const PER_SOURCE: usize = 4;
     let rig = Rig::new("Looking");
-    let addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 9);
-    let mut ids = Vec::new();
-    for i in 0..(MAX_PEERS + 10) {
-        let endpoint = [
+    let from = |s: usize| SocketAddr::new(Ipv4Addr::new(127, 3, (s / 250) as u8, (s % 250) as u8 + 1).into(), 9);
+    let endpoint = |i: usize| {
+        [
             b'a',
-            b'0' + (i / 100) as u8,
+            b'0' + (i / 100 % 10) as u8,
             b'0' + (i / 10 % 10) as u8,
             b'0' + (i % 10) as u8,
-        ];
-        if let Some(id) = rig
-            .adapter
-            .insert_peer(endpoint, addr, "\u{202e}Evil\nPhone")
-        {
-            ids.push(id);
+        ]
+    };
+    let listed = |rig: &Rig| {
+        let mut listed = HashSet::new();
+        for e in rig.seen.events() {
+            match e {
+                Event::PeerFound { peer } => {
+                    listed.insert(peer.id);
+                }
+                Event::PeerLost { peer } => {
+                    listed.remove(&peer);
+                }
+                _ => {}
+            }
+        }
+        listed
+    };
+
+    // One source, announcing without end: its newest few are listed.
+    for i in 0..(MAX_PEERS + 10) {
+        assert!(
+            rig.adapter
+                .insert_peer(endpoint(i), from(0), "\u{202e}Evil\nPhone")
+                .is_some()
+        );
+    }
+    assert_eq!(listed(&rig).len(), PER_SOURCE);
+    // Enough sources to fill the table.
+    let mut n = MAX_PEERS + 10;
+    for source in 1..=MAX_PEERS / PER_SOURCE {
+        for _ in 0..PER_SOURCE {
+            let _ = rig.adapter.insert_peer(endpoint(n), from(source), "Phone");
+            n += 1;
         }
     }
-    assert_eq!(ids.len(), MAX_PEERS);
+    assert_eq!(listed(&rig).len(), MAX_PEERS);
+    // A device announcing from an address of its own still gets in.
+    assert_eq!(
+        rig.adapter.insert_peer(*b"Hnst", from(900), "Honest").as_deref(),
+        Some("qs:Hnst")
+    );
+    assert!(listed(&rig).contains("qs:Hnst"));
+    assert_eq!(listed(&rig).len(), MAX_PEERS);
+    // Its id announced from elsewhere does not move it.
+    assert_eq!(rig.adapter.insert_peer(*b"Hnst", from(901), "Honest"), None);
     // A peer outside the reach policy is never listed.
     let public = SocketAddr::new(Ipv4Addr::new(8, 8, 8, 8).into(), 9);
     assert_eq!(rig.adapter.insert_peer(*b"zzzz", public, "x"), None);
-    let found: Vec<_> = rig
-        .seen
-        .events()
-        .into_iter()
-        .filter_map(|e| match e {
-            Event::PeerFound { peer } => Some(peer),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(found.len(), MAX_PEERS);
-    for p in &found {
-        assert!(p.id.is_ascii() && p.id.starts_with("qs:"), "{}", p.id);
-        assert!(
-            !p.name.contains('\u{202e}') && !p.name.contains('\n'),
-            "{:?}",
-            p.name
-        );
+    for e in rig.seen.events() {
+        if let Event::PeerFound { peer: p } = e {
+            assert!(p.id.is_ascii() && p.id.starts_with("qs:"), "{}", p.id);
+            assert!(
+                !p.name.contains('\u{202e}') && !p.name.contains('\n'),
+                "{:?}",
+                p.name
+            );
+        }
     }
+    let before = rig.seen.events().len();
     rig.adapter.start_discovery().await.unwrap();
-    let lost = rig
-        .seen
-        .events()
+    let lost = rig.seen.events()[before..]
         .iter()
         .filter(|e| matches!(e, Event::PeerLost { .. }))
         .count();
@@ -1602,6 +1632,63 @@ async fn stalled_senders_are_given_up_on() {
     assert!(receiver.received().is_empty());
     // The sender was told (a cancel), then hung up on.
     assert!(evil.hung_up(DEADLINE).await);
+    assert_no_panics();
+}
+
+/// After the yes, a sender that keeps talking without sending anything --
+/// empty file chunks and keep-alives, each well within the idle limit --
+/// is given up on once the idle limit has passed without progress. Each
+/// frame used to count as activity, so the transfer, and its connection
+/// slot, were held for as long as the sender liked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sender_that_only_keeps_talking_is_given_up_on() {
+    let timeouts = Timeouts {
+        idle: Duration::from_millis(800),
+        ..quick()
+    };
+    let receiver = Rig::with("Receiver", timeouts, Duration::from_secs(10), |_| {});
+    let to = receiver.listen().await;
+    let mut evil = Evil::handshake(to, "Evil").await;
+    evil.introduce(intro(vec![file_meta(1, "chatty.bin", 1000)]))
+        .await;
+    let (id, _) = receiver.offer(0).await;
+    receiver.answer(id, true);
+    assert_eq!(evil.answer().await, Some(Status::Accept));
+    // One byte of the file, then nothing but talk, every 200 ms, for 5 s.
+    evil.send_offline(&payload_frame(PayloadType::File, 1, 1000, 0, &[1u8], false))
+        .await;
+    let started = Instant::now();
+    let keep_alive = offline(lnc::V1Frame {
+        r#type: Some(lnc::v1_frame::FrameType::KeepAlive.into()),
+        keep_alive: Some(lnc::KeepAliveFrame { ack: Some(false) }),
+        ..Default::default()
+    });
+    let talker = tokio::spawn(async move {
+        for i in 0u32.. {
+            let frame = if i % 2 == 0 {
+                payload_frame(PayloadType::File, 1, 1000, 1, &[], false)
+            } else {
+                keep_alive.clone()
+            };
+            if started.elapsed() > Duration::from_secs(5) || !evil.try_send_offline(&frame).await {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    });
+    let incoming = receiver.incoming().await;
+    match receiver.finished(incoming).await.0 {
+        Outcome::Failed { error } => assert_eq!(error.code, ErrorCode::Network),
+        other => panic!("{other:?}"),
+    }
+    // About the idle limit after the last byte, not after the talk ended.
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "given up on after {:?}",
+        started.elapsed()
+    );
+    assert!(receiver.received().is_empty());
+    talker.await.unwrap();
     assert_no_panics();
 }
 
