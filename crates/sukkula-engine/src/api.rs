@@ -63,10 +63,16 @@ pub struct StartConfig {
     pub download_dir: String,
     /// The device model, for the default device name (F-C7). When absent the
     /// engine reads `/etc/hw-release`.
-    #[serde(default)]
+    ///
+    /// Left out when absent, as `allow_loopback` is when false: written as
+    /// `null` and `false`, a configuration that came in just under
+    /// [`MAX_MESSAGE_BYTES`] without them went out over it, and was refused
+    /// by the parser that had accepted it (found by the `start_config` fuzz
+    /// target).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_model: Option<String>,
     /// Answer peers on loopback. Tests only; the shell never sets it.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub allow_loopback: bool,
 }
 
@@ -828,5 +834,39 @@ mod tests {
             parse_start_config(r#"{"v":1,"data_dir":"/d","download_dir":"/dl","extra":1}"#)
                 .is_err()
         );
+    }
+
+    /// A configuration the parser accepts survives its own serialiser, even
+    /// at the cap and without the optional fields, which the serialiser once
+    /// wrote out as `null` and `false` and pushed it over.
+    #[test]
+    fn start_config_at_the_cap_round_trips() {
+        let frame = r#"{"v":1,"data_dir":"","download_dir":"/dl"}"#;
+        let json = format!(
+            r#"{{"v":1,"data_dir":"{}","download_dir":"/dl"}}"#,
+            "d".repeat(MAX_MESSAGE_BYTES - frame.len())
+        );
+        assert_eq!(json.len(), MAX_MESSAGE_BYTES);
+        let cfg = parse_start_config(&json).unwrap();
+        let again = serde_json::to_string(&cfg).unwrap();
+        assert!(
+            again.len() <= json.len(),
+            "{} > {}",
+            again.len(),
+            json.len()
+        );
+        assert_eq!(parse_start_config(&again).unwrap(), cfg);
+
+        // The optional fields still go out when they are set.
+        let set = StartConfig {
+            data_dir: "/d".to_owned(),
+            device_model: Some("Xperia 10 III".to_owned()),
+            allow_loopback: true,
+            ..cfg
+        };
+        let again = serde_json::to_string(&set).unwrap();
+        assert!(again.contains(r#""device_model":"Xperia 10 III""#));
+        assert!(again.contains(r#""allow_loopback":true"#));
+        assert_eq!(parse_start_config(&again).unwrap(), set);
     }
 }
