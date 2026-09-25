@@ -90,6 +90,9 @@ code=""
 fetch() {
     local url=$1
     local auth=$2
+    # Emptied first: curl leaves the file alone when nothing arrives, and a
+    # refusal must not be explained with the previous answer's words.
+    : >"$BODY"
     if [[ -n "$auth" ]]; then
         code=$(curl -sS --max-time 30 -u "$auth:" -o "$BODY" -w '%{http_code}' "$url") || return 1
     else
@@ -98,17 +101,44 @@ fetch() {
     [[ "$code" = "200" ]]
 }
 
+# Why the server said no, in its own words. SonarQube answers with
+# {"errors":[{"msg":...}]}; whatever else stands in front of it -- a proxy, a
+# firewall -- answers with a page of its own, the start of which is shown.
+why() {
+    local msg
+    msg=$(jq -r '[(.errors // [])[].msg] | join("; ")' "$BODY" 2>/dev/null) || msg=""
+    if [[ -z "$msg" ]]; then
+        msg=$(tr -s '[:space:]' ' ' <"$BODY" | cut -c1-160)
+    fi
+    printf '%s' "$msg"
+}
+
+# Both refusals are printed, not just the last. The anonymous answer alone
+# says only that the project is not public; which of the two a fix has to
+# reach -- the token's rights or the project's visibility -- is in the
+# token's.
 api() {
     local url=$1
-    if [[ -n "$SONAR_TOKEN" ]] && fetch "$url" "$SONAR_TOKEN"; then
-        return 0
+    local refused=""
+    if [[ -n "$SONAR_TOKEN" ]]; then
+        if fetch "$url" "$SONAR_TOKEN"; then
+            return 0
+        fi
+        refused="    with the token: HTTP $code $(why)"
     fi
     if fetch "$url" ""; then
         return 0
     fi
-    echo "  cannot read $url (HTTP $code)" >&2
+    echo "  cannot read $url" >&2
+    if [[ -n "$refused" ]]; then
+        echo "$refused" >&2
+    fi
+    echo "    anonymously:    HTTP $code $(why)" >&2
     return 1
 }
+
+# How many of the three sections below could not be read.
+unread=0
 
 # A rating is 1..5 on the wire and A..E everywhere a person reads it.
 letter() {
@@ -177,6 +207,8 @@ if api "$SERVER/api/qualitygates/project_status?analysisId=$analysis"; then
          | "- \(.status)  \(.metricKey) \(.comparator) \(.errorThreshold) (actual: \(.actualValue // "none"))")
     ' "$BODY" >>"$out"
     echo >>"$out"
+else
+    unread=$((unread + 1))
 fi
 
 # ------------------------------------------------------------ measures
@@ -204,6 +236,8 @@ if api "$SERVER/api/measures/component?component=$KEY&${SCOPE_Q}metricKeys=$metr
         done
         echo
     } >>"$out"
+else
+    unread=$((unread + 1))
 fi
 
 # ------------------------------------------------------------ issues
@@ -227,6 +261,18 @@ if api "$SERVER/api/issues/search?componentKeys=$KEY&${SCOPE_Q}resolved=false&ps
         fi
         echo
     } >>"$out"
+else
+    unread=$((unread + 1))
+fi
+
+# A report with its sections missing is a heading and a link, which reads
+# as nothing to report. Say so in it, and fail the step, which the workflow
+# turns into a warning.
+if [[ "$unread" -gt 0 ]]; then
+    {
+        echo "**$unread of 3 sections could not be read.** The job log says why."
+        echo
+    } >>"$out"
 fi
 
 echo "$DASHBOARD" >>"$out"
@@ -234,4 +280,8 @@ echo "$DASHBOARD" >>"$out"
 cat "$out"
 if [[ -n "$SUMMARY" ]]; then
     cat "$out" >>"$SUMMARY"
+fi
+
+if [[ "$unread" -gt 0 ]]; then
+    exit 1
 fi
