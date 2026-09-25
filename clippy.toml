@@ -11,6 +11,40 @@ disallowed-methods = [
     { path = "std::process::Command::new", reason = "S8: Sukkula never spawns processes" },
     { path = "std::process::exit", reason = "an engine must never end the app" },
     { path = "std::process::abort", reason = "an engine must never end the app" },
+    # S8, through libdbus: libdbus starts a process for some addresses --
+    # `autolaunch:` runs dbus-launch, `unixexec:path=...` forks and execs
+    # -- and falls back to `autolaunch:` when it looks the session bus up
+    # itself (DBUS_SESSION_BUS_ADDRESS unset). So every constructor the
+    # dbus crate has is banned: the ones that let libdbus pick the address
+    # (new_session, new_system, get_private) and the ones that open an
+    # address as given (open_private, new_address), which are as dangerous
+    # as the address they are handed. The ban is lifted only in the
+    # function that checks the address is a plain `unix:` socket right
+    # before it opens it -- bluetooth::bus::Bus::connect, and the Quick
+    # Share BLE nudge's `advertise` -- so a connection opened anywhere else,
+    # or without that check, is a lint error rather than a review question
+    # (finding "S8 gate does not cover libdbus"). The `nonblock`
+    # connections have no constructor of their own (they are made from a
+    # Channel), and dbus-tokio is not in the graph.
+    # ci/clippy-bans-selftest.sh proves each of these fires. No
+    # `allow-invalid`: a crate that does not depend on dbus (a build
+    # without the bluetooth and quickshare features) skips these paths
+    # silently, and one that does is told if a path stops resolving.
+    { path = "dbus::blocking::Connection::new_session", reason = "S8: libdbus may autolaunch or unixexec; open a checked unix: address (Bus::connect)" },
+    { path = "dbus::blocking::Connection::new_system", reason = "S8: libdbus may unixexec; open a checked unix: address (Bus::connect)" },
+    { path = "dbus::blocking::Connection::new_address", reason = "S8: libdbus may autolaunch or unixexec; open a checked unix: address (Bus::connect)" },
+    { path = "dbus::blocking::LocalConnection::new_session", reason = "S8: libdbus may autolaunch or unixexec; open a checked unix: address (Bus::connect)" },
+    { path = "dbus::blocking::LocalConnection::new_system", reason = "S8: libdbus may unixexec; open a checked unix: address (Bus::connect)" },
+    { path = "dbus::blocking::LocalConnection::new_address", reason = "S8: libdbus may autolaunch or unixexec; open a checked unix: address (Bus::connect)" },
+    { path = "dbus::blocking::SyncConnection::new_session", reason = "S8: libdbus may autolaunch or unixexec; open a checked unix: address (Bus::connect)" },
+    { path = "dbus::blocking::SyncConnection::new_system", reason = "S8: libdbus may unixexec; open a checked unix: address (Bus::connect)" },
+    { path = "dbus::blocking::SyncConnection::new_address", reason = "S8: libdbus may autolaunch or unixexec; open a checked unix: address (Bus::connect)" },
+    { path = "dbus::channel::Channel::get_private", reason = "S8: libdbus may autolaunch or unixexec; open a checked unix: address (Bus::connect)" },
+    { path = "dbus::channel::Channel::open_private", reason = "S8: libdbus may autolaunch or unixexec; only Bus::connect opens, after check_address" },
+    { path = "dbus::ffidisp::Connection::new_session", reason = "S8: libdbus may autolaunch or unixexec; open a checked unix: address (Bus::connect)" },
+    { path = "dbus::ffidisp::Connection::new_system", reason = "S8: libdbus may unixexec; open a checked unix: address (Bus::connect)" },
+    { path = "dbus::ffidisp::Connection::get_private", reason = "S8: libdbus may autolaunch or unixexec; open a checked unix: address (Bus::connect)" },
+    { path = "dbus::ffidisp::Connection::open_private", reason = "S8: libdbus may autolaunch or unixexec; only Bus::connect opens, after check_address" },
 
     # S3: only sukkula-core's inbox and store (and the dirfd module they
     # share) create, change or remove anything in the file system. Every
@@ -26,6 +60,9 @@ disallowed-methods = [
     { path = "std::fs::File::create_buffered", reason = "S3: write through sukkula_core::inbox or sukkula_core::store" },
     { path = "std::fs::OpenOptions::new", reason = "S3: open through sukkula_core::inbox or sukkula_core::store" },
     { path = "std::fs::File::options", reason = "S3: OpenOptions::new by another name; open through sukkula_core" },
+    # And the open itself, however the options were made (a clone, a From):
+    # the flags, not the constructor, decide whether it creates.
+    { path = "std::fs::OpenOptions::open", reason = "S3: open through sukkula_core::inbox or sukkula_core::store" },
     { path = "std::fs::DirBuilder::new", reason = "S3: directories are created only by sukkula_core" },
     { path = "std::os::unix::fs::DirBuilderExt::mode", reason = "S3: directories are created only by sukkula_core" },
     { path = "std::fs::create_dir", reason = "S3: directories are created only by sukkula_core" },
@@ -51,17 +88,30 @@ disallowed-methods = [
     { path = "std::os::unix::fs::fchown", reason = "S3: ownership is never changed" },
     { path = "std::os::unix::fs::lchown", reason = "S3: ownership is never changed" },
     { path = "std::os::unix::fs::chroot", reason = "process state is shared with Qt" },
-    # Binding a Unix socket to a path creates a file.
+    # Binding a Unix socket to a path creates a file: by path, by
+    # SocketAddr (bind_addr), through tokio's UnixSocket, or through
+    # rustix's generic bind, which takes a Unix address as readily as an
+    # IP one (nothing in Sukkula binds through rustix at all).
     { path = "std::os::unix::net::UnixListener::bind", reason = "S3: nothing but sukkula_core creates files" },
+    { path = "std::os::unix::net::UnixListener::bind_addr", reason = "S3: nothing but sukkula_core creates files" },
     { path = "std::os::unix::net::UnixDatagram::bind", reason = "S3: nothing but sukkula_core creates files" },
+    { path = "std::os::unix::net::UnixDatagram::bind_addr", reason = "S3: nothing but sukkula_core creates files" },
     { path = "tokio::net::UnixListener::bind", reason = "S3: nothing but sukkula_core creates files", allow-invalid = true },
     { path = "tokio::net::UnixDatagram::bind", reason = "S3: nothing but sukkula_core creates files", allow-invalid = true },
+    { path = "tokio::net::UnixSocket::bind", reason = "S3: nothing but sukkula_core creates files", allow-invalid = true },
+    { path = "rustix::net::bind", reason = "S3: a Unix address creates a file; bind through tokio or std", allow-invalid = true },
     # tokio::fs: the same, asynchronously.
     { path = "tokio::fs::write", reason = "S3: write through sukkula_core::inbox or sukkula_core::store", allow-invalid = true },
     { path = "tokio::fs::File::create", reason = "S3: write through sukkula_core::inbox or sukkula_core::store", allow-invalid = true },
     { path = "tokio::fs::File::create_new", reason = "S3: write through sukkula_core::inbox or sukkula_core::store", allow-invalid = true },
     { path = "tokio::fs::OpenOptions::new", reason = "S3: open through sukkula_core::inbox or sukkula_core::store", allow-invalid = true },
     { path = "tokio::fs::File::options", reason = "S3: OpenOptions::new by another name; open through sukkula_core", allow-invalid = true },
+    # tokio's OpenOptions also implements Default, and a call to
+    # `OpenOptions::default()` resolves to `Default::default`, a trait
+    # method no path here can name -- so the open is banned, whatever made
+    # the options (finding "clippy.toml's S3 'one writer' ban misses tokio
+    # OpenOptions::default").
+    { path = "tokio::fs::OpenOptions::open", reason = "S3: open through sukkula_core (however the OpenOptions was made, Default included)", allow-invalid = true },
     { path = "tokio::fs::DirBuilder::new", reason = "S3: directories are created only by sukkula_core", allow-invalid = true },
     { path = "tokio::fs::create_dir", reason = "S3: directories are created only by sukkula_core", allow-invalid = true },
     { path = "tokio::fs::create_dir_all", reason = "S3: directories are created only by sukkula_core", allow-invalid = true },
@@ -117,9 +167,18 @@ disallowed-methods = [
     { path = "rustix::fs::fremovexattr", reason = "S3: files are changed only by sukkula_core" },
 
     # Process-global state is shared with Qt; the engine never touches it.
+    # rustix's `process` feature is on (sukkula-core reads the effective
+    # uid), so its twins of the std calls are banned beside them: the
+    # working directory (chdir, fchdir, Dir::chdir), the root (chroot),
+    # and the file-creation mask every open in the process inherits (umask).
     { path = "std::env::set_var", reason = "process environment is shared with Qt" },
     { path = "std::env::remove_var", reason = "process environment is shared with Qt" },
     { path = "std::env::set_current_dir", reason = "process state is shared with Qt" },
+    { path = "rustix::process::chdir", reason = "process state is shared with Qt" },
+    { path = "rustix::process::fchdir", reason = "process state is shared with Qt" },
+    { path = "rustix::fs::Dir::chdir", reason = "process state is shared with Qt" },
+    { path = "rustix::process::chroot", reason = "process state is shared with Qt" },
+    { path = "rustix::process::umask", reason = "S3: the modes of every file the process creates are sukkula_core's" },
 ]
 
 disallowed-types = [

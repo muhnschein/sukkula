@@ -9,6 +9,11 @@
 #                         (Harbour requires 2.34, rpmvalidation.conf)
 #   --main-export         main() must be a defined dynamic symbol, which is
 #                         what the silica-qt5 booster dlopen()s and calls
+#   --only-main           and nothing else of ours is: every symbol the
+#                         binary exports is main() or one the C runtime and
+#                         the linker put in every executable (RUNTIME_EXPORTS
+#                         below) -- never a Bridge method, a sukkula_* entry
+#                         point or a Rust symbol (src/dynamic.list)
 #   --stripped            no .symtab: the package ships a stripped binary
 #   --readelf PATH        the readelf to use (default: readelf; GNU readelf
 #                         reads any architecture's ELF)
@@ -32,6 +37,7 @@ allowed="$root/ci/harbour/allowed_libraries.conf"
 ceiling=""
 start_main=""
 main_export=0
+only_main=0
 stripped=0
 readelf=readelf
 elf=""
@@ -40,6 +46,7 @@ while [[ $# -gt 0 ]]; do
         --glibc-ceiling) ceiling=${2:?}; shift 2 ;;
         --libc-start-main) start_main=${2:?}; shift 2 ;;
         --main-export) main_export=1; shift ;;
+        --only-main) only_main=1; shift ;;
         --stripped) stripped=1; shift ;;
         --readelf) readelf=${2:?}; shift 2 ;;
         -*) echo "check-elf: unknown option $1" >&2; exit 2 ;;
@@ -119,6 +126,62 @@ if [[ "$main_export" = 1 ]]; then
         ok "exports main() in .dynsym (the booster's entry point)"
     else
         bad "main() is not a defined dynamic symbol; the booster cannot start it (Q_DECL_EXPORT, -rdynamic)"
+    fi
+fi
+
+# What an executable exports that is not its author's. The booster needs
+# main() and nothing else of ours, and the link is built to export exactly
+# that (src/hardening.pri: -fvisibility=hidden, --dynamic-list with main
+# alone, --exclude-libs,ALL for the Rust archive). But the SDK's
+# sailfishapp feature links with -rdynamic, which also exports every
+# global symbol of the objects the driver adds to any executable, and of
+# the linker script -- and those are these, no more (read off -rdynamic
+# links of a one-function program for aarch64 and x86-64 with GCC 13 and
+# binutils 2.42; the three older crt files export are the host test's,
+# tests/run-cpp-tests.sh):
+#
+#   _start                   crt1.o/Scrt1.o: the ELF entry point
+#   _IO_stdin_used           crt1.o: tells glibc which stdio ABI it runs
+#   __data_start, data_start crt1.o: the start of .data (the second weak)
+#   _init, _fini             crti.o: global in older glibc's crt files
+#   __dso_handle             crtbegin.o: global in older GCC's
+#   _edata, _end, __bss_start
+#                            the linker script's section bounds, defined
+#                            unconditionally (no PROVIDE) on every target
+#   __bss_start__, __bss_end__, _bss_end__, __end__
+#                            the same, from the AArch64 (and ARM) script
+#
+# PROVIDE'd names (end, edata, etext) appear only when something refers
+# to them, and nothing here does, so one showing up is news too.
+#
+# Anything else -- a Bridge method, sukkula_start, a _ZN or _R Rust
+# symbol, a libstdc++ template -- is ours leaking, and a leak this check
+# exists to fail rather than a host-only test to notice.
+RUNTIME_EXPORTS='_start _IO_stdin_used __data_start data_start _init _fini __dso_handle
+                 _edata _end __bss_start __bss_start__ __bss_end__ _bss_end__ __end__'
+if [[ "$only_main" = 1 ]]; then
+    # Defined (Ndx not UND), bound GLOBAL, WEAK or UNIQUE, and visible:
+    # what another object can look up. Name and Ndx are read from the end
+    # of the line -- AArch64 readelf can print a second Vis word -- after
+    # the version index an imported symbol carries ("(2)").
+    exports=$("$readelf" -W --dyn-syms "$elf" 2>/dev/null |
+        awk '$1 ~ /^[0-9]+:$/ {
+                 line = $0; sub(/[[:space:]]+\([0-9]+\)[[:space:]]*$/, "", line)
+                 n = split(line, f, " ")
+                 if ((f[5] == "GLOBAL" || f[5] == "WEAK" || f[5] == "UNIQUE") &&
+                     f[6] != "HIDDEN" && f[6] != "INTERNAL" && f[n - 1] != "UND") print f[n]
+             }' |
+        sed 's/@.*//' | sort -u)
+    extra=""
+    while IFS= read -r sym; do
+        [[ -n "$sym" && "$sym" != main ]] || continue
+        [[ " $(tr -s '[:space:]' ' ' <<< "$RUNTIME_EXPORTS") " == *" $sym "* ]] && continue
+        extra+=" $sym"
+    done <<< "$exports"
+    if [[ -n "$extra" ]]; then
+        bad "exports more than main():$extra (src/dynamic.list; -fvisibility=hidden; --exclude-libs,ALL)"
+    else
+        ok "exports main() and nothing else of its own"
     fi
 fi
 

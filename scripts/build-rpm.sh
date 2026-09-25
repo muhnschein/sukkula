@@ -5,6 +5,8 @@
 # and packaged by mb2 inside the SDK.
 #
 #     scripts/build-rpm.sh image                 print the SDK image this tree wants
+#     scripts/build-rpm.sh pull <image>          pull it by the digest ci/sdk-image.digests
+#                                                pins; fails when none is pinned or served
 #     scripts/build-rpm.sh lift <image> <dir>    copy the cross toolchain and the
 #                                                target sysroot out of the image
 #     scripts/build-rpm.sh engine <dir>          cross-build the engine against them
@@ -31,14 +33,16 @@ ARCH=aarch64
 TARGET="SailfishOS-$SFOS-$ARCH"
 NAME=harbour-sukkula
 SPEC="rpm/$NAME.spec"
+DIGESTS="ci/sdk-image.digests"
 
 fail() { echo "build-rpm: FAIL $*" >&2; exit 1; }
 [[ $SFOS =~ ^[0-9]+(\.[0-9]+){3}$ ]] || fail "SFOS '$SFOS' is not a dotted SDK version"
 
 # The derived image's name carries a hash of everything that goes into it
-# -- the script that derives it and the spec's BuildRequires -- so a pull
-# request that changes either derives an image of its own instead of
-# replacing the one main builds with.
+# -- the script that derives it and the spec's BuildRequires -- so a
+# change to either wants an image of its own. The name is only a name: a
+# tag can be repointed by anyone who can push to the registry, so nothing
+# here pulls by it (pull, below).
 image_name() {
     local registry=${SDK_REGISTRY:-}
     if [[ -z "$registry" ]]; then
@@ -53,6 +57,36 @@ image_name() {
     [[ -f ci/build-sdk-image.sh && -f "$SPEC" ]] || fail "ci/build-sdk-image.sh or $SPEC is missing"
     inputs=$( { cat ci/build-sdk-image.sh; grep '^BuildRequires:' "$SPEC" | sort; } | sha256sum | cut -c1-12)
     echo "$registry/sukkula-sdk:$SFOS-$ARCH-$inputs"
+}
+
+# The image, by the digest the reviewed tree pins for its tag in
+# ci/sdk-image.digests -- the derived image's twin of the upstream digest
+# ci/build-sdk-image.sh pins. `docker pull repo@digest` refuses content
+# that does not hash to the digest, so what is pulled is what was pinned,
+# whatever the tag points at today; it is then tagged with its name on
+# this machine only. Fails, for the caller to derive the image instead,
+# when the tag has no pin or the registry does not serve that digest (a
+# fork's registry, say): deriving trusts no registry at all.
+pull() {
+    local image=$1 tag repo digest
+    tag=${image##*:}
+    repo=${image%:*}
+    [[ -f "$DIGESTS" ]] || fail "$DIGESTS is missing"
+    digest=$(awk -v t="$tag" '$1 == t { print $2 }' "$DIGESTS" | tail -1)
+    if [[ -z "$digest" ]]; then
+        echo "build-rpm: no digest pinned for $tag in ci/sdk-image.digests" >&2
+        return 1
+    fi
+    [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || fail "ci/sdk-image.digests pins '$digest' for $tag, which is not a sha256 digest"
+    if ! docker pull -q "$repo@$digest"; then
+        echo "build-rpm: $repo does not serve $digest" >&2
+        return 1
+    fi
+    docker tag "$repo@$digest" "$image"
+    # Belt and braces: the digest the image is known by is the pinned one.
+    docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$image" |
+        grep -qxF "$repo@$digest" || fail "$image is not $repo@$digest after the pull"
+    echo "using $image, pinned at $digest"
 }
 
 # What the engine needs from the image, and nothing else:
@@ -179,7 +213,7 @@ check() {
     fi
     local status=0
     # shellcheck disable=SC2086 # $ceiling is one option and its value, or nothing
-    "$ROOT/ci/check-elf.sh" --main-export --stripped --libc-start-main 2.34 $ceiling \
+    "$ROOT/ci/check-elf.sh" --main-export --only-main --stripped --libc-start-main 2.34 $ceiling \
         "$unpack/usr/bin/$NAME" || status=1
     rm -rf "$unpack"
     "$ROOT/ci/harbour-validate-rpm.sh" "$rpm" || status=1
@@ -188,6 +222,7 @@ check() {
 
 case "${1:-}" in
     image) image_name ;;
+    pull) [[ $# -eq 2 ]] || fail "usage: $0 pull <image>"; pull "$2" ;;
     lift) [[ $# -eq 3 ]] || fail "usage: $0 lift <image> <dir>"; lift "$2" "$3" ;;
     engine) [[ $# -eq 2 ]] || fail "usage: $0 engine <dir>"; engine "$2" ;;
     package) [[ $# -eq 2 ]] || fail "usage: $0 package <image>"; package "$2" ;;
@@ -195,8 +230,10 @@ case "${1:-}" in
     all)
         dir=${2:-$HOME/.cache/sukkula-sdk/$TARGET}
         image=$(image_name)
-        if ! docker image inspect "$image" >/dev/null 2>&1 && ! docker pull -q "$image"; then
-            echo "no $image yet; deriving it (about as long as a build)"
+        # One already on this machine is one this machine derived or
+        # pulled by digest; otherwise the pinned one, or derive it.
+        if ! docker image inspect "$image" >/dev/null 2>&1 && ! pull "$image"; then
+            echo "no pinned $image to pull; deriving it (about as long as a build)"
             "$ROOT/ci/build-sdk-image.sh" "$SFOS" "$ARCH" "$image"
         fi
         [[ -x "$dir/opt/cross/bin/aarch64-meego-linux-gnu-gcc" ]] || lift "$image" "$dir"

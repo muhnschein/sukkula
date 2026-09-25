@@ -314,10 +314,43 @@ break_and_expect 2.1 "a hardcoded home directory in QML" \
     'sed -i "s|text: qsTr(\"Receiving\")|text: \"/home/nemo/\"|" $Q'
 break_and_expect 2.6 "a write into the installed data directory" \
     'sed -i "s|    Q_UNUSED(data);|    QDir().mkpath(\"/usr/share/harbour-sukkula/cache\");|" $M'
+# A line starting with `#` or `*` is code in every language 2.1 reads; only
+# `//` and `/* */` are comments (finding "Harbour source gate skips every
+# '#' line").
+break_and_expect 2.1 "a home directory in a Rust attribute, which Display prints" \
+    'printf "#[error(\"cannot write to /home/defaultuser/Downloads/Sukkula\")]\npub struct _E;\n" >> crates/sukkula-core/src/lib.rs'
+break_and_expect 2.1 "a home directory in a C++ #define" \
+    'sed -i "1i #define SUKKULA_DL \"/home/defaultuser/Downloads/\"" $M'
+break_and_expect 2.1 "a C++ line starting with * that is code" \
+    'printf "static void f(const char **out) {\n    *out = \"/home/nemo/x\";\n}\n" >> $M'
+break_and_expect 2.1 "a JavaScript private field starting with #" \
+    'printf "class A {\n    #home = \"/home/nemo/\";\n}\n" > qml/components/paths.js'
+break_and_expect 2.1 "code after a block comment closes, on its last line" \
+    'printf "/* a\n * b\n */ pub const D: &str = \"/home/nemo/y\";\n" >> crates/sukkula-core/src/lib.rs'
+break_and_expect 2.1 "a home directory after a // inside a string" \
+    'printf "pub const U: &str = \"http://x\"; pub const D: &str = \"/home/nemo/z\";\n" >> crates/sukkula-core/src/lib.rs'
+break_and_expect 2.1 "a data file include_str! can read" \
+    'printf "{\"dir\": \"/home/defaultuser/Downloads\"}\n" > crates/sukkula-core/src/defaults.json'
+
+# P.6: Jolla's validator runs on every pull request that changes the package.
+break_and_expect P.6 "rpm.yml no longer built for a change to the Rust crates" \
+    'sed -i "\|^      - \"crates/\*\*\"\$|d" $W'
+break_and_expect P.6 "rpm.yml no longer built for a change to the C++ shell" \
+    'sed -i "\|^      - \"src/\*\*\"\$|d" $W'
+break_and_expect P.6 "rpm.yml no longer built for a change to the QML" \
+    'sed -i "\|^      - \"qml/\*\*\"\$|d" $W'
+break_and_expect P.6 "rpm.yml with no pull_request trigger at all" \
+    'sed -i "s/^  pull_request:\$/  pull_request_review:/" $W'
+still_passes "rpm.yml built for every pull request, with no paths filter" \
+    'sed -i "/^  pull_request:\$/,/^\$/{/^    paths:\$/d; /^      /d}" $W && grep -q "^  pull_request:\$" $W && ! grep -q "crates/\*\*" $W'
 
 # And what the check must leave alone.
 still_passes "a doc comment that mentions /home/defaultuser" \
     'printf "/// e.g. /home/defaultuser/Downloads/Sukkula\npub const _X: u8 = 0;\n" >> crates/sukkula-core/src/lib.rs'
+still_passes "a block comment that mentions /home/defaultuser, * lines and all" \
+    'printf "/*\n * e.g. /home/defaultuser/Downloads/Sukkula\n */\npub const _Y: u8 = 0;\n" >> crates/sukkula-core/src/lib.rs'
+still_passes "a trailing comment that mentions /home/nemo" \
+    'printf "pub const _Z: u8 = 0; // not /home/nemo/\n" >> crates/sukkula-core/src/lib.rs'
 still_passes "bad imports in tests/ and qml-stubs/, which never ship" \
     'printf "import QtWebKit 3.0\nimport \"/abs\"\n" >> qml-stubs/Sailfish/Silica/Page.qml'
 still_passes "ExecDBus naming the binary" \
@@ -326,28 +359,57 @@ still_passes "a private module of the app's own" \
     'sed -i "1i import harbour.sukkula 1.0" $Q'
 
 # The waiver file has to stay honest in both directions: an entry that
-# stops matching is as much a defect as a missing check.
-cases=$((cases + 1))
-stage "a stale waiver" 'printf "9.9.9  /nowhere  *  # excuses nothing\n" >> ci/harbour/waivers.conf'
-if run_check "$dir" | grep -q 'stale waiver'; then
-    echo "selftest: ok   a waiver that matches nothing -> stale waiver"
-else
-    echo "selftest: FAIL a waiver that matches nothing should be reported as stale" >&2
-    status=1
-fi
+# stops matching is as much a defect as a missing check. Every line says
+# which check it is for (ci/harbour-waivers.sh), and a check matches every
+# field it has -- the source check the ID, the subject and the message.
+# refused <what> <expected output> <script>: the check fails, saying so.
+refused() {
+    local what=$1 expect=$2 script=$3 out
+    cases=$((cases + 1))
+    stage "$what" "$script" || return 0
+    if out=$(run_check "$dir"); then
+        echo "selftest: FAIL $what should have failed the check" >&2
+        status=1
+    elif grep -qF -- "$expect" <<< "$out"; then
+        echo "selftest: ok   $what -> $expect"
+    else
+        echo "selftest: FAIL $what should have said '$expect':" >&2
+        grep -E 'FAIL' <<< "$out" >&2
+        status=1
+    fi
+    return 0
+}
+OPENSSL='sed -i "s|^Requires:   sailfishsilica-qt5\$|Requires:   sailfishsilica-qt5\nRequires:   openssl-libs|" $S'
+refused "a waiver that matches nothing" "stale waiver" \
+    'printf "source  9.9.9  /nowhere  *nothing*  # excuses nothing\n" >> ci/harbour/waivers.conf'
+refused "a waiver naming the finding's ID and subject but another message" "FAIL [1.8.3] openssl-libs" \
+    "$OPENSSL"' && printf "source  1.8.3  openssl-libs  *deprecated*  # test\n" >> ci/harbour/waivers.conf'
+refused "a waiver whose message glob matches anything" "matches any message" \
+    "$OPENSSL"' && printf "source  1.8.3  openssl-libs  *  # test\n" >> ci/harbour/waivers.conf'
+refused "a waiver in the old format, with no checker" "is not a checker" \
+    "$OPENSSL"' && printf "1.8.3  openssl-libs  *allowed list*  # test\n" >> ci/harbour/waivers.conf'
+refused "a waiver with no reason" "no reason" \
+    "$OPENSSL"' && printf "source  1.8.3  openssl-libs  *allowed list*\n" >> ci/harbour/waivers.conf'
+refused "an rpm waiver whose id is not a severity" "ERROR or WARNING" \
+    'printf "rpm  1.2.3  /usr/bin/harbour-sukkula  *stripped*  # test\n" >> ci/harbour/waivers.conf'
 
-# And a live waiver does excuse its own finding, and only that one.
+# A live waiver does excuse its own finding, and only that one.
 cases=$((cases + 1))
 stage "a waived finding" \
-    'printf "1.8.3  openssl-libs  *  # test\n" >> ci/harbour/waivers.conf &&
-     sed -i "s|^Requires:   sailfishsilica-qt5\$|Requires:   sailfishsilica-qt5\nRequires:   openssl-libs|" $S'
+    "$OPENSSL"' && printf "source  1.8.3  openssl-libs  *not on Harbour*s allowed list  # test\n" >> ci/harbour/waivers.conf'
 if out=$(run_check "$dir") && grep -qF 'WAIVED [1.8.3] openssl-libs' <<< "$out"; then
     echo "selftest: ok   a waiver excuses exactly its finding -> WAIVED"
 else
     echo "selftest: FAIL a matching waiver should excuse its finding and pass" >&2
-    grep -E '^harbour-check: (FAIL|WAIVED)' <<< "$out" >&2
+    grep -E '^harbour-(check|waivers): (FAIL|WAIVED)' <<< "$out" >&2
     status=1
 fi
+
+# An `rpm` waiver is the RPM check's business: a validator-only finding
+# can be waived without the source check calling the waiver stale, which
+# is what it once did to every one of them.
+still_passes "an rpm waiver, which only the RPM check reads" \
+    'printf "rpm  WARNING  /usr/bin/harbour-sukkula  file is not stripped!  # test\n" >> ci/harbour/waivers.conf'
 
 #
 # ci/harbour-validate-rpm.sh judges the real validator's output against the
@@ -435,29 +497,59 @@ else
     echo "selftest: ok   broken-pipe noise -> not echoed"
 fi
 
-# The waiver machinery, on a copy with one waiver in it: the subject and
-# the message both have to match, so a waived path with a new error about
-# it is news.
-waived_tree="$work/waived"
-rm -rf "$waived_tree"
-cp -a "$pristine" "$waived_tree"
-printf '1.2.1  /usr/share/harbour-sukkula/x  Installation not allowed*  # test\n' \
-    >> "$waived_tree/ci/harbour/waivers.conf"
-validate_rpm pass "a finding a waiver names, subject and message" \
+# The waiver machinery, on a copy with one `rpm` waiver in it: the
+# severity, the subject and the message all have to match, so a waived
+# path with a new error about it is news.
+# waiver_tree <name> <line>: a copy of the pristine tree with one waiver.
+waiver_tree() {
+    local tree="$work/$1"
+    rm -rf "$tree"
+    cp -a "$pristine" "$tree"
+    printf '%s\n' "$2" >> "$tree/ci/harbour/waivers.conf"
+    echo "$tree"
+}
+waived_tree=$(waiver_tree waived 'rpm  ERROR  /usr/share/harbour-sukkula/x  Installation not allowed*  # test')
+validate_rpm pass "a finding an rpm waiver names: severity, subject and message" \
 '!BEGIN!x
 ERROR|/usr/share/harbour-sukkula/x|Installation not allowed in this location
 !END!FAIL!x
 ' "$waived_tree"
 validate_rpm fail "a waived path with a message the waiver does not name" \
 '!BEGIN!x
+ERROR|/usr/share/harbour-sukkula/x|Installation not allowed in this location
 ERROR|/usr/share/harbour-sukkula/x|setuid, setgid or sticky bit set
 !END!FAIL!x
 ' "$waived_tree"
 validate_rpm fail "a waived message about a path the waiver does not name" \
 '!BEGIN!x
+ERROR|/usr/share/harbour-sukkula/x|Installation not allowed in this location
 ERROR|/usr/share/harbour-sukkula/y|Installation not allowed in this location
 !END!FAIL!x
 ' "$waived_tree"
+validate_rpm fail "a waived subject and message at another severity" \
+'!BEGIN!x
+ERROR|/usr/share/harbour-sukkula/x|Installation not allowed in this location
+WARNING|/usr/share/harbour-sukkula/x|Installation not allowed in this location
+!END!FAIL!x
+' "$waived_tree"
+validate_rpm fail "an rpm waiver the package no longer needs (stale)" \
+'!BEGIN!x
+!END!PASS!x
+' "$waived_tree"
+# A source waiver excuses nothing here: once, one written for the source
+# check with the message `*` waived every validator finding about its path.
+source_tree=$(waiver_tree source-waived 'source  1.2.3  /usr/bin/harbour-sukkula  *must install its binary*  # test')
+validate_rpm fail "a validator finding about a path only a source waiver names" \
+'!BEGIN!x
+ERROR|/usr/bin/harbour-sukkula|Binary must export main() symbol for booster to work (Q_DECL_EXPORT)
+!END!FAIL!x
+' "$source_tree"
+star_tree=$(waiver_tree star 'rpm  ERROR  /usr/bin/harbour-sukkula  *  # test')
+validate_rpm fail "an rpm waiver whose message glob matches anything" \
+'!BEGIN!x
+ERROR|/usr/bin/harbour-sukkula|Cannot link to shared library: libutil.so.1
+!END!FAIL!x
+' "$star_tree"
 
 echo
 if [[ "$status" -eq 0 ]]; then

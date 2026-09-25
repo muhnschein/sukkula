@@ -75,7 +75,7 @@ library's own types -- and asserts the adapter kept it.
 | `localsend_discovery` | the multicast announcement, `POST /register`, the `register` and `info` answers, the `prepare-upload` answer | an announcement is answered only if HTTPS, a port, and a well-formed fingerprint that is not ours, pinned to exactly that fingerprint (F-LS2, F-LS3); a peer is listed only on the fingerprint its certificate proved, never one it claimed, and S2-clean; an upload path has exactly the session, file and token parameters, short and plain, with the receiver's values: nothing smuggled into the request |
 | `wormhole_wire` | the v1 peer messages: offers, transit hints, answers, the transit ack | an offer is exactly one text or one file with the declared name and signed size, re-encodes to itself, and validates S-clean; hints bounded (16 direct, 2 relays × 3), deduplicated, well-formed hosts, no port 0; the connection plan is ≤ 4 targets, ours first, and never loopback, unspecified, multicast or broadcast, v4-mapped included; the ack matches only its digest |
 | `wormhole_code` | the code the user types (F-MW2), through the library's parser and entropy check | an accepted code is the input trimmed and lowercased, ≤ 128 bytes, in the strict grammar restated here; acceptance is idempotent and case-blind; every refusal is `BadCode` |
-| `wormhole_mailbox` | the mailbox guard's filter on everything the server sends, one connection per input | each message let through is re-read with magic-wormhole 0.8.1's own server-message types: hashcash ≤ 20 bits (W1), phases the library cannot `todo!()` on (W2), bodies it cannot `split_at` past (W3), PAKE bodies ≤ 512 bytes; ≤ 128 messages and 4 MiB per connection, nothing read after a refusal (W5) |
+| `wormhole_mailbox` | the mailbox guard's filter on everything the server sends, one connection per input | each message let through is re-read, in arrival order, as the library takes them, with magic-wormhole 0.8.1's own server-message types: hashcash ≤ 20 bits (W1), phases the library cannot `todo!()` on (W2), bodies it cannot `split_at` past (W3), PAKE bodies ≤ 512 bytes; ≤ 128 messages and 4 MiB per connection, nothing read after a refusal (W5) |
 | `quickshare_handshake` | the plaintext handshake from the first byte: frame reader, connection request and endpoint info, UKEY2 client init and finish, the peer's P-256 key; then the channel it keys | no event of any kind before the key exchange; an honest connection request's name read exactly and shown S2-clean; a finished exchange gives a four-digit PIN; then everything `quickshare_frame` asserts, under the derived keys |
 | `quickshare_frame` | everything inside the encrypted channel: offline frames, byte payloads and their reassembly, sharing frames, the introduction, file chunks, texts, spoiled seals | no file byte or text before the user accepts (S5); ≤ 1000 files, no negative size, no repeated payload id, text ≤ 64 KiB; chunks in order, never past the declared size, ending exactly there; ≤ 2 byte payloads buffered; ≤ 16 KiB of reply per frame; the raw offer is the introduction as sent and validates S-clean; a received text is S2-clean |
 | `quickshare_mdns` | an mDNS service's instance name and `n` record, from anyone on the link | a listed peer's id is `qs:` and the endpoint id (letters and digits, or hex), its name exactly S2 of what the record carries, decoded here independently |
@@ -100,14 +100,47 @@ t=name_sanitize
 mkdir -p fuzz/corpus/$t
 RUSTUP_TOOLCHAIN=nightly cargo fuzz run --target x86_64-unknown-linux-gnu $t \
     fuzz/corpus/$t fuzz/seeds/$t -- \
-    -max_total_time=60 -dict=fuzz/dicts/$t.dict -timeout=10 -rss_limit_mb=4096 -max_len=4096
+    -max_total_time=60 -dict=fuzz/dicts/$t.dict -timeout=10 -rss_limit_mb=4096 \
+    -max_len=$(scripts/fuzz-smoke.sh --max-len $t)
 ```
 
 Two corpus directories: libFuzzer writes what it finds into the first
 (`fuzz/corpus/`, gitignored) and only reads the second (`fuzz/seeds/`,
 committed). So no copy step is needed, and a run never rewrites a committed
-seed. `text_message` takes `-max_len=70000`, so that the 64 KiB cap is
-reachable; every other target uses 4096.
+seed.
+
+### Input length
+
+`-max_len` is set per target, always. Left unset, libFuzzer uses the larger
+of 4096 and the biggest corpus file, and every committed seed is far below
+4096 -- so for the targets whose assertions sit at a 64 KiB cap, no input
+could ever reach it, and "over 64 KiB is refused" could not fail in CI
+(clove's `ci/fuzz.sh --max-len` found the same of its PEX cap). One table,
+in `scripts/fuzz-smoke.sh` (`max_len_for`); `scripts/fuzz-smoke.sh
+--max-len <target>` prints a target's value, and the command above uses it:
+
+| Target | `-max_len` | Why |
+| --- | ---: | --- |
+| `text_message`, `command_json`, `start_config`, `localsend_prepare_upload` | 69632 | `MAX_MESSAGE_BYTES` (64 KiB) + 4 KiB: the cap on a received text, an FFI command, `sukkula_start`'s JSON and a prepare-upload body, and the room to go past it |
+| `settings_json` | 16384 | `MAX_SETTINGS_BYTES`: every size of settings file the store reads |
+| every other target | 4096 | its caps are reached by a short input, or built by the harness from one (`offer_validate`'s 500 files and 64 KiB text, the Quick Share scripts' sizes) |
+
+Both caps are read from `sukkula-core`'s source, so a changed limit moves
+the lengths with it. A long `-max_len` alone is not enough: libFuzzer grows
+its inputs slowly, and a minute from 60-byte seeds never reaches 64 KiB. So
+for the four 64 KiB targets the smoke adds inputs of exactly 64 KiB and one
+byte more, made from the target's first seed (the JSON padded with
+whitespace, the text repeated), as a third, temporary corpus directory; made
+at run time rather than committed, so they follow the constant too.
+`scripts/fuzz-smoke.sh --self-test` holds all of this in place without a
+nightly or cargo-fuzz -- every capped target is a real target (a rename
+cannot drop one back to 4096), its length reaches past its cap and is the
+one the run passes, and its boundary inputs are exactly the cap and one
+byte more -- and the fuzz-smoke job and `make fuzz-lint` run it first.
+
+One cap is beyond any practical fuzz length: the mailbox guard's 4 MiB per
+connection (`wormhole_mailbox`), which `wormhole/mailbox.rs`'s
+`the_budget_is_per_connection` holds on every `cargo test`.
 
 ## CI: the 60-second smoke per target
 
@@ -123,9 +156,22 @@ Then `scripts/fuzz-smoke.sh 60` runs the smoke (spec §7): it asks `cargo
 fuzz list` for the targets -- so a target added to `Cargo.toml` is fuzzed
 from the pull request that adds it, and zero targets is a failure -- builds
 them all once, and runs each for 60 s from `fuzz/corpus/<t>` and
-`fuzz/seeds/<t>` with `fuzz/dicts/<t>.dict`, a 10 s per-input timeout and a
-2 GiB RSS cap. It sets `RUSTUP_TOOLCHAIN` and `--target` itself, for the
-pitfalls below.
+`fuzz/seeds/<t>` with `fuzz/dicts/<t>.dict`, its `-max_len` (above), a 10 s
+per-input timeout and a 2 GiB RSS cap. It sets `RUSTUP_TOOLCHAIN` and
+`--target` itself, for the pitfalls below. `scripts/fuzz-smoke.sh 60
+command_json` runs one target the same way, to reproduce a red job.
+
+Before any of that, `ci/check-dicts.sh` (the job runs its `--self-test`
+first; clove's check of the same name is the model) requires of every
+target in `Cargo.toml` a non-empty `fuzz/seeds/<t>/` and a
+`fuzz/dicts/<t>.dict` that libFuzzer's own dictionary grammar accepts, and
+of every dictionary and seed directory a target that still exists. A target
+with neither used to be fuzzed from nothing and reported ok; a dictionary
+line libFuzzer cannot parse used to make it exit before fuzzing, which the
+smoke reported as a crash with no reproducer. Now the first fails the
+check, the second fails it with libFuzzer's own message, and a run that
+fails without writing a reproducer to `fuzz/artifacts/<t>/` is reported as
+a broken run, not a finding.
 
 Sixteen targets at 60 s each is sixteen minutes, plus one ASan build of the
 protocol libraries of about ten; a matrix over the targets would run them in
@@ -150,7 +196,10 @@ Pitfalls, all met on vuo's `fuzz-smoke` job first:
   inside the quotes only `\\`, `\"` and `\xHH`. `\n`, `\r`, `\t` are not
   escapes to libFuzzer; one bad line and it exits before fuzzing anything.
   The dictionaries here were generated with `\xHH` for every byte outside
-  printable ASCII, so they are safe to extend in the same spelling.
+  printable ASCII, so they are safe to extend in the same spelling;
+  `ci/check-dicts.sh` holds every one to the grammar.
+- **Pass `-max_len`** (above): the default quietly caps every input at
+  4 KiB.
 - The build is `--release` with debug assertions on (cargo-fuzz's default),
   so overflow checks are live in `sukkula-core` and the engine, as they are
   on the phone (S10).
