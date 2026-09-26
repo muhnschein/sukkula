@@ -7,6 +7,7 @@ singleton Clipboard 1.0 Clipboard.qml
 singleton Format 1.0 Format.qml
 singleton StandardPaths 1.0 StandardPaths.qml
 PageStatus 1.0 PageStatus.qml
+Orientation 1.0 Orientation.qml
 PageStackAction 1.0 PageStackAction.qml
 TruncationMode 1.0 TruncationMode.qml
 BusyIndicatorSize 1.0 BusyIndicatorSize.qml

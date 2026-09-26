@@ -135,8 +135,17 @@ import QtQuick.Controls 2.0""",
      ["tst_engine.qml", "tst_send.qml"]),
     ("discovery left running in Receive mode", "qml/pages/MainPage.qml",
      """    readonly property bool wantDiscovery: page.alive && page.engine.running && !page.engine.receiving""",
-     """    readonly property bool wantDiscovery: page.alive && page.engine.running""",
+     """    readonly property bool wantDiscovery: page.alive && page.engine.running && true""",
      ["tst_main.qml", "tst_stack.qml"]),
+    ("discovery kept running in the background", "qml/pages/MainPage.qml",
+     """    readonly property bool wantDiscovery: page.alive && page.engine.running && !page.engine.receiving
+                                          && page.awake""",
+     """    readonly property bool wantDiscovery: page.alive && page.engine.running && !page.engine.receiving""",
+     ["tst_app.qml"]),
+    ("Send mode that turns with the phone", "qml/pages/MainPage.qml",
+     """            return page.showSend ? Orientation.Portrait : page.freeOrientations""",
+     """            return page.freeOrientations""",
+     ["tst_main.qml"]),
     ("a share that leaves the phone receiving", "qml/pages/MainPage.qml",
      """        } else if (page.engine.receiving) {
             page.setMode(false)

@@ -10,8 +10,9 @@ import "../components"
  * on and shows how each protocol is doing, the transfers with their
  * progress and a way to cancel (F-C5), and received texts with a Copy
  * button (F-C4). Send switches the receivers off and shows the send radar
- * (SendView): discovery runs while this page is in Send mode, and what to
- * send waits at the radar's centre, filled from the Share menu (F-C6).
+ * (SendView), in portrait only: discovery runs while this page is in Send
+ * mode and the app is in front, and what to send waits at the radar's
+ * centre, filled from the Share menu (F-C6).
  *
  * Received texts are shown, never opened: no link in one is clickable,
  * nothing here calls Qt.openUrlExternally, and every label that shows what
@@ -30,6 +31,16 @@ Page {
     property bool sendNext: false
     /// The paired Bluetooth devices were asked for, this time round.
     property bool devicesListed: false
+    /// The app is in front: the window's to say.
+    property bool foreground: true
+    /// How long the app may be in the background, in ms, before discovery
+    /// is paused: a glance at the Events view or the top menu keeps the
+    /// peers on the radar.
+    property int backgroundGrace: 5000
+    /// In front, or not for long.
+    property bool awake: true
+    /// The orientations the page allows outside Send mode: its default.
+    property int freeOrientations: 0
     /// What to send: the radar's centre.
     property alias payload: payload
     property alias sendView: sendView
@@ -39,6 +50,7 @@ Page {
     /// why, in the receive column, instead.
     readonly property bool showSend: !page.receiveMode && page.engine.fatalCode === ""
     readonly property bool wantDiscovery: page.alive && page.engine.running && !page.engine.receiving
+                                          && page.awake
     readonly property bool bluetoothOn: page.engine.protocolEnabled("bluetooth")
 
     Component.onDestruction: {
@@ -49,8 +61,36 @@ Page {
         }
     }
 
-    Component.onCompleted: page.syncDiscovery()
+    Component.onCompleted: {
+        // The radar is laid out for portrait: Send mode stays in it, and
+        // Receive mode keeps what the page allowed before.
+        page.freeOrientations = page.allowedOrientations
+        page.allowedOrientations = Qt.binding(function () {
+            return page.showSend ? Orientation.Portrait : page.freeOrientations
+        })
+        if (!page.foreground) {
+            sleep.restart()
+        }
+        page.syncDiscovery()
+    }
     onWantDiscoveryChanged: page.syncDiscovery()
+
+    onForegroundChanged: {
+        if (page.foreground) {
+            sleep.stop()
+            page.awake = true
+        } else {
+            sleep.restart()
+        }
+    }
+
+    // In the background for a while: discovery pauses (and the peers are
+    // forgotten), and comes back when the app does.
+    Timer {
+        id: sleep
+        interval: page.backgroundGrace
+        onTriggered: page.awake = false
+    }
 
     onBluetoothOnChanged: page.listDevices()
 

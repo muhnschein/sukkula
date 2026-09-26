@@ -274,11 +274,41 @@ Script {
             }
         },
         function () {
-            test.compare(test.shownNames().length, 7, "seven on the rings")
-            test.compare(test.view.overflow, 4)
+            var room = test.view.slotSpots.length
+            test.verify(room >= 5 && room < 11, "the rings hold some, not all: " + room)
+            test.compare(test.shownNames().length, room, "as many as the rings hold")
+            test.compare(test.view.overflow, 11 - room)
             var more = test.find("morePeers")
             test.verify(more.visible, "the rest behind +N")
-            test.verify(probe.texts(more).indexOf("+4") >= 0)
+            test.verify(probe.texts(more).indexOf("+" + (11 - room)) >= 0)
+            // Round rings, and nobody covers anybody, the centre or +N.
+            var rings = test.view.rings
+            for (var r = 1; r < rings.length; r++) {
+                test.verify(rings[r] - rings[r - 1] >= test.view.avatar, "rings a peer apart")
+            }
+            var boxes = []
+            var spots = test.view.slotSpots
+            for (var i = 0; i < spots.length; i++) {
+                test.verify(spots[i].x - test.view.avatar / 2 >= 0
+                            && spots[i].x + test.view.avatar / 2 <= test.view.width, "on the screen")
+                var ringOf = Math.sqrt(Math.pow(spots[i].x - test.view.ox, 2) + Math.pow(spots[i].y - test.view.oy, 2))
+                var onRing = false
+                for (var k = 0; k < rings.length; k++) {
+                    onRing = onRing || Math.abs(ringOf - rings[k]) < 0.5
+                }
+                test.verify(onRing, "on a ring")
+                boxes.push(test.view.peerBox(spots[i].x, spots[i].y))
+            }
+            var origin = test.find("origin")
+            boxes.push([origin.x, origin.y, origin.x + origin.width, origin.y + origin.height])
+            boxes.push([more.x, more.y, more.x + more.width, more.y + more.height])
+            for (var a = 0; a < boxes.length; a++) {
+                for (var b = a + 1; b < boxes.length; b++) {
+                    var apart = boxes[a][2] <= boxes[b][0] || boxes[b][2] <= boxes[a][0]
+                                || boxes[a][3] <= boxes[b][1] || boxes[b][3] <= boxes[a][1]
+                    test.verify(apart, "slots " + a + " and " + b + " overlap")
+                }
+            }
             bridge.emitEvent(Ev.peerLost("p1"))
         },
         function () {
@@ -286,7 +316,7 @@ Script {
             test.verify(after[0] !== "local_send:p1", "a peer that went leaves its place")
             test.verify(after[0] !== "", "to one that waited")
             test.compare(after[1], "quick_share:q1", "and nobody else moves")
-            test.compare(test.view.overflow, 3)
+            test.compare(test.view.overflow, 10 - test.view.slotSpots.length)
             test.find("morePeers").clicked()
         },
         function () {

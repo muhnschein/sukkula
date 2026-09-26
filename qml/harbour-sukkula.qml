@@ -22,6 +22,7 @@ ApplicationWindow {
     initialPage: Component {
         MainPage {
             engine: sukkula
+            foreground: appWindow.applicationActive
         }
     }
     cover: Component {

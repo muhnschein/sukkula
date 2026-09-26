@@ -7,7 +7,8 @@ import "helpers/Events.js" as Ev
  * The whole window, qml/harbour-sukkula.qml, with `bridge` from the root
  * context as main.cpp provides it: the engine started once, the consent
  * dialog brought up over whatever is showing and one offer at a time
- * (F-C2, F-C3), the stack's transitions waited out, the Share menu's items
+ * (F-C2, F-C3), the stack's transitions waited out, Send mode's discovery
+ * paused while the app stays in the background, the Share menu's items
  * reaching the centre of the send radar, in Send mode (F-C6), KeepAlive
  * held during transfers only (§2), and notifications that name no one.
  */
@@ -37,6 +38,19 @@ Script {
         return out
     }
 
+    /// The discovery commands, in order.
+    function discovery() {
+        var out = []
+        var cmds = bridge.parsedCommands()
+        for (var i = 0; i < cmds.length; i++) {
+            var t = cmds[i].cmd.type
+            if (t === "start_discovery" || t === "stop_discovery") {
+                out.push(t)
+            }
+        }
+        return out
+    }
+
     function top() {
         return test.stack.currentPage ? test.stack.currentPage.objectName : ""
     }
@@ -49,6 +63,28 @@ Script {
             test.verify(test.win.coverItem !== null, "the cover is made")
             test.compare(probe.find(test.win.coverItem, "coverState").text, "Not receiving")
             test.compare(test.find("keepAlive").enabled, false, "no KeepAlive while idle")
+            // In front, as the phone starts it (the runner's window is not).
+            test.win.applicationActive = true
+            test.compare(test.discovery(), ["start_discovery"], "Send mode looks for peers")
+            // A glance away keeps discovery...
+            test.win.applicationActive = false
+            return 100
+        },
+        function () {
+            test.win.applicationActive = true
+            test.compare(test.discovery(), ["start_discovery"], "a glance away changes nothing")
+            // ...a longer stay in the background pauses it.
+            test.find("mainPage").backgroundGrace = 50
+            test.win.applicationActive = false
+            return 200
+        },
+        function () {
+            test.compare(test.discovery(), ["start_discovery", "stop_discovery"], "paused in the background")
+            test.compare(test.find("mainPage").engine.discoveryUsers, 0)
+            test.win.applicationActive = true
+            test.compare(test.discovery(), ["start_discovery", "stop_discovery", "start_discovery"],
+                         "and back with the app")
+            test.find("mainPage").backgroundGrace = 5000
         },
         function () {
             // An offer comes up over the main page (F-C2).

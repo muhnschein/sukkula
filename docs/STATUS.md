@@ -107,15 +107,9 @@ docs; the upstream ones are in `docs/UPSTREAM-QUICKSHARE.md`.
   - switching Wormhole off does not cancel a wormhole transfer already
     running;
   - `docs/UPSTREAM-QUICKSHARE.md` is drafted, not filed.
-- **Send mode, open questions** (spec v0.4):
-  - discovery runs whenever the app is open in Send mode, in the
-    background too, as the Send page's did while it was open; pausing it
-    in the background would empty the radar on every return;
-  - the radar is laid out for portrait: seven peers fit without overlap,
-    and landscape squeezes the rings;
-  - Receive mode keeps the list it had; it has no design of its own yet;
-  - the protocol badges are Sukkula's own marks, not the protocols'
-    logos; the tile beside Magic Wormhole's is kept for croc.
+- **Receive mode's own design** (spec v0.4): it keeps the list it had
+  for now. The tile beside Magic Wormhole's on the send radar is kept for
+  croc.
 - **The default branch.** `main` exists now; making it the repository's
   default (Settings, General) is the owner's. Until then Dependabot and
   `workflow_dispatch` keep using the old branch.

@@ -98,34 +98,118 @@ Item {
     /// The radar's centre: this phone.
     readonly property real ox: view.width / 2
     readonly property real oy: view.height - view.originSize / 2 - view.summaryHeight - Theme.paddingMedium
-    /// The outer ring's half-width and half-height.
-    readonly property real rx: Math.max(view.avatar, view.width / 2 - view.margin / 2)
-    readonly property real ry: {
-        var room = view.oy - view.tilesBottom - view.cloudHeight - view.avatar / 2
-                   - view.summaryHeight - 2 * Theme.paddingLarge
-        return Math.max(view.avatar, Math.min(view.rx * 1.6, room))
-    }
+    /// The outer ring's radius: as far up as the cloud lets it reach. The
+    /// rings are round and centred on this phone, so on a narrow screen
+    /// the outer ones run off its sides.
+    readonly property real outer: Math.max(view.avatar,
+        view.oy - view.tilesBottom - view.cloudHeight - view.avatar / 2
+        - view.summaryHeight - 2 * Theme.paddingLarge)
     readonly property real cloudX: view.ox
-    readonly property real cloudY: (view.tilesBottom + view.oy - view.ry - view.avatar * 0.6) / 2
+    readonly property real cloudY: (view.tilesBottom + view.oy - view.outer - view.avatar * 0.6) / 2
+    /// The rings' radii, innermost first, evenly apart: far enough that a
+    /// peer and its name fit between two of them.
+    readonly property var rings: {
+        var count = Math.max(2, Math.round(view.outer / (view.avatar * 1.4)))
+        var out = []
+        for (var i = 1; i <= count; i++) {
+            out.push(view.outer * i / count)
+        }
+        return out
+    }
+    /// Where "+N" sits: right of this phone, inside the first ring's reach.
+    readonly property real moreX: view.ox + Math.max(view.rings[0], view.originSize * 1.3)
+    /// Where peers go, in the order they are filled: [{x, y}], packed from
+    /// the outer ring inwards, each ring from its top outwards in pairs,
+    /// so that no avatar or name covers another, the centre or "+N". A
+    /// taller screen has room for more; the rest are behind "+N".
+    readonly property var slotSpots: view.packSlots(view.width, view.rings)
 
-    /// The rings, as fractions of the outer one.
-    readonly property var rings: [0.24, 0.46, 0.72, 1]
-    /// Where peers go, on the outer two rings, in the order they are
-    /// filled: [ring, degrees]. Seven, so that no avatar or name covers
-    /// another in portrait; more peers than that are behind "+N".
-    readonly property var slotSpots: [[1, 90], [0.72, 112], [0.72, 68], [1, 138], [1, 42],
-                                      [0.72, 154], [0.72, 26]]
+    /// The box a peer at (x, y) takes, its name included: [l, t, r, b].
+    function peerBox(x, y) {
+        var half = view.avatar * 1.3 / 2
+        return [x - half, y - view.avatar / 2, x + half,
+                y + view.avatar / 2 + Theme.paddingSmall / 2 + Theme.fontSizeExtraSmall * 1.4]
+    }
 
-    function spotX(slot) {
-        var s = view.slotSpots[slot >= 0 && slot < view.slotSpots.length ? slot : 0]
-        var x = view.ox + view.rx * s[0] * Math.cos(s[1] * Math.PI / 180)
+    function packSlots(width, rings) {
+        var out = []
+        if (width <= 0 || !rings || rings.length === 0) {
+            return out
+        }
+        var gap = Theme.paddingSmall / 2
+        var overlaps = function (a, b) {
+            return !(a[2] + gap <= b[0] || b[2] + gap <= a[0] || a[3] + gap <= b[1] || b[3] + gap <= a[1])
+        }
+        var reach = view.originSize / 2 + Theme.paddingMedium
+        var more = view.avatar * 0.4 + gap
+        var blocked = [
+            [view.ox - reach, view.oy - reach, view.ox + reach, view.oy + reach + view.summaryHeight],
+            [view.moreX - more, view.oy - more, view.moreX + more, view.oy + more]
+        ]
+        var top = view.cloudY + view.cloudHeight / 2 + Theme.paddingMedium
         var edge = view.avatar / 2 + Theme.paddingSmall
-        return Math.max(edge, Math.min(view.width - edge, x))
+        var boxes = []
+        var fits = function (p) {
+            if (p.x < edge || p.x > width - edge || p.y - view.avatar / 2 < top) {
+                return false
+            }
+            var b = view.peerBox(p.x, p.y)
+            for (var i = 0; i < blocked.length; i++) {
+                if (overlaps(b, blocked[i])) {
+                    return false
+                }
+            }
+            for (var j = 0; j < boxes.length; j++) {
+                if (overlaps(b, boxes[j])) {
+                    return false
+                }
+            }
+            return true
+        }
+        // The innermost ring hugs this phone: nobody goes there.
+        for (var r = rings.length - 1; r >= 1; r--) {
+            for (var d = 0; d <= 90; d++) {
+                var angles = d === 0 ? [90] : [90 - d, 90 + d]
+                var pair = []
+                for (var a = 0; a < angles.length; a++) {
+                    var rad = angles[a] * Math.PI / 180
+                    pair.push({ x: view.ox + rings[r] * Math.cos(rad), y: view.oy - rings[r] * Math.sin(rad) })
+                }
+                if (pair.length === 2 && overlaps(view.peerBox(pair[0].x, pair[0].y),
+                                                  view.peerBox(pair[1].x, pair[1].y))) {
+                    continue
+                }
+                var ok = true
+                for (var q = 0; q < pair.length; q++) {
+                    ok = ok && fits(pair[q])
+                }
+                if (ok) {
+                    for (var k = 0; k < pair.length; k++) {
+                        out.push(pair[k])
+                        boxes.push(view.peerBox(pair[k].x, pair[k].y))
+                    }
+                }
+            }
+        }
+        return out
+    }
+
+    /// A slot's place; a peer without one (sent to from the list) is
+    /// drawn in the first.
+    function spotX(slot) {
+        if (view.slotSpots.length === 0) {
+            return view.ox
+        }
+        return view.slotSpots[slot >= 0 && slot < view.slotSpots.length ? slot : 0].x
     }
     function spotY(slot) {
-        var s = view.slotSpots[slot >= 0 && slot < view.slotSpots.length ? slot : 0]
-        return view.oy - view.ry * s[0] * Math.sin(s[1] * Math.PI / 180)
+        if (view.slotSpots.length === 0) {
+            return view.oy - view.outer
+        }
+        return view.slotSpots[slot >= 0 && slot < view.slotSpots.length ? slot : 0].y
     }
+
+    onSlotSpotsChanged: view.rebalance()
 
     // ---- Peers ----------------------------------------------------------
 
@@ -394,22 +478,16 @@ Item {
     Repeater {
         model: view.rings
         delegate: Rectangle {
-            id: ring
-            readonly property real f: modelData
-            x: view.ox - view.rx * ring.f
-            y: view.oy - view.rx * ring.f
-            width: 2 * view.rx * ring.f
+            readonly property real r: modelData
+            x: view.ox - r
+            y: view.oy - r
+            width: 2 * r
             height: width
-            radius: width / 2
+            radius: r
             color: "transparent"
             border.width: 2
             border.color: view.hasOutgoing ? Theme.rgba(Theme.secondaryColor, 0.35) : Theme.primaryColor
             opacity: 0.6
-            transform: Scale {
-                origin.x: ring.width / 2
-                origin.y: ring.height / 2
-                yScale: view.ry / view.rx
-            }
 
             SequentialAnimation on opacity {
                 running: view.scanning
@@ -418,7 +496,7 @@ Item {
                 PauseAnimation { duration: 250 * index }
                 NumberAnimation { to: 1; duration: 350; easing.type: Easing.OutQuad }
                 NumberAnimation { to: 0.6; duration: 700; easing.type: Easing.InQuad }
-                PauseAnimation { duration: 250 * (3 - index) + 600 }
+                PauseAnimation { duration: 250 * (view.rings.length - 1 - index) + 600 }
             }
         }
     }
@@ -541,7 +619,7 @@ Item {
     Rectangle {
         id: more
         objectName: "morePeers"
-        x: view.ox + view.rx * 0.72 - width / 2
+        x: view.moreX - width / 2
         y: view.oy - height / 2
         width: view.avatar * 0.8
         height: width
@@ -783,7 +861,7 @@ Item {
         objectName: "radarHint"
         x: view.margin
         width: view.width - 2 * view.margin
-        y: view.oy - view.ry * 0.55 - height / 2
+        y: view.oy - view.outer * 0.55 - height / 2
         visible: !view.hasOutgoing && (!view.anyOn || (view.nearbyOn && view.slots.join("") === ""))
         horizontalAlignment: Text.AlignHCenter
         text: !view.anyOn

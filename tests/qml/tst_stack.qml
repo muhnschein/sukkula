@@ -91,6 +91,8 @@ Script {
     steps: [
         function () {
             test.compare(test.top(), "mainPage")
+            // In front, as on the phone: nothing here pauses discovery.
+            test.win.applicationActive = true
             test.engine = test.find("mainPage").engine
             test.verify(test.engine !== null, "the engine, through the main page")
             // Settings, with something typed and a switch changed.

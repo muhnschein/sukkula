@@ -65,6 +65,7 @@ Script {
             test.compare(modes.receiving, false, "Send mode first: the engine starts not receiving")
             test.verify(modes.enabled, "enabled once the engine runs")
             test.verify(probe.find(test.main, "sendView").visible, "the send radar")
+            test.compare(test.main.allowedOrientations, Orientation.Portrait, "in portrait only")
             test.verify(!probe.find(test.main, "emptyHint").visible, "not the receive list")
             test.compare(test.count("start_discovery"), 1, "Send mode looks for peers")
             test.compare(test.count("list_bluetooth_devices"), 1, "and lists the paired devices")
@@ -89,6 +90,8 @@ Script {
             test.compare(modes.receiving, true)
             test.compare(modes.busy, false)
             test.verify(!probe.find(test.main, "sendView").visible, "the radar goes")
+            test.compare(test.main.allowedOrientations, test.main.freeOrientations,
+                         "and the page turns as it did before")
             test.verify(probe.find(test.main, "receiveState").visible, "Receive mode says what it means")
             test.compare(probe.find(test.main, "deviceNameLabel").text, "Shown to others as Jolla Phone")
             test.compare(test.count("stop_discovery"), 1, "no discovery in Receive mode")

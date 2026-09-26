@@ -90,7 +90,8 @@ Item {
             topMargin: Theme.paddingSmall / 2
             horizontalCenter: parent.horizontalCenter
         }
-        width: bubble.size * 1.6
+        // As wide as SendView.peerBox() lets a name be.
+        width: bubble.size * 1.3
         visible: bubble.showName && text.length > 0
         text: bubble.name
         textFormat: Text.PlainText
