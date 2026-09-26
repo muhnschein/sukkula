@@ -3,8 +3,13 @@ import QtQuick 2.6
 
 /*
  * The send radar's line drawings, in the ambience's colours: a person, a
- * file, a text, the cloud the internet protocols go through, and the
- * protocol marks. The marks are Sukkula's own, not the protocols' logos.
+ * file, a text, a plus, the cloud the internet protocols go through, and
+ * the protocol marks. The marks are Sukkula's own, not the protocols'
+ * logos.
+ *
+ * A canvas loses what it drew when the scene graph lets go of its
+ * texture, as it does while the phone is locked: it paints again whenever
+ * it can, is shown, or the app comes back to the front.
  *
  * Drawn in a unit square (the cloud: a unit-wide box) scaled to the
  * item, with ES5 only (Qt 5.6).
@@ -12,8 +17,8 @@ import QtQuick 2.6
 Canvas {
     id: glyph
 
-    /// "person", "file", "text", "cloud", "local_send", "quick_share" or
-    /// "bluetooth".
+    /// "person", "file", "text", "add", "cloud", "local_send",
+    /// "quick_share" or "bluetooth".
     property string kind: "person"
     property color color: "white"
     /// Stroke width in pixels.
@@ -27,6 +32,18 @@ Canvas {
     onLineWidthChanged: glyph.requestPaint()
     onWidthChanged: glyph.requestPaint()
     onHeightChanged: glyph.requestPaint()
+    onAvailableChanged: glyph.requestPaint()
+    onVisibleChanged: glyph.requestPaint()
+
+    Connections {
+        target: Qt.application
+        // Qt 5.6 handler syntax.
+        onStateChanged: {
+            if (Qt.application.state === Qt.ApplicationActive) {
+                glyph.requestPaint()
+            }
+        }
+    }
 
     function _deg(d) {
         return d * Math.PI / 180
@@ -64,6 +81,16 @@ Canvas {
             ctx.moveTo(rows[i][0], rows[i][1])
             ctx.lineTo(rows[i][2], rows[i][1])
         }
+        ctx.stroke()
+    }
+
+    // A plus, with no ring round it: the centre's disc is the ring.
+    function _add(ctx) {
+        ctx.beginPath()
+        ctx.moveTo(0.5, 0.24)
+        ctx.lineTo(0.5, 0.76)
+        ctx.moveTo(0.24, 0.5)
+        ctx.lineTo(0.76, 0.5)
         ctx.stroke()
     }
 
@@ -134,6 +161,7 @@ Canvas {
         case "person": glyph._person(ctx); break
         case "file": glyph._file(ctx); break
         case "text": glyph._text(ctx); break
+        case "add": glyph._add(ctx); break
         case "cloud": glyph._cloud(ctx); break
         case "local_send": glyph._localSend(ctx); break
         case "quick_share": glyph._quickShare(ctx); break

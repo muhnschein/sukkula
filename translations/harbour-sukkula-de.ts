@@ -268,11 +268,6 @@
         <extracomment>Pulley menu in Send mode: stop the send that is running.</extracomment>
         <translation>Senden abbrechen</translation>
     </message>
-    <message>
-        <source>Choose what to send</source>
-        <extracomment>Pulley menu in Send mode: choose the files or text to send.</extracomment>
-        <translation>Auswählen, was gesendet wird</translation>
-    </message>
 </context>
 <context>
     <name>ModeSwitch</name>

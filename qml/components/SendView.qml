@@ -33,8 +33,6 @@ Item {
     /// How long an ended send stays on screen, in ms.
     property int linger: 4000
     property bool alive: true
-    /// The page stack the view's pages go on: its page's.
-    property var pageStack: null
 
     /// The send on screen, or null: {key, protocol, name, slot,
     /// wormhole, transferId}. `slot` is where its peer was (-1: none).
@@ -91,25 +89,31 @@ Item {
     readonly property real originSize: Theme.itemSizeMedium
     readonly property real tileWidth: (view.width - 3 * view.margin) / 2
     readonly property real tileHeight: Theme.itemSizeLarge
-    readonly property real tilesBottom: Theme.paddingLarge + view.tileHeight
     readonly property real cloudWidth: Math.min(view.width * 0.42, Theme.itemSizeExtraLarge * 2)
     readonly property real cloudHeight: view.cloudWidth * 0.6
     readonly property real summaryHeight: Theme.fontSizeExtraSmall * 1.5
     /// The radar's centre: this phone.
     readonly property real ox: view.width / 2
     readonly property real oy: view.height - view.originSize / 2 - view.summaryHeight - Theme.paddingMedium
-    /// The outer ring's radius: as far up as the cloud lets it reach. The
-    /// rings are round and centred on this phone, so on a narrow screen
-    /// the outer ones run off its sides.
-    readonly property real outer: Math.max(view.avatar,
-        view.oy - view.tilesBottom - view.cloudHeight - view.avatar / 2
-        - view.summaryHeight - 2 * Theme.paddingLarge)
+    /// The outer ring's radius: no wider than the screen, and low enough
+    /// that the cloud and the tiles fit above it. The rings are round and
+    /// centred on this phone, so the outer ones run off the screen's sides.
+    readonly property real outer: {
+        var room = view.oy - Theme.paddingLarge - view.tileHeight - view.cloudHeight
+                   - 2 * Theme.paddingMedium - view.avatar / 2 - view.summaryHeight - Theme.paddingLarge
+        return Math.max(view.avatar, Math.min(view.width, room))
+    }
+    /// The cloud sits just above the outer ring, the tiles just above it:
+    /// on a tall screen they come down with the rings rather than stay at
+    /// the top.
     readonly property real cloudX: view.ox
-    readonly property real cloudY: (view.tilesBottom + view.oy - view.outer - view.avatar * 0.6) / 2
-    /// The rings' radii, innermost first, evenly apart: far enough that a
-    /// peer and its name fit between two of them.
+    readonly property real cloudY: view.oy - view.outer - view.avatar / 2 - Theme.paddingMedium
+                                   - view.cloudHeight / 2
+    readonly property real tilesY: Math.max(Theme.paddingLarge, view.cloudY - view.cloudHeight / 2
+                                                                  - Theme.paddingMedium - view.tileHeight)
+    /// The rings' radii, innermost first, about a peer apart.
     readonly property var rings: {
-        var count = Math.max(2, Math.round(view.outer / (view.avatar * 1.4)))
+        var count = Math.max(3, Math.round(view.outer / view.avatar))
         var out = []
         for (var i = 1; i <= count; i++) {
             out.push(view.outer * i / count)
@@ -146,7 +150,7 @@ Item {
             [view.ox - reach, view.oy - reach, view.ox + reach, view.oy + reach + view.summaryHeight],
             [view.moreX - more, view.oy - more, view.moreX + more, view.oy + more]
         ]
-        var top = view.cloudY + view.cloudHeight / 2 + Theme.paddingMedium
+        var top = view.cloudY + view.cloudHeight / 2 + Theme.paddingSmall
         var edge = view.avatar / 2 + Theme.paddingSmall
         var boxes = []
         var fits = function (p) {
@@ -347,7 +351,7 @@ Item {
     function chooseWormhole() {
         if (view.hasOutgoing) {
             if (view.outgoing.wormhole && view.outgoing.transferId >= 0 && view.outgoingCode !== "") {
-                view.pageStack.push(Qt.resolvedUrl("../pages/WormholeCodePage.qml"),
+                pageStack.push(Qt.resolvedUrl("../pages/WormholeCodePage.qml"),
                                { engine: view.engine, transferId: view.outgoing.transferId })
             } else if (view.outgoingEnded) {
                 view.dismiss()
@@ -432,7 +436,7 @@ Item {
     }
 
     function pickFile() {
-        var picker = view.pageStack.push(Qt.resolvedUrl("../pages/FilePicker.qml"))
+        var picker = pageStack.push(Qt.resolvedUrl("../pages/FilePicker.qml"))
         if (picker) {
             picker.picked.connect(view.picked)
         } else {
@@ -460,11 +464,11 @@ Item {
             view.dismiss()
             return
         }
-        view.pageStack.push(Qt.resolvedUrl("../pages/PayloadPage.qml"), { payload: view.payload })
+        pageStack.push(Qt.resolvedUrl("../pages/PayloadPage.qml"), { payload: view.payload })
     }
 
     function showAll() {
-        view.pageStack.push(Qt.resolvedUrl("../pages/PeerListPage.qml"), { engine: view.engine, view: view })
+        pageStack.push(Qt.resolvedUrl("../pages/PeerListPage.qml"), { engine: view.engine, view: view })
     }
 
     Component.onCompleted: view.rebalance()
@@ -551,7 +555,7 @@ Item {
         id: wormholeTile
         objectName: "wormholeTile"
         x: view.margin
-        y: Theme.paddingLarge
+        y: view.tilesY
         width: view.tileWidth
         height: view.tileHeight
         visible: view.wormholeOn && (!view.hasOutgoing || view.wormholeWaiting)
@@ -564,7 +568,7 @@ Item {
     Item {
         objectName: "crocSlot"
         x: view.width - view.margin - view.tileWidth
-        y: Theme.paddingLarge
+        y: view.tilesY
         width: view.tileWidth
         height: view.tileHeight
         visible: false
@@ -775,18 +779,13 @@ Item {
             }
         }
 
-        Image {
-            anchors.centerIn: parent
-            visible: origin.empty && !view.hasOutgoing
-            source: "image://theme/icon-m-add?" + origin.ink
-        }
-
         Glyph {
+            objectName: "originGlyph"
             anchors.centerIn: parent
             width: parent.width * 0.6
             height: width
-            visible: !origin.empty || view.hasOutgoing
-            kind: view.payload.files.length > 0 || origin.empty ? "file" : "text"
+            kind: origin.empty && !view.hasOutgoing ? "add"
+                  : view.payload.files.length > 0 || origin.empty ? "file" : "text"
             color: origin.ink
         }
 

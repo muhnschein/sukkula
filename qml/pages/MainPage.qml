@@ -229,13 +229,6 @@ Page {
                 visible: page.showSend && sendView.outgoingState === "active"
                 onClicked: sendView.cancelSend()
             }
-            MenuItem {
-                objectName: "choosePayload"
-                //: Pulley menu in Send mode: choose the files or text to send.
-                text: qsTr("Choose what to send")
-                visible: page.showSend && !sendView.hasOutgoing
-                onClicked: sendView.editPayload()
-            }
         }
 
         // Send mode: the radar, as tall as the screen above the switch.
@@ -249,7 +242,6 @@ Page {
             payload: payload
             banner: banner
             discovering: page.discovering
-            pageStack: page.pageStack
         }
 
         // Receive mode, and anything that keeps the engine from starting.

@@ -116,7 +116,7 @@ Dialog {
         interval: 100
         repeat: true
         onTriggered: {
-            if (dialog.pageStack && dialog.pageStack.busy) {
+            if (pageStack.busy) {
                 return
             }
             if (dialog.status === PageStatus.Active || dialog.status === PageStatus.Activating) {
