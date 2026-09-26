@@ -6,17 +6,24 @@ import "helpers"
 import "helpers/Events.js" as Ev
 
 /*
- * "Send via…" (F-C6) with each protocol: discovery while the page is up,
- * peers shown as plain text, the send command's exact shape, the file
- * picker, Magic Wormhole's one-item rule and its code page with the QR
- * (F-MW1), Bluetooth's paired list (F-BT1), and each protocol switched
- * off in Settings gone from the page -- Magic Wormhole too, with the main
- * page's "Receive with a code" (F-C1).
+ * Send mode's radar (F-C6) with each protocol: peers from discovery and
+ * the paired Bluetooth devices on the rings with their names as plain
+ * text, each keeping its place; the send command's exact shape; the file
+ * picker first when nothing is chosen; the "What to send" page; a send's
+ * line, progress, cancel and end; refusals said and the chosen items
+ * kept; Magic Wormhole's one-item rule, its code on the tile and on the
+ * code page with the QR (F-MW1); Bluetooth's files-only rule (F-BT1);
+ * more peers than the rings hold, as a list; and each protocol switched
+ * off in Settings gone from the radar -- Magic Wormhole too, with Receive
+ * mode's "Receive with a code" (F-C1).
  */
 Script {
     id: test
 
+    property Item main: null
+    property Item view: null
     property Item page: null
+    readonly property string downloads: "/home/defaultuser/Downloads/"
 
     ApplicationWindow {
         id: window
@@ -38,113 +45,176 @@ Script {
         return out
     }
 
-    function choose(protocol) {
-        var box = probe.find(test.page, "protocolChoice")
-        box.choose(test.page.available.indexOf(protocol))
-        test.compare(test.page.protocol, protocol)
+    function lastOf(type) {
+        var all = test.commandsOfType(type)
+        return all.length > 0 ? all[all.length - 1] : null
+    }
+
+    function lastId() {
+        var cmds = bridge.parsedCommands()
+        return cmds[cmds.length - 1].id
+    }
+
+    /// The radar's peers on show, by name.
+    function shownNames() {
+        var out = []
+        var all = probe.findAll(test.view, "peerBubble")
+        for (var i = 0; i < all.length; i++) {
+            if (all[i].visible) {
+                out.push(all[i].name)
+            }
+        }
+        return out.sort()
+    }
+
+    function bubble(name) {
+        var all = probe.findAll(test.view, "peerBubble")
+        for (var i = 0; i < all.length; i++) {
+            if (all[i].visible && all[i].name === name) {
+                return all[i]
+            }
+        }
+        return null
+    }
+
+    function find(name) {
+        return probe.find(test.view, name)
     }
 
     steps: [
         function () {
-            // A main page underneath, as in the app.
-            window.pageStack.push(Qt.resolvedUrl("../../qml/pages/MainPage.qml"), { engine: engine })
-            test.page = window.pageStack.push(Qt.resolvedUrl("../../qml/pages/SendPage.qml"), {
-                engine: engine,
-                items: [
-                    { kind: "file", path: "/home/defaultuser/Downloads/" + Ev.EVIL_FILE },
-                    { kind: "file", path: "relative/path.txt" },
-                    { kind: "file", path: "/home/defaultuser/Downloads/" + Ev.EVIL_FILE },
-                    { kind: "text", text: Ev.EVIL_TEXT },
-                    { kind: "weird" },
-                    null
-                ]
-            })
+            test.main = window.pageStack.push(Qt.resolvedUrl("../../qml/pages/MainPage.qml"), { engine: engine })
+            test.view = probe.find(test.main, "sendView")
+            test.view.linger = 50
         },
         function () {
-            test.compare(test.commandsOfType("start_discovery").length, 1, "discovery starts with the page")
-            test.compare(test.page.files.length, 1, "absolute paths only, once each")
-            test.compare(probe.find(test.page, "sendFileName").text, Ev.EVIL_FILE)
-            test.compare(probe.find(test.page, "sharedText").text, Ev.EVIL_TEXT, "a shared text, plain")
-            test.compare(probe.find(test.page, "sendText").text, "", "the text box is the user's own")
-            test.compare(test.page.available, ["local_send", "quick_share", "wormhole", "bluetooth"])
-            test.compare(test.page.protocol, "local_send")
+            test.verify(test.view.visible, "Send mode shows the radar")
+            test.compare(test.commandsOfType("start_discovery").length, 1, "discovery runs in Send mode")
+            test.compare(test.commandsOfType("list_bluetooth_devices").length, 1)
+            test.compare(test.find("payloadSummary").text, "Tap to choose what to send")
+            test.compare(test.find("radarHint").text, "Looking for devices nearby…")
+            test.verify(test.find("wormholeTile").visible, "Magic Wormhole's tile")
+            test.verify(!test.find("crocSlot").visible, "the tile beside it waits for croc")
+            test.verify(probe.find(test.main, "choosePayload").visible)
             bridge.emitEvent(Ev.peerFound("p1", "local_send"))
             bridge.emitEvent(Ev.peerFound("q1", "quick_share", "Android"))
+            bridge.emitEvent(Ev.bluetoothDevices([{ address: "AA:BB:CC:DD:EE:FF", name: "Car EVIL" }]))
         },
         function () {
-            var names = probe.findAll(test.page, "peerName")
-            test.compare(names.length, 1, "LocalSend's peers only")
-            test.compare(names[0].text, Ev.EVIL_NAME)
-            test.compare(probe.find(test.page, "peerModel").text, Ev.EVIL_MODEL)
-            test.verifyPlainText(test.page, "the send page with peers")
-            probe.find(test.page, "peerItem").clicked()
-            var sent = test.commandsOfType("send")
-            test.compare(sent.length, 1)
-            test.compare(sent[0], {
+            test.compare(test.shownNames(), [Ev.EVIL_NAME, "Android", "Car EVIL"].sort(), "every protocol's peers")
+            test.compare(test.view.slots.slice(0, 3),
+                         ["local_send:p1", "quick_share:q1", "bluetooth:AA:BB:CC:DD:EE:FF"])
+            test.verify(!test.find("radarHint").visible)
+            test.verifyPlainText(test.main, "the radar with peers")
+            // Nothing chosen: the picker first, then the send.
+            bridge.nextTransfer = 50
+            test.bubble(Ev.EVIL_NAME).clicked()
+            test.compare(test.commandsOfType("send").length, 0, "nothing to send yet")
+            var picker = window.pageStack.currentPage
+            test.verify(picker !== test.main, "the picker is up")
+            picker.selectedContentProperties = { filePath: test.downloads + "a.txt" }
+            test.compare(test.lastOf("send"), {
                 type: "send",
                 target: { protocol: "local_send", peer: "p1" },
-                items: [{ kind: "file", path: "/home/defaultuser/Downloads/" + Ev.EVIL_FILE },
-                        { kind: "text", text: Ev.EVIL_TEXT }]
+                items: [{ kind: "file", path: test.downloads + "a.txt" }]
             })
-        },
-        function () {
-            test.compare(window.pageStack.currentPage.objectName, "mainPage", "back to the transfers")
-            return 50
-        },
-        function () {
-            test.compare(test.commandsOfType("stop_discovery").length, 1, "discovery stops with the page")
-            // Quick Share, and a refused send that stays on the page.
-            test.page = window.pageStack.push(Qt.resolvedUrl("../../qml/pages/SendPage.qml"), {
-                engine: engine, items: [{ kind: "text", text: "hello" }] })
-            bridge.emitEvent(Ev.peerFound("q1", "quick_share", "Android"))
-        },
-        function () {
-            test.choose("quick_share")
-            test.compare(probe.find(test.page, "peerName").text, "Android")
-            bridge.autoReply = false
-            probe.find(test.page, "peerItem").clicked()
-            var sent = test.commandsOfType("send")
-            test.compare(sent[sent.length - 1].target, { protocol: "quick_share", peer: "q1" })
-            var last = bridge.parsedCommands()
-            bridge.emitEvent(Ev.reply(last[last.length - 1].id, false, "refused"))
-        },
-        function () {
-            test.compare(window.pageStack.currentPage.objectName, "sendPage", "a refusal stays here")
-            test.compare(probe.find(test.page, "bannerLabel").text, "Declined.")
-            bridge.autoReply = true
-            // The file picker adds what it is given.
-            test.page.pickFile()
-            var picker = window.pageStack.currentPage
-            test.verify(picker !== test.page, "the picker is up")
-            picker.selectedContentProperties = { filePath: "/home/defaultuser/Downloads/b.pdf" }
             window.pageStack.pop()
         },
         function () {
-            test.compare(test.page.files.length, 1)
-            test.compare(test.page.files[0].name, "b.pdf")
-            test.compare(test.commandsOfType("start_discovery").length, 2, "not restarted by the picker")
-            // Magic Wormhole: one item only (F-MW1).
-            test.choose("wormhole")
-            var button = probe.find(test.page, "wormholeSend")
-            test.verify(!button.enabled, "a file and a text are two items")
-            test.page.removeText(0)
+            test.compare(window.pageStack.currentPage.objectName, "mainPage", "no page to leave")
+            test.compare(test.view.outgoing.transferId, 50)
+            test.compare(test.shownNames(), [], "only the send's peer stays")
+            var target = test.find("outgoingBubble")
+            test.verify(target.visible, "drawn on its own")
+            test.compare(target.name, Ev.EVIL_NAME)
+            test.verify(test.find("sendLine").visible, "a line to it")
+            test.verify(!test.find("wormholeLine").visible)
+            test.compare(test.find("outgoingStatus").text, "Waiting for an answer…")
+            bridge.emitEvent(Ev.transferStarted(50, "outgoing", {}))
+            bridge.emitEvent(Ev.progress(50, 500, 2000))
         },
         function () {
-            var button = probe.find(test.page, "wormholeSend")
-            test.verify(button.enabled, "one file is fine")
-            bridge.nextTransfer = 77
-            button.clicked()
-            var sent = test.commandsOfType("send")
-            test.compare(sent[sent.length - 1], { type: "send", target: { protocol: "wormhole" },
-                                                   items: [{ kind: "file", path: "/home/defaultuser/Downloads/b.pdf" }] })
+            test.compare(test.find("outgoingPercent").text, "25%")
+            test.compare(test.find("outgoingStatus").text, "500 B of 2.0 kB")
+            test.compare(test.find("outgoingBubble").progress, 0.25, "the avatar fills")
+            test.verify(probe.find(test.main, "cancelSending").visible)
+            test.verify(!probe.find(test.main, "choosePayload").visible)
+            test.find("cancelSend").clicked()
+            test.compare(test.lastOf("cancel"), { type: "cancel", transfer: 50 })
+            bridge.emitEvent(Ev.finished(50, "cancelled"))
+        },
+        function () {
+            test.compare(test.find("outgoingStatus").text, "Cancelled")
+            test.compare(test.main.payload.itemCount, 1, "a send that did not go keeps what was chosen")
+            test.find("outgoingBubble").clicked()
+            test.verify(test.view.outgoing === null, "a tap goes back to the radar")
+            test.compare(test.shownNames().length, 3, "with everyone on it")
+            test.compare(test.find("payloadSummary").text, "a.txt")
+            // The "What to send" page, from the centre.
+            test.find("origin").clicked()
         },
         function () {
             test.page = window.pageStack.currentPage
-            test.compare(test.page.objectName, "wormholeCodePage", "the code page takes over")
-            test.compare(test.page.transferId, 77)
-            test.verify(!probe.find(test.page, "wormholeCode").visible, "no code yet")
+            test.compare(test.page.objectName, "payloadPage")
+            test.compare(probe.find(test.page, "sendFileName").text, "a.txt")
+            probe.find(test.page, "sendText").text = "hello"
+            test.compare(test.main.payload.typed, "hello", "typed goes with it")
+            window.pageStack.pop()
+        },
+        function () {
+            test.compare(test.find("payloadCount").text, "2")
+            // A refused send is said, and everything stays.
+            bridge.autoReply = false
+            test.bubble("Android").clicked()
+            test.compare(test.lastOf("send"), {
+                type: "send",
+                target: { protocol: "quick_share", peer: "q1" },
+                items: [{ kind: "file", path: test.downloads + "a.txt" }, { kind: "text", text: "hello" }]
+            })
+            test.compare(test.find("outgoingStatus").text, "Connecting…")
+            // No second send while one is on its way.
+            test.view.choose(test.view.lanPeer({ protocol: "local_send", peerId: "p1", name: "x" }), 0)
+            test.compare(test.commandsOfType("send").length, 2)
+            bridge.emitEvent(Ev.reply(test.lastId(), false, "refused"))
+        },
+        function () {
+            test.compare(probe.find(test.main, "bannerLabel").text, "Declined.")
+            test.verify(test.view.outgoing === null)
+            test.compare(test.shownNames().length, 3)
+            test.compare(test.main.payload.itemCount, 2)
+            bridge.autoReply = true
+            // Bluetooth sends files only (F-BT1).
+            test.bubble("Car EVIL").clicked()
+            test.compare(test.commandsOfType("send").length, 2, "not with a text")
+            test.compare(probe.find(test.main, "bannerLabel").text, "Bluetooth sends files only.")
+            // Magic Wormhole: one item only (F-MW1).
+            test.find("wormholeTile").clicked()
+            test.compare(test.commandsOfType("send").length, 2, "not two items")
+            test.compare(probe.find(test.main, "bannerLabel").text,
+                         "Magic Wormhole sends one file or one text at a time.")
+            test.main.payload.typed = ""
+            bridge.nextTransfer = 77
+            test.find("wormholeTile").clicked()
+            test.compare(test.lastOf("send"), { type: "send", target: { protocol: "wormhole" },
+                                                items: [{ kind: "file", path: test.downloads + "a.txt" }] })
+        },
+        function () {
+            test.compare(test.view.outgoing.transferId, 77)
+            var tile = test.find("wormholeTile")
+            test.verify(tile.visible && tile.starting, "the tile waits for its code")
+            test.verify(!test.find("wormholeTileCode").visible, "no code yet")
+            test.verify(test.find("wormholeLine").visible, "the line goes up through the cloud")
+            test.verify(!test.find("outgoingBubble").visible, "nobody has come yet")
             bridge.emitEvent(Ev.wormholeCode(77, "7-guitarist-revenge"))
             bridge.emitEvent(Ev.transferStarted(77, "outgoing", { protocol: "wormhole", peer: "" }))
+        },
+        function () {
+            test.compare(test.find("wormholeTileCode").text, "7-guitarist-revenge")
+            // The code, big, with its QR, a tap away.
+            test.find("wormholeTile").clicked()
+            test.page = window.pageStack.currentPage
+            test.compare(test.page.objectName, "wormholeCodePage")
+            test.compare(test.page.transferId, 77)
         },
         function () {
             test.compare(probe.find(test.page, "wormholeCode").text, "7-guitarist-revenge")
@@ -152,127 +222,171 @@ Script {
             test.verify(qr.valid && qr.visible, "the QR code is drawn")
             test.compare(qr.size, 21)
             test.compare(probe.find(test.page, "wormholeStatus").text, "Waiting for the receiver…")
+            window.pageStack.pop()
             bridge.emitEvent(Ev.progress(77, 500, 1000))
         },
         function () {
-            test.compare(probe.find(test.page, "wormholeStatus").text, "500 B of 1.0 kB")
+            test.verify(!test.find("wormholeTile").visible, "the receiver has come")
+            test.verify(test.find("outgoingBubble").visible, "in the tile's place")
+            test.compare(test.find("outgoingPercent").text, "50%")
             bridge.emitEvent(Ev.finished(77, "done"))
         },
         function () {
-            test.compare(probe.find(test.page, "wormholeStatus").text, "Sent")
-            // A code whose QR the engine got wrong still shows the code.
-            bridge.emitEvent(Ev.wormholeCode(77, "8-other-code", { size: 21, rows: [] }))
+            test.compare(test.find("outgoingStatus").text, "Sent")
+            test.compare(test.find("outgoingPercent").text, "100%")
+            test.compare(test.main.payload.itemCount, 0, "what was sent is done with")
+            return 150
         },
         function () {
-            test.compare(probe.find(test.page, "wormholeCode").text, "8-other-code")
-            test.verify(!probe.find(test.page, "wormholeQr").visible, "no QR from a bad one")
-            window.pageStack.pop()
-            // Bluetooth: the paired list, files only.
-            test.page = window.pageStack.push(Qt.resolvedUrl("../../qml/pages/SendPage.qml"), {
-                engine: engine, items: [{ kind: "file", path: "/home/defaultuser/Downloads/c.jpg" }] })
-        },
-        function () {
-            test.choose("bluetooth")
-            test.compare(test.commandsOfType("list_bluetooth_devices").length, 1)
-            bridge.emitEvent(Ev.bluetoothDevices([{ address: "AA:BB:CC:DD:EE:FF", name: Ev.EVIL_NAME }]))
-        },
-        function () {
-            test.compare(probe.find(test.page, "bluetoothName").text, Ev.EVIL_NAME)
-            var item = probe.find(test.page, "bluetoothItem")
-            test.verify(item.enabled, "a file can go")
-            probe.find(test.page, "sendText").text = "and a text"
-            test.verify(!item.enabled, "a text cannot")
-            probe.find(test.page, "sendText").text = ""
-            item.clicked()
-            var sent = test.commandsOfType("send")
-            test.compare(sent[sent.length - 1].target, { protocol: "bluetooth", address: "AA:BB:CC:DD:EE:FF" })
-        },
-        function () {
-            test.compare(window.pageStack.currentPage.objectName, "mainPage", "the Bluetooth send went")
+            test.verify(test.view.outgoing === null, "back to the radar by itself")
+            test.verify(test.find("wormholeTile").visible)
+            test.compare(test.find("payloadSummary").text, "Tap to choose what to send")
             // A file from outside Downloads -- the gallery's, through the
             // Share menu -- is flagged, and the engine's bad_file is
             // explained: Sailjail grants Downloads only.
-            bridge.autoReply = false
-            test.page = window.pageStack.push(Qt.resolvedUrl("../../qml/pages/SendPage.qml"), {
-                engine: engine,
-                items: [{ kind: "file", path: "/home/defaultuser/Downloads/ok.txt" },
-                        { kind: "file", path: "/home/defaultuser/Pictures/Jolla/p.jpg" }] })
-            bridge.emitEvent(Ev.peerFound("p9", "local_send", "Laptop"))
+            test.main.share([{ kind: "file", path: test.downloads + "ok.txt" },
+                             { kind: "file", path: "/home/defaultuser/Pictures/Jolla/p.jpg" },
+                             { kind: "file", path: "relative/path.txt" },
+                             { kind: "file", path: test.downloads + "ok.txt" },
+                             { kind: "weird" },
+                             null])
+            test.compare(test.main.payload.files.length, 2, "absolute paths only, once each")
+            test.find("origin").clicked()
         },
         function () {
+            test.page = window.pageStack.currentPage
             var flags = probe.findAll(test.page, "sendFileOutside")
             test.compare(flags.length, 2)
             test.compare([flags[0].visible, flags[1].visible], [false, true], "only the Pictures file")
-            probe.find(test.page, "peerItem").clicked()
-            var cmds = bridge.parsedCommands()
-            bridge.emitEvent(Ev.reply(cmds[cmds.length - 1].id, false, "bad_file"))
-        },
-        function () {
-            test.compare(window.pageStack.currentPage.objectName, "sendPage", "the page stays, to fix it")
-            test.compare(probe.find(test.page, "bannerLabel").text,
-                         "A file could not be read. Sukkula can read files in Downloads only.")
-            bridge.autoReply = true
             window.pageStack.pop()
+            bridge.autoReply = false
+            test.bubble(Ev.EVIL_NAME).clicked()
+            bridge.emitEvent(Ev.reply(test.lastId(), false, "bad_file"))
         },
         function () {
+            test.compare(probe.find(test.main, "bannerLabel").text,
+                         "A file could not be read. Sukkula can read files in Downloads only.")
+            test.compare(test.main.payload.files.length, 2, "kept, to fix")
+            bridge.autoReply = true
+            // More peers than the rings hold.
+            for (var i = 0; i < 8; i++) {
+                bridge.emitEvent(Ev.peerFound("m" + i, "local_send", "Device " + i))
+            }
+        },
+        function () {
+            test.compare(test.shownNames().length, 7, "seven on the rings")
+            test.compare(test.view.overflow, 4)
+            var more = test.find("morePeers")
+            test.verify(more.visible, "the rest behind +N")
+            test.verify(probe.texts(more).indexOf("+4") >= 0)
+            bridge.emitEvent(Ev.peerLost("p1"))
+        },
+        function () {
+            var after = test.view.slots
+            test.verify(after[0] !== "local_send:p1", "a peer that went leaves its place")
+            test.verify(after[0] !== "", "to one that waited")
+            test.compare(after[1], "quick_share:q1", "and nobody else moves")
+            test.compare(test.view.overflow, 3)
+            test.find("morePeers").clicked()
+        },
+        function () {
+            test.page = window.pageStack.currentPage
+            test.compare(test.page.objectName, "peerListPage")
+            var rows = probe.findAll(test.page, "peerRow")
+            test.compare(rows.length, 10, "every peer")
+            var names = probe.findAll(test.page, "peerRowName")
+            var shown = []
+            for (var i = 0; i < names.length; i++) {
+                shown.push(names[i].text)
+            }
+            test.verify(shown.indexOf("Car EVIL") >= 0 && shown.indexOf("Device 7") >= 0, shown.join(", "))
+            test.verifyPlainText(test.page, "the device list")
+            bridge.nextTransfer = 90
+            for (var r = 0; r < rows.length; r++) {
+                if (probe.find(rows[r], "peerRowName").text === "Device 7") {
+                    rows[r].clicked()
+                }
+            }
+        },
+        function () {
+            test.compare(window.pageStack.currentPage.objectName, "mainPage", "back to the radar")
+            var sent = test.lastOf("send")
+            test.compare(sent.target, { protocol: "local_send", peer: "m7" }, "to the one tapped")
+            test.verify(test.find("outgoingBubble").visible, "drawn, though it has no place on the rings")
+            bridge.emitEvent(Ev.transferStarted(90, "outgoing", {}))
+            // A share while it runs: the next thing to send.
+            test.main.share([{ kind: "text", text: "next" }])
+            bridge.emitEvent(Ev.finished(90, "done"))
+            return 150
+        },
+        function () {
+            test.verify(test.view.outgoing === null)
+            test.compare(test.main.payload.texts, ["next"], "a share that came during a send outlives it")
             // F-C1: every protocol but Magic Wormhole off.
             bridge.emitEvent(Ev.settings({ localsend: { enabled: false, pin: null },
                                            quickshare: { enabled: false, visibility: "hidden", ble_nudge: false },
                                            bluetooth: { enabled: false } }))
-            test.page = window.pageStack.push(Qt.resolvedUrl("../../qml/pages/SendPage.qml"), { engine: engine })
         },
         function () {
-            test.compare(test.page.available, ["wormhole"], "only what is switched on")
-            test.compare(test.page.protocol, "wormhole")
-            // Magic Wormhole switched off under the open page: it goes too.
+            test.compare(test.shownNames(), [], "nobody on the rings")
+            test.verify(!test.find("morePeers").visible)
+            test.verify(test.find("wormholeTile").visible, "Magic Wormhole stays")
+            test.verify(!test.find("radarHint").visible, "and nothing is looked for")
+            // Magic Wormhole switched off as well.
             bridge.emitEvent(Ev.settings({ localsend: { enabled: false, pin: null },
                                            quickshare: { enabled: false, visibility: "hidden", ble_nudge: false },
                                            wormhole: { enabled: false, mailbox_url: null, relay_url: null },
                                            bluetooth: { enabled: false } }))
         },
         function () {
-            test.compare(test.page.available, [], "Magic Wormhole has a switch as well (F-C1)")
-            test.compare(test.page.protocol, "")
-            test.verify(!probe.find(test.page, "wormholeSend").parent.visible, "no code to make")
-            test.verify(!probe.find(test.page, "protocolChoice").visible, "nothing to choose")
-            test.verify(probe.texts(test.page).indexOf("Every way of sending is switched off in Settings.") >= 0,
-                        "and it says why")
-            window.pageStack.pop()
-            return 50
+            test.verify(!test.find("wormholeTile").visible, "Magic Wormhole has a switch as well (F-C1)")
+            test.verify(!test.find("cloud").visible)
+            test.verify(test.find("radarHint").visible)
+            test.compare(test.find("radarHint").text, "Every way of sending is switched off in Settings.")
+            test.verify(!probe.find(test.main, "receiveWithCode").visible, "and nothing for Send mode")
+            bridge.emitEvent(Ev.receiving(true))
         },
         function () {
-            // (Checked with the main page on top: a covered page's items
-            // are all invisible.)
-            test.verify(!probe.find(window, "receiveWithCode").visible, "no receiving with a code either")
+            test.verify(!probe.find(test.main, "receiveWithCode").visible, "no receiving with a code either")
             // Magic Wormhole alone on.
             bridge.emitEvent(Ev.settings({ localsend: { enabled: false, pin: null },
                                            quickshare: { enabled: false, visibility: "hidden", ble_nudge: false },
                                            bluetooth: { enabled: false } }))
-            return 50
         },
         function () {
-            test.verify(probe.find(window, "receiveWithCode").visible, "receiving with a code is back")
-            test.page = window.pageStack.push(Qt.resolvedUrl("../../qml/pages/SendPage.qml"), { engine: engine })
-            test.compare(test.page.protocol, "wormhole")
-            test.verify(!probe.find(test.page, "wormholeSend").enabled, "nothing chosen, nothing to send")
-            // A reply after the page has gone is dropped quietly.
+            test.verify(probe.find(test.main, "receiveWithCode").visible, "receiving with a code is back")
+            bridge.emitEvent(Ev.receiving(false))
+        },
+        function () {
+            test.verify(!probe.find(test.main, "receiveWithCode").visible, "in Receive mode only")
+            // A reply after its page has gone is dropped quietly.
+            test.page = window.pageStack.push(Qt.resolvedUrl("../../qml/pages/MainPage.qml"), { engine: engine })
+            var other = probe.find(test.page, "sendView")
+            test.page.payload.typed = "late"
             bridge.autoReply = false
-            probe.find(test.page, "sendText").text = "late"
-            probe.find(test.page, "wormholeSend").clicked()
+            probe.find(other, "wormholeTile").clicked()
+            test.compare(test.lastOf("send").items, [{ kind: "text", text: "late" }])
+            test.pendingId = test.lastId()
             window.pageStack.pop()
             return 50
         },
         function () {
-            var last = bridge.parsedCommands()
-            var id = -1
-            for (var i = last.length - 1; i >= 0; i--) {
-                if (last[i].cmd.type === "send") {
-                    id = last[i].id
-                    break
+            bridge.emitEvent(Ev.reply(test.pendingId, true, "", 5))
+            return 50
+        },
+        function () {
+            test.compare(window.pageStack.currentPage.objectName, "mainPage")
+            test.compare(engine.discoveryUsers, 1, "the page that went gave its discovery back")
+            var cmds = bridge.parsedCommands()
+            var last = ""
+            for (var i = 0; i < cmds.length; i++) {
+                if (cmds[i].cmd.type === "start_discovery" || cmds[i].cmd.type === "stop_discovery") {
+                    last = cmds[i].cmd.type
                 }
             }
-            bridge.emitEvent(Ev.reply(id, true, "", 5))
-            return 50
+            test.compare(last, "start_discovery", "and did not stop it for the page still in Send mode")
         }
     ]
+
+    property var pendingId: -1
 }

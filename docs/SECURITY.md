@@ -78,7 +78,7 @@ consent.**
   its own thread before that thread ends; nothing waits for it.
 - **mDNS announcements are unauthenticated.** Any host on the link can
   announce a Quick Share device under any name, or send a goodbye for
-  another device's announcement and take it off the Send page until it
+  another device's announcement and take it off the send radar until it
   next announces. Sukkula bounds what one source can take (four peers, a
   fair share of a full list, a rate per source) but cannot tell a phone
   from a claim to be one; the PIN both screens show is what does (F-QS3).

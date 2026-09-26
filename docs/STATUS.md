@@ -1,6 +1,6 @@
 # Status
 
-Where Sukkula stands against `docs/SPEC.md` (v0.3), what has been
+Where Sukkula stands against `docs/SPEC.md` (v0.4), what has been
 verified and how, and what is waiting on the owner or on hardware.
 
 ## Built
@@ -16,7 +16,9 @@ Everything the spec asks for in v1.0:
   - Magic Wormhole v1;
   - Bluetooth OBEX send.
 - The hub, the C ABI (`sukkula-ffi`) and per-engine logging (S9).
-- The Qt/C++ shell and the Silica UI in en/fi/de/sv, with the Share menu.
+- The Qt/C++ shell and the Silica UI in en/fi/de/sv, with the Share menu
+  and Send | Receive as the main page's two modes (spec v0.4): the send
+  radar puts every protocol's peers on one screen.
 - The RPM spec for the Jolla Phone 2026 (Sailfish OS 5.2+, aarch64 only).
 - CI with the Harbour gate, 16 fuzz targets, the dependency policy and
   the vendor check.
@@ -92,7 +94,9 @@ docs; the upstream ones are in `docs/UPSTREAM-QUICKSHARE.md`.
   - the phone's firewall;
   - Sailjail;
   - real Android, LocalSend, wormhole and Bluetooth peers;
-  - the Share-menu activation (`ExecDBus`).
+  - the Share-menu activation (`ExecDBus`);
+  - how the send radar looks and feels on the phone (M-18): the host
+    tests lay it out but never look at it.
 
 ## Waiting on the owner
 
@@ -103,6 +107,15 @@ docs; the upstream ones are in `docs/UPSTREAM-QUICKSHARE.md`.
   - switching Wormhole off does not cancel a wormhole transfer already
     running;
   - `docs/UPSTREAM-QUICKSHARE.md` is drafted, not filed.
+- **Send mode, open questions** (spec v0.4):
+  - discovery runs whenever the app is open in Send mode, in the
+    background too, as the Send page's did while it was open; pausing it
+    in the background would empty the radar on every return;
+  - the radar is laid out for portrait: seven peers fit without overlap,
+    and landscape squeezes the rings;
+  - Receive mode keeps the list it had; it has no design of its own yet;
+  - the protocol badges are Sukkula's own marks, not the protocols'
+    logos; the tile beside Magic Wormhole's is kept for croc.
 - **The default branch.** `main` exists now; making it the repository's
   default (Settings, General) is the owner's. Until then Dependabot and
   `workflow_dispatch` keep using the old branch.

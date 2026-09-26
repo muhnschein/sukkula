@@ -7,8 +7,9 @@ import "helpers"
 import "helpers/Events.js" as Ev
 
 /*
- * The main page, the received-text page and the cover: the Receive switch
- * (F-C1) and each protocol's state, transfers with progress and cancel
+ * The main page, the received-text page and the cover: Send | Receive as
+ * the engine's state (F-C1) -- discovery in Send mode only, each
+ * protocol's state in Receive mode -- transfers with progress and cancel
  * (F-C5), received texts as plain text with a Copy button and nothing
  * that opens them (F-C4), and a cover that says whether Sukkula is
  * receiving without naming anyone.
@@ -39,6 +40,17 @@ Script {
         return c ? c.cmd : null
     }
 
+    function count(type) {
+        var n = 0
+        var cmds = bridge.parsedCommands()
+        for (var i = 0; i < cmds.length; i++) {
+            if (cmds[i].cmd.type === type) {
+                n++
+            }
+        }
+        return n
+    }
+
     function textsOf(root) {
         return probe.texts(root).join("\n")
     }
@@ -49,49 +61,54 @@ Script {
             test.verify(test.main !== null, "the main page loads")
         },
         function () {
-            var toggle = probe.find(test.main, "receiveSwitch")
-            test.compare(toggle.checked, false)
-            test.verify(toggle.enabled, "enabled once the engine runs")
-            test.compare(probe.find(test.main, "deviceNameLabel").text, "Shown to others as Jolla Phone")
-            test.verify(test.textsOf(test.main).indexOf("LocalSend: Off") >= 0, "per-protocol state")
+            var modes = probe.find(test.main, "modeSwitch")
+            test.compare(modes.receiving, false, "Send mode first: the engine starts not receiving")
+            test.verify(modes.enabled, "enabled once the engine runs")
+            test.verify(probe.find(test.main, "sendView").visible, "the send radar")
+            test.verify(!probe.find(test.main, "emptyHint").visible, "not the receive list")
+            test.compare(test.count("start_discovery"), 1, "Send mode looks for peers")
+            test.compare(test.count("list_bluetooth_devices"), 1, "and lists the paired devices")
             test.verify(test.textsOf(cover).indexOf("Not receiving") >= 0, "the cover says off")
-            // F-C1: one switch, one command.
+            // F-C1: one tap, one command.
             bridge.autoReply = false
-            toggle.click()
+            probe.find(test.main, "modeSend").clicked()
+            test.compare(test.count("set_receiving"), 0, "the mode shown is no change")
+            probe.find(test.main, "modeReceive").clicked()
             test.compare(test.lastCmd(), { type: "set_receiving", on: true })
-            test.verify(toggle.busy, "busy until the reply")
-            test.compare(toggle.checked, false, "the switch follows the engine, not the tap")
+            test.verify(modes.busy, "busy until the reply")
+            test.compare(modes.receiving, false, "the switch follows the engine, not the tap")
             // A second tap while busy sends nothing.
-            toggle.click()
-            var sets = 0
+            probe.find(test.main, "modeReceive").clicked()
+            test.compare(test.count("set_receiving"), 1, "one set_receiving while busy")
             var cmds = bridge.parsedCommands()
-            for (var i = 0; i < cmds.length; i++) {
-                if (cmds[i].cmd.type === "set_receiving") {
-                    sets++
-                }
-            }
-            test.compare(sets, 1, "one set_receiving while busy")
             bridge.emitEvent(Ev.reply(cmds[cmds.length - 1].id, true))
             bridge.emitEvent(Ev.receiving(true, true))
         },
         function () {
-            var toggle = probe.find(test.main, "receiveSwitch")
-            test.compare(toggle.checked, true)
-            test.compare(toggle.busy, false)
+            var modes = probe.find(test.main, "modeSwitch")
+            test.compare(modes.receiving, true)
+            test.compare(modes.busy, false)
+            test.verify(!probe.find(test.main, "sendView").visible, "the radar goes")
+            test.verify(probe.find(test.main, "receiveState").visible, "Receive mode says what it means")
+            test.compare(probe.find(test.main, "deviceNameLabel").text, "Shown to others as Jolla Phone")
+            test.compare(test.count("stop_discovery"), 1, "no discovery in Receive mode")
+            test.compare(engine.discoveryUsers, 0)
             var all = test.textsOf(test.main)
             test.verify(all.indexOf("LocalSend: Failed") >= 0, "a failed protocol says so: " + all)
             test.verify(all.indexOf("Network error or timeout.") >= 0, "translated, by code")
             test.verify(all.indexOf("port 53317 in use") < 0, "the engine's English stays off the main page")
             test.verify(test.textsOf(cover).indexOf("Receiving") >= 0, "the cover says on")
-            bridge.autoReply = true
-            // A refused switch is reported.
-            bridge.autoReply = false
-            toggle.click()
+            test.verify(probe.find(test.main, "emptyHint").visible, "waiting for offers")
+            // A refused switch is reported, and the mode stays.
+            probe.find(test.main, "modeSend").clicked()
             var cmds = bridge.parsedCommands()
+            test.compare(cmds[cmds.length - 1].cmd, { type: "set_receiving", on: false })
             bridge.emitEvent(Ev.reply(cmds[cmds.length - 1].id, false, "unavailable"))
         },
         function () {
             test.compare(probe.find(test.main, "bannerLabel").text, "Not available. Is it switched off in Settings?")
+            test.compare(probe.find(test.main, "modeSwitch").receiving, true, "still receiving")
+            test.compare(test.count("start_discovery"), 1, "and not looking")
             bridge.autoReply = true
             // Transfers (F-C5).
             bridge.emitEvent(Ev.transferStarted(1, "incoming", {}))
@@ -170,7 +187,10 @@ Script {
             test.compare(probe.find(test.main, "fatalLabel").text,
                          "Sukkula could not start: Could not save. Is the storage full?")
             test.verify(probe.find(test.main, "fatalLabel").visible, "shown")
-            test.verify(!probe.find(test.main, "receiveSwitch").enabled, "nothing to switch")
+            test.verify(!probe.find(test.main, "modeSwitch").enabled, "nothing to switch")
+            var before = test.count("set_receiving")
+            test.main.setMode(false)
+            test.compare(test.count("set_receiving"), before, "and nothing is sent")
             test.verify(test.textsOf(test.main).indexOf("read-only file system") >= 0, "the detail line")
         }
     ]

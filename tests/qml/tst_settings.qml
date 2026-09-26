@@ -54,7 +54,7 @@ Script {
             test.compare(test.field("loggingSwitch").checked, false, "logging off by default (S9)")
             test.compare(test.field("wormholeSwitch").checked, true, "Magic Wormhole on by default (F-C1)")
             test.compare(test.field("nudgeSwitch").description,
-                         "While the Send page looks for devices, a Bluetooth signal prompts Android phones nearby to show up.",
+                         "While Send mode looks for devices, a Bluetooth signal prompts Android phones nearby to show up.",
                          "the nudge said as what it is: a sending aid (F-QS2)")
             // Leaving unchanged saves nothing.
             window.pageStack.pop()

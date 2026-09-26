@@ -10,9 +10,9 @@ import "cover"
 /*
  * The window: the engine, the pages, and the three things that belong to
  * the app rather than to any page -- the consent dialog, which comes up
- * over whatever is showing whenever an offer waits (F-C2); the Share menu
- * (F-C6); and keeping the CPU awake while, and only while, a transfer
- * runs (spec §2).
+ * over whatever is showing whenever an offer waits (F-C2); the Share menu,
+ * whose files go to the main page's send radar (F-C6); and keeping the CPU
+ * awake while, and only while, a transfer runs (spec §2).
  *
  * `bridge` is the C++ Bridge main.cpp puts in the root context.
  */
@@ -83,17 +83,18 @@ ApplicationWindow {
             return
         }
         if (appWindow.consentPage === null && appWindow.pendingShare !== null) {
+            var main = pageStack.find(function (page) { return page.objectName === "mainPage" })
+            if (!main) {
+                return
+            }
             var items = appWindow.pendingShare
             appWindow.pendingShare = null
-            var main = pageStack.find(function (page) { return page.objectName === "mainPage" })
-            var props = { engine: sukkula, items: items }
-            if (main) {
-                // Whatever was above the main page goes: one Send page.
-                pageStack.replaceAbove(main, Qt.resolvedUrl("pages/SendPage.qml"), props)
-            } else {
-                // Never replaceAbove(null): that would take the main page too.
-                pageStack.push(Qt.resolvedUrl("pages/SendPage.qml"), props)
+            // Whatever was above the main page goes: the share lands at
+            // the centre of its send radar.
+            if (pageStack.currentPage !== main) {
+                pageStack.pop(main)
             }
+            main.share(items)
         }
     }
 

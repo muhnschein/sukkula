@@ -264,8 +264,8 @@ Page {
                 visible: page.engine.hasProtocol("quick_share")
                 //: Settings: while sending, a Bluetooth LE signal makes nearby Android phones announce themselves on the Wi-Fi (F-QS2).
                 text: qsTr("Bluetooth nudge")
-                //: Settings: what the Bluetooth nudge does. It works only while the Send page looks for devices; it does not make this phone visible.
-                description: qsTr("While the Send page looks for devices, a Bluetooth signal prompts Android phones nearby to show up.")
+                //: Settings: what the Bluetooth nudge does. It works only while Send mode looks for devices; it does not make this phone visible.
+                description: qsTr("While Send mode looks for devices, a Bluetooth signal prompts Android phones nearby to show up.")
             }
 
             SectionHeader {

@@ -10,11 +10,12 @@ import "helpers/Events.js" as Ev
  *  - A consent dialog pushed over Settings saves nothing (F-C2): a save
  *    restarts the receivers, which withdrew the offer being shown, and
  *    made a half-typed value live. Leaving Settings saves what it holds.
- *  - A share that replaces an open Send page keeps discovery running and
- *    the peers listed (F-LS1, F-QS1, F-C6).
- *  - A reply to a send, or to a wormhole code, never pops or replaces a
- *    consent dialog that came up over its page (F-C2, S5); the page goes
- *    once it is on top again.
+ *  - A share that arrives while a page is over the main one lands at the
+ *    radar's centre with discovery kept running and the peers kept (F-LS1,
+ *    F-QS1, F-C6); Receive mode gives discovery back and forgets them.
+ *  - A reply to a send never moves a consent dialog that came up over the
+ *    main page (F-C2, S5), and a reply to a wormhole code pops its own
+ *    page only, once it is on top again.
  *  - An offer closed while its dialog cannot leave yet is never left in
  *    the stack under the next offer's dialog (F-C2, F-C3), and whatever
  *    closes is not answered.
@@ -120,12 +121,7 @@ Script {
             test.compare(saved[0].cmd.settings.device_name, "Pekka", "what was typed in the end")
             test.compare(saved[0].cmd.settings.logging, true)
             test.compare(test.top(), "mainPage")
-            // A share opens a Send page, which asks for discovery.
-            test.find("shareText").triggered([{ data: "first" }])
-            return 100
-        },
-        function () {
-            test.compare(test.top(), "sendPage")
+            // Send mode holds discovery.
             test.compare(test.engine.discoveryUsers, 1)
             bridge.emitEvent(Ev.peerFound("p1", "local_send"))
             bridge.emitEvent(Ev.peerFound("q1", "quick_share", "Android"))
@@ -133,22 +129,29 @@ Script {
         },
         function () {
             test.compare(test.engine.localSendPeers.count, 1)
-            // A second share while that page is open replaces it.
+            // A share while the "What to send" page is over the main page.
+            probe.find(test.find("mainPage"), "origin").clicked()
+            test.compare(test.top(), "payloadPage")
             test.find("shareText").triggered([{ data: "second" }])
             return 200
         },
         function () {
-            test.compare(test.names(), ["mainPage", "sendPage"], "one Send page, replaced")
-            test.compare(test.stack.currentPage.texts, ["second"])
+            var main = test.find("mainPage")
+            test.compare(test.names(), ["mainPage"], "the share goes to the main page")
+            test.compare(main.payload.texts, ["second"])
             var d = test.discovery()
-            test.compare(d[d.length - 1], "start_discovery", "no stop after the new page's start: " + d)
-            test.compare(test.engine.discoveryUsers, 1, "the new page holds discovery")
+            test.compare(d, ["start_discovery"], "discovery kept running: " + d)
+            test.compare(test.engine.discoveryUsers, 1)
             test.compare(test.engine.localSendPeers.count, 1, "the peers found are still listed")
             test.compare(test.engine.quickSharePeers.count, 1)
-            test.compare(probe.find(test.stack.currentPage, "peerName").text, Ev.EVIL_NAME, "and shown")
             // A send whose reply comes while an offer's dialog is up.
             bridge.autoReply = false
-            probe.find(test.stack.currentPage, "peerItem").clicked()
+            var bubbles = probe.findAll(main, "peerBubble")
+            for (var i = 0; i < bubbles.length; i++) {
+                if (bubbles[i].visible && bubbles[i].name === "Android") {
+                    bubbles[i].clicked()
+                }
+            }
             test.pendingId = test.lastId("send")
             test.verify(test.pendingId > 0, "the send went out")
             bridge.emitEvent(Ev.offer(2, {}))
@@ -160,50 +163,26 @@ Script {
             return 200
         },
         function () {
-            test.compare(test.names(), ["mainPage", "sendPage", "consentDialog"],
-                         "the send's reply leaves the dialog alone")
+            test.compare(test.names(), ["mainPage", "consentDialog"], "the send's reply leaves the dialog alone")
             test.compare(test.stack.currentPage.offer.offerId, 2)
             test.compare(test.answers(), [[1, false]], "and nothing answers the offer for the user")
+            test.compare(probe.find(test.find("mainPage"), "sendView").outgoing.transferId, 40,
+                         "the send is on the radar underneath")
             test.stack.currentPage.reject()
             return 400
         },
         function () {
             test.compare(test.answers(), [[1, false], [2, false]])
-            test.compare(test.names(), ["mainPage"], "the Send page went once it was on top")
+            test.compare(test.names(), ["mainPage"])
+            // Receive mode gives discovery back.
+            bridge.emitEvent(Ev.receiving(true))
+            return 50
+        },
+        function () {
             var d = test.discovery()
-            test.compare(d[d.length - 1], "stop_discovery", "the last page out stops discovery")
+            test.compare(d[d.length - 1], "stop_discovery", "Receive mode stops discovery")
             test.compare(test.engine.discoveryUsers, 0)
             test.compare(test.engine.localSendPeers.count, 0, "and the peers are forgotten")
-            // The same for a wormhole send, whose reply replaces the page.
-            test.find("shareText").triggered([{ data: "one" }])
-            return 100
-        },
-        function () {
-            var page = test.stack.currentPage
-            test.compare(page.objectName, "sendPage")
-            probe.find(page, "protocolChoice").choose(page.available.indexOf("wormhole"))
-            test.compare(page.protocol, "wormhole")
-            probe.find(page, "wormholeSend").clicked()
-            test.pendingId = test.lastId("send")
-            bridge.emitEvent(Ev.offer(3, {}))
-            return 100
-        },
-        function () {
-            test.compare(test.top(), "consentDialog")
-            bridge.emitEvent(Ev.reply(test.pendingId, true, "", 41))
-            return 200
-        },
-        function () {
-            test.compare(test.names(), ["mainPage", "sendPage", "consentDialog"],
-                         "the code page does not replace the dialog")
-            test.stack.currentPage.accept()
-            return 400
-        },
-        function () {
-            test.compare(test.answers(), [[1, false], [2, false], [3, true]])
-            test.compare(test.names(), ["mainPage", "wormholeCodePage"], "then it replaces the Send page")
-            test.compare(test.stack.currentPage.transferId, 41)
-            test.stack.pop()
             // Receiving with a code: its reply pops its own page only.
             test.stack.push(Qt.resolvedUrl("../../qml/pages/WormholeReceivePage.qml"), { engine: test.engine })
             test.find("codeField").text = "7-guitarist-revenge"
@@ -224,7 +203,7 @@ Script {
             return 400
         },
         function () {
-            test.compare(test.answers(), [[1, false], [2, false], [3, true], [4, false]])
+            test.compare(test.answers(), [[1, false], [2, false], [4, false]])
             test.compare(test.names(), ["mainPage"], "the code page went once it was on top")
             bridge.autoReply = true
             // Two offers; the first is withdrawn while its dialog is still
@@ -248,12 +227,12 @@ Script {
         function () {
             test.compare(test.names(), ["mainPage", "consentDialog"], "one dialog, never one over another")
             test.compare(test.stack.currentPage.offer.offerId, 6, "the next offer's")
-            test.compare(test.answers().length, 4, "the withdrawn offer is not answered")
+            test.compare(test.answers().length, 3, "the withdrawn offer is not answered")
             test.stack.currentPage.accept()
             return 400
         },
         function () {
-            test.compare(test.answers()[4], [6, true])
+            test.compare(test.answers()[3], [6, true])
             test.compare(test.names(), ["mainPage"], "and no stale dialog comes back")
             // An offer that times out while the stack is busy: declined by
             // the dialog's countdown, and gone before the next one shows.
@@ -268,7 +247,7 @@ Script {
             return 2200
         },
         function () {
-            test.compare(test.answers()[5], [7, false], "the countdown declined it")
+            test.compare(test.answers()[4], [7, false], "the countdown declined it")
             test.compare(test.names(), ["mainPage", "consentDialog"], "nothing pushed while busy")
             test.stack.holdBusy = false
             return 600
@@ -285,14 +264,14 @@ Script {
         function () {
             test.verify(!test.stack.currentPage.canAccept, "a closed offer's dialog accepts nothing")
             test.stack.currentPage.accept()
-            test.compare(test.answers().length, 6, "no answer for a closed offer")
+            test.compare(test.answers().length, 5, "no answer for a closed offer")
             test.stack.holdBusy = false
             return 400
         },
         function () {
             test.compare(test.names(), ["mainPage"])
             test.compare(test.engine.answer(8, true), 0, "the engine answers no closed offer either")
-            test.compare(test.answers().length, 6)
+            test.compare(test.answers().length, 5)
         }
     ]
 }
