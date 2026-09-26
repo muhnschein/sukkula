@@ -213,7 +213,8 @@ app "$work/archive-linked" "$root/src/tls_reserve.c" -DWITH_RESERVE "$work/app.c
 # pie_cleared <in> <out>: a copy without DF_1_PIE, so this glibc dlopen()s
 # it as Sailfish's does.
 pie_cleared() {
-    python3 - "$1" "$2" <<'EOF'
+    local input=$1 output=$2
+    python3 - "$input" "$output" <<'EOF'
 import struct, sys
 data = bytearray(open(sys.argv[1], "rb").read())
 phoff, = struct.unpack_from("<Q", data, 0x20)

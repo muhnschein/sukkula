@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# The short fuzz run spec §7 puts on every change: each cargo-fuzz target in
-# fuzz/, for 60 seconds by default, from its committed seeds.
+# The fuzz run spec §7 asks for: each cargo-fuzz target in fuzz/, for 60
+# seconds by default, from its committed seeds and fuzz/corpus/. fuzz.yml
+# runs it every night against main, for 300 seconds a target.
 #
 #     scripts/fuzz-smoke.sh [seconds-per-target] [target...]
 #                                              every target, or the ones named
@@ -9,7 +10,7 @@
 #                                              inputs and the verdicts, offline
 #
 # Targets are asked of `cargo fuzz list`, not listed here, so a target
-# added to fuzz/Cargo.toml is fuzzed from the pull request that adds it.
+# added to fuzz/Cargo.toml is fuzzed from the first night after it merges.
 # Zero targets is a failure: a smoke run that fuzzed nothing passed nothing.
 # So is a target without committed seeds or a dictionary, and a dictionary
 # libFuzzer cannot parse: ci/check-dicts.sh runs first, and says which.
@@ -51,9 +52,9 @@ fail() { echo "fuzz-smoke: FAIL $*" >&2; exit 1; }
 # a changed limit moves the lengths with it (and a moved definition fails
 # here rather than silently fuzzing at the old length).
 rust_const() { # file name
-    local expr
-    expr=$(sed -n "s/^pub const $2: usize = \([0-9 *]*\);\$/\1/p" "$1")
-    [[ $expr =~ ^[0-9]+( \* [0-9]+)*$ ]] || fail "cannot read $2 from $1"
+    local file=$1 name=$2 expr
+    expr=$(sed -n "s/^pub const $name: usize = \([0-9 *]*\);\$/\1/p" "$file")
+    [[ $expr =~ ^[0-9]+( \* [0-9]+)*$ ]] || fail "cannot read $name from $file"
     echo $((expr))
 }
 MSG_CAP=$(rust_const crates/sukkula-core/src/limits.rs MAX_MESSAGE_BYTES)
@@ -81,9 +82,10 @@ in_list() { # word list...
     return 1
 }
 max_len_for() {
-    if in_list "$1" "${CAP64K[@]}"; then
+    local target=$1
+    if in_list "$target" "${CAP64K[@]}"; then
         echo $((MSG_CAP + 4096))
-    elif in_list "$1" "${CAP_SETTINGS[@]}"; then
+    elif in_list "$target" "${CAP_SETTINGS[@]}"; then
         echo "$SETTINGS_CAP"
     else
         # Everything else asserts caps a 4 KiB input reaches, or that the
@@ -99,8 +101,9 @@ max_len_for() {
 # per line. The one place they are made, so the self-test reads what the
 # run passes.
 fuzz_args() {
-    printf '%s\n' -max_total_time="$2" -max_len="$(max_len_for "$1")" -rss_limit_mb=2048 \
-        -timeout=10 -print_final_stats=1 -dict="fuzz/dicts/$1.dict"
+    local target=$1 seconds=$2
+    printf '%s\n' -max_total_time="$seconds" -max_len="$(max_len_for "$target")" -rss_limit_mb=2048 \
+        -timeout=10 -print_final_stats=1 -dict="fuzz/dicts/$target.dict"
 }
 
 # boundary_seeds <target> <dir>: inputs exactly at the target's cap and
@@ -136,13 +139,15 @@ boundary_seeds() {
 # fuzz/artifacts/<t>/ is the harness's, an option's or a dictionary's.
 # new_artifacts <listing before> <dir>: what appeared in <dir> since.
 new_artifacts() {
-    comm -13 <(printf '%s\n' "$1") <(find "$2" -type f 2>/dev/null | sort || true) | grep -v '^$' || true
+    local before=$1 dir=$2
+    comm -13 <(printf '%s\n' "$before") <(find "$dir" -type f 2>/dev/null | sort || true) | grep -v '^$' || true
 }
 verdict() { # target rc new-artifacts
-    if [[ -n "$3" ]]; then
-        echo "fuzz-smoke: FAIL $1 found something; the reproducer is $(head -1 <<< "$3")"
+    local target=$1 rc=$2 artifacts=$3
+    if [[ -n "$artifacts" ]]; then
+        echo "fuzz-smoke: FAIL $target found something; the reproducer is $(head -1 <<< "$artifacts")"
     else
-        echo "fuzz-smoke: FAIL $1: libFuzzer exited $2 without writing a reproducer --" \
+        echo "fuzz-smoke: FAIL $target: libFuzzer exited $rc without writing a reproducer --" \
              "not a finding but a broken run (an option, the build, the harness); see the log above"
     fi
 }
@@ -158,13 +163,16 @@ cargo_targets() {
 # Both are called through the self-test's `check`, which shellcheck
 # cannot follow.
 # shellcheck disable=SC2317
-contains() { [[ "$1" == *"$2"* ]]; }
+contains() {
+    local text=$1 part=$2
+    [[ "$text" == *"$part"* ]]
+}
 # padded_with_spaces <seed> <file>: <file> is <seed>'s bytes, then spaces.
 # shellcheck disable=SC2317
 padded_with_spaces() {
-    local n
-    n=$(stat -c %s "$1")
-    cmp -s -n "$n" "$1" "$2" && [[ -z "$(tail -c +$((n + 1)) "$2" | tr -d ' ')" ]]
+    local seed=$1 file=$2 n
+    n=$(stat -c %s "$seed")
+    cmp -s -n "$n" "$seed" "$file" && [[ -z "$(tail -c +$((n + 1)) "$file" | tr -d ' ')" ]]
 }
 # What finding "fuzz-smoke passes no -max_len" was, held in place without
 # nightly or cargo-fuzz: every capped target is a real target, its
@@ -230,6 +238,7 @@ case "${1:-}" in
         exit 0
         ;;
     --self-test) self_test; exit ;;
+    *) ;; # a run: [seconds-per-target] [target...], checked below
 esac
 
 secs="${1:-60}"

@@ -118,6 +118,17 @@ impl MailboxState {
             .insert(nameplate.to_owned(), (m.clone(), HashSet::new()));
         m
     }
+
+    /// The next number no nameplate has, as `allocate` hands them out.
+    fn free_nameplate(&mut self) -> String {
+        loop {
+            let candidate = self.next_nameplate.to_string();
+            self.next_nameplate += 1;
+            if !self.nameplates.contains_key(&candidate) {
+                break candidate;
+            }
+        }
+    }
 }
 
 /// Starts a fake mailbox.
@@ -177,8 +188,12 @@ async fn serve_mailbox(
     if ws.send(Message::text(welcome.to_string())).await.is_err() {
         return;
     }
-    let mut side = String::new();
-    let mut opened: Option<String> = None;
+    let mut client = Client {
+        conn,
+        tx,
+        side: String::new(),
+        opened: None,
+    };
     loop {
         let incoming = tokio::select! {
             m = next_ws(&mut ws) => m,
@@ -208,98 +223,10 @@ async fn serve_mailbox(
         }
         let ty = m["type"].as_str().unwrap_or("");
         received.lock().unwrap().push(ty.to_owned());
-        let mut replies: Vec<Value> = Vec::new();
-        let mut raw_after: Vec<String> = Vec::new();
-        {
+        let (replies, raw_after) = {
             let mut st = state.lock().unwrap();
-            match ty {
-                "bind" => side = m["side"].as_str().unwrap_or("").to_owned(),
-                "list" => {
-                    let list: Vec<Value> = st.nameplates.keys().map(|n| json!({"id": n})).collect();
-                    replies.push(json!({"type": "nameplates", "nameplates": list}));
-                }
-                "allocate" => {
-                    let n = if let Some(forced) = behaviour.allocate_as.clone() {
-                        forced
-                    } else {
-                        loop {
-                            let candidate = st.next_nameplate.to_string();
-                            st.next_nameplate += 1;
-                            if !st.nameplates.contains_key(&candidate) {
-                                break candidate;
-                            }
-                        }
-                    };
-                    st.mailbox_for(&n);
-                    if let Some((_, sides)) = st.nameplates.get_mut(&n) {
-                        sides.insert(side.clone());
-                    }
-                    replies.push(json!({"type": "allocated", "nameplate": n}));
-                }
-                "claim" => {
-                    let n = m["nameplate"].as_str().unwrap_or("").to_owned();
-                    let mbox = st.mailbox_for(&n);
-                    let crowded = {
-                        let (_, sides) = st.nameplates.get_mut(&n).unwrap();
-                        sides.insert(side.clone());
-                        sides.len() > 2
-                    };
-                    if crowded {
-                        replies.push(json!({"type": "error", "error": "crowded", "orig": m}));
-                    } else {
-                        replies.push(json!({"type": "claimed", "mailbox": mbox}));
-                    }
-                }
-                "release" => {
-                    let n = m["nameplate"].as_str().unwrap_or("").to_owned();
-                    if let Some((_, sides)) = st.nameplates.get_mut(&n) {
-                        sides.remove(&side);
-                        if sides.is_empty() {
-                            st.nameplates.remove(&n);
-                        }
-                    }
-                    replies.push(json!({"type": "released"}));
-                }
-                "open" => {
-                    let mbox = m["mailbox"].as_str().unwrap_or("").to_owned();
-                    let entry = st.mailboxes.entry(mbox.clone()).or_default();
-                    entry.1.push((conn, tx.clone()));
-                    for old in &entry.0 {
-                        let _ = tx.send(old.clone());
-                    }
-                    opened = Some(mbox);
-                    raw_after = behaviour.after_open.clone();
-                }
-                "add" => {
-                    if let Some(mbox) = &opened {
-                        st.next_id += 1;
-                        let msg = json!({
-                            "type": "message",
-                            "side": side,
-                            "phase": m["phase"],
-                            "body": m["body"],
-                            "id": format!("{:x}", st.next_id),
-                        })
-                        .to_string();
-                        let entry = st.mailboxes.entry(mbox.clone()).or_default();
-                        entry.0.push(msg.clone());
-                        for (_, l) in &entry.1 {
-                            let _ = l.send(msg.clone());
-                        }
-                    }
-                }
-                "close" => {
-                    if let Some(mbox) = opened.take()
-                        && let Some(entry) = st.mailboxes.get_mut(&mbox)
-                    {
-                        entry.1.retain(|(c, _)| *c != conn);
-                    }
-                    replies.push(json!({"type": "closed"}));
-                }
-                "ping" => replies.push(json!({"type": "pong", "pong": m["ping"]})),
-                _ => {}
-            }
-        }
+            client.answer(&mut st, &behaviour, ty, &m)
+        };
         for r in replies {
             if ws.send(Message::text(r.to_string())).await.is_err() {
                 return;
@@ -310,6 +237,115 @@ async fn serve_mailbox(
                 return;
             }
         }
+    }
+}
+
+/// One connection to the fake mailbox, and what it has told the mailbox so
+/// far.
+struct Client {
+    /// Which connection it is, among a mailbox's listeners.
+    conn: u64,
+    /// Where the messages of the mailbox it opens go.
+    tx: mpsc::UnboundedSender<String>,
+    /// The side it bound as.
+    side: String,
+    /// The mailbox it has open.
+    opened: Option<String>,
+}
+
+impl Client {
+    /// What the mailbox does with the client message `m`, of type `ty`:
+    /// the replies, then the raw frames that follow them.
+    fn answer(
+        &mut self,
+        st: &mut MailboxState,
+        behaviour: &Behaviour,
+        ty: &str,
+        m: &Value,
+    ) -> (Vec<Value>, Vec<String>) {
+        let mut replies: Vec<Value> = Vec::new();
+        let mut raw_after: Vec<String> = Vec::new();
+        match ty {
+            "bind" => self.side = m["side"].as_str().unwrap_or("").to_owned(),
+            "list" => {
+                let list: Vec<Value> = st.nameplates.keys().map(|n| json!({"id": n})).collect();
+                replies.push(json!({"type": "nameplates", "nameplates": list}));
+            }
+            "allocate" => {
+                let n = behaviour
+                    .allocate_as
+                    .clone()
+                    .unwrap_or_else(|| st.free_nameplate());
+                st.mailbox_for(&n);
+                if let Some((_, sides)) = st.nameplates.get_mut(&n) {
+                    sides.insert(self.side.clone());
+                }
+                replies.push(json!({"type": "allocated", "nameplate": n}));
+            }
+            "claim" => {
+                let n = m["nameplate"].as_str().unwrap_or("").to_owned();
+                let mbox = st.mailbox_for(&n);
+                let crowded = {
+                    let (_, sides) = st.nameplates.get_mut(&n).unwrap();
+                    sides.insert(self.side.clone());
+                    sides.len() > 2
+                };
+                if crowded {
+                    replies.push(json!({"type": "error", "error": "crowded", "orig": m}));
+                } else {
+                    replies.push(json!({"type": "claimed", "mailbox": mbox}));
+                }
+            }
+            "release" => {
+                let n = m["nameplate"].as_str().unwrap_or("").to_owned();
+                if let Some((_, sides)) = st.nameplates.get_mut(&n) {
+                    sides.remove(&self.side);
+                    if sides.is_empty() {
+                        st.nameplates.remove(&n);
+                    }
+                }
+                replies.push(json!({"type": "released"}));
+            }
+            "open" => {
+                let mbox = m["mailbox"].as_str().unwrap_or("").to_owned();
+                let entry = st.mailboxes.entry(mbox.clone()).or_default();
+                entry.1.push((self.conn, self.tx.clone()));
+                for old in &entry.0 {
+                    let _ = self.tx.send(old.clone());
+                }
+                self.opened = Some(mbox);
+                raw_after = behaviour.after_open.clone();
+            }
+            "add" => {
+                if let Some(mbox) = &self.opened {
+                    st.next_id += 1;
+                    let msg = json!({
+                        "type": "message",
+                        "side": self.side,
+                        "phase": m["phase"],
+                        "body": m["body"],
+                        "id": format!("{:x}", st.next_id),
+                    })
+                    .to_string();
+                    let entry = st.mailboxes.entry(mbox.clone()).or_default();
+                    entry.0.push(msg.clone());
+                    for (_, l) in &entry.1 {
+                        let _ = l.send(msg.clone());
+                    }
+                }
+            }
+            "close" => {
+                if let Some(mbox) = self.opened.take()
+                    && let Some(entry) = st.mailboxes.get_mut(&mbox)
+                {
+                    entry.1.retain(|(c, _)| *c != self.conn);
+                }
+                replies.push(json!({"type": "closed"}));
+            }
+            "ping" => replies.push(json!({"type": "pong", "pong": m["ping"]})),
+            _ => {}
+        }
+        (replies, raw_after)
     }
 }
 

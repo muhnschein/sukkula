@@ -2,18 +2,28 @@
 # validator on it: the Harbour gate on the real package (spec §7).
 #
 # Not part of ci.yml: it pulls a multi-gigabyte SDK image and cross-builds
-# the whole engine, which is minutes of runner time nobody wants on a push
-# that cannot change the package. It runs from the Actions tab, on a `v*`
-# or `build-*` tag, and on every pull request that touches what the package
-# is built from (the paths below) -- because some Harbour rules only the
-# built package can answer: the Requires and Provides rpm generates from
-# the binary, the libraries and glibc versions the link ends up needing,
-# whether main() survives the strip, and the strings(1) the validator runs
-# over every file. A dependency bump can change the first two without
-# touching a line of packaging, which is why Cargo.lock and every manifest
-# are on the list; and a string in a Rust attribute or a C++ #define is
-# the binary's too, which is why the crates, the C++ shell and the QML are.
-# ci/harbour-check.sh's P.6 fails a tree whose list leaves one out.
+# the whole engine, ten minutes and more that a pull request changing the
+# program should not wait for. Some Harbour rules only the built package
+# can answer -- the Requires and Provides rpm generates from the binary, the
+# libraries and glibc versions the link ends up needing, whether main()
+# survives the strip, the strings(1) the validator runs over every file --
+# so it runs:
+#
+#   - on every push to main, which is every change, once it has merged. A
+#     change to the crates, the C++ shell or the QML is judged here, after
+#     the fact: a red run on main is a package Harbour would refuse, and
+#     the fix is the next pull request.
+#   - on the pull requests that change the packaging itself (the paths
+#     below): the spec, what is installed beside the binary, the lockfile
+#     and toolchain a dependency or compiler bump moves the Requires and
+#     glibc versions with, and what builds and judges the package. Those
+#     are rare, and they are the ones this run exists for.
+#   - from the Actions tab, on any branch: dispatch it to validate a
+#     change to the program before it merges.
+#   - on a `v*` or `build-*` tag.
+#
+# ci/harbour-check.sh's P.6 fails a tree that stops running it on main, or
+# whose pull_request list leaves out a packaging path.
 #
 # aarch64 and Sailfish OS 5.2 only (spec §2): the SDK image below carries
 # that one target, and nothing here has a second.
@@ -37,25 +47,21 @@ on:
         type: string
         default: ""
   push:
+    # Everything that merges, validated once it has.
+    branches: [main]
     # `v*` for a release. `build-*` is a throwaway handle for running this
     # before it reaches the default branch, since workflow_dispatch only
     # becomes available once a workflow is on main.
     tags: ["v*", "build-*"]
   pull_request:
     paths:
-      # What the package is built from: the binary (the engine and the
-      # C++ shell), everything installed beside it, and the packaging.
-      - "crates/**"
-      - "third_party/**"
-      - "src/**"
-      - "qml/**"
-      - "icons/**"
-      - "translations/**"
+      # The packaging: the spec, what is installed beside the binary, and
+      # what decides what the binary links against.
       - "rpm/**"
+      - "icons/**"
       - "harbour-sukkula.pro"
       - "harbour-sukkula.desktop"
       - "Cargo.lock"
-      - "**/Cargo.toml"
       - "**/build.rs"
       - "rust-toolchain.toml"
       # What builds and judges it.
@@ -69,8 +75,9 @@ on:
       - "scripts/build-rpm.sh"
       - "scripts/cross-build-rust.sh"
 
-# A pull request's new push supersedes its run in flight; tags and
-# dispatches are their own groups. Keyed on the pull request's number, not
+# A pull request's new push supersedes its run in flight; pushes to main,
+# tags and dispatches are their own groups, so a merge never cancels the
+# validation of the one before it. Keyed on the pull request's number, not
 # its branch: `head_ref` is a fork's bare branch name, so two forks' `main`
 # or `patch-1` would share a group and cancel each other's runs.
 concurrency:

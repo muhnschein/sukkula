@@ -12,13 +12,14 @@ rejection, and several rules constrain things -- the package name, the
 install paths, the sandbox permissions, the linked libraries -- that are
 expensive to change once code is built around them. Spec §2 puts anything
 the validator rejects out of scope rather than worked around. So the rules
-are CI gates, on every pull request.
+are CI gates: the source check on every pull request, Jolla's validator on
+every package built (below, "When rpm.yml runs").
 
 ## The two checks
 
 | | `ci/harbour-check.sh` | `ci/harbour-validate-rpm.sh` |
 |---|---|---|
-| Runs | every pull request (`ci.yml`, job `harbour`) | every RPM build (`rpm.yml`): tags, dispatch, and pull requests that touch the package |
+| Runs | every pull request (`ci.yml`, job `harbour`) | every RPM build (`rpm.yml`): every push to `main`, tags, dispatch, and pull requests that change the packaging |
 | Reads | the source tree | the built package |
 | Needs | rpm, file | the Sailfish SDK, ten-odd minutes of runner time |
 | Is | Sukkula's reimplementation, plus Sukkula's own stricter policy | Jolla's own `rpmvalidation.sh`, what `sfdk check -s harbour` runs |
@@ -56,32 +57,41 @@ in `tests/` and `qml-stubs/`, which never ship) -- and feeds the RPM
 wrapper saved validator logs to prove how it judges them. A gate that only
 ever prints "ok" is indistinguishable from one that has stopped looking.
 
-## Why rpm.yml runs on pull requests
+## When rpm.yml runs
 
-piirit and vuo build packages only on demand. Sukkula also builds one for
-every pull request that touches what the package is built from: the Rust
-crates and `third_party/` (the engine), `src/` (the C++ shell, its link
-flags in `src/hardening.pri` and its export list `src/dynamic.list`),
-`qml/`, icons, translations, the spec, the `.pro`, the `.desktop` file,
-`Cargo.lock`, every `Cargo.toml` and `build.rs`, `rust-toolchain.toml`,
-and the Harbour rules and scripts that build and judge the RPM.
+piirit and vuo build packages only on demand. Sukkula builds one for every
+push to `main`, so nothing reaches a release that Jolla's validator has not
+seen -- and before a merge, only for the pull requests that change the
+packaging itself: the spec, the icons, the `.pro` and `.desktop` files,
+`Cargo.lock`, every `build.rs`, `rust-toolchain.toml`, and the Harbour
+rules and scripts that build and judge the RPM.
 
-Two reasons. Three Harbour rules can only be answered by the built
-package: the `Requires` rpm generates from the binary's symbol versions,
-the shared libraries the final link keeps, and whether `main()` survives
-the strip. A dependency bump can change the first two without touching a
-line of packaging -- a crate whose build script starts linking a system
-library that is not on the allowed list (libudev, libsystemd); one
-compiled against newer glibc headers needs a symbol version the phone
-lacks -- and the per-PR `cross` job, built with Ubuntu's toolchain, cannot
-see the phone's glibc. And the validator runs `strings(1)` over every file
-in the package, so a string in the code is the package's: a home
-directory in a Rust `#[error("...")]` attribute or a C++ `#define` is an
-`ERROR 'Hardcoded path'`, whatever the source check makes of it. The
-paths once left out `crates/`, `src/` and `qml/`, so such a change merged
-with neither check looking at it (finding "Harbour source gate skips
-every '#' line"); P.6 now fails a tree whose `rpm.yml` leaves any of them
-out.
+Three Harbour rules can only be answered by the built package: the
+`Requires` rpm generates from the binary's symbol versions, the shared
+libraries the final link keeps, and whether `main()` survives the strip.
+A dependency or toolchain bump can change the first two without touching a
+line of code -- a crate whose build script starts linking a system library
+that is not on the allowed list (libudev, libsystemd); one compiled
+against newer glibc headers needs a symbol version the phone lacks -- and
+the per-PR `cross` job, built with Ubuntu's toolchain, cannot see the
+phone's glibc. That is why the lockfile, the build scripts and the
+toolchain file are on the pull-request list.
+
+The validator also runs `strings(1)` over every file in the package, so a
+string in the code is the package's: a home directory in a Rust
+`#[error("...")]` attribute or a C++ `#define` is an `ERROR 'Hardcoded
+path'`, whatever the source check makes of it. The crates, `src/` and
+`qml/` used to be on the pull-request list for that reason, after a change
+there merged with neither check looking at it (finding "Harbour source
+gate skips every '#' line"). They are not any more: building the package
+cost every pull request ten minutes and more, most of them changes to the
+program that could not move a Harbour rule. Such a change is judged on
+`main`, once it has merged; a red `rpm.yml` there is a package Harbour
+would refuse, and the next pull request fixes it. To judge one before it
+merges, dispatch `rpm.yml` on its branch from the Actions tab.
+
+P.6 fails a tree whose `rpm.yml` stops running on `main`, or whose
+pull-request list leaves out a packaging path.
 
 ## What the source check covers
 
@@ -120,7 +130,7 @@ policy, stricter than Harbour.
 | P.3 | every SDK version the packaging can build against is 5.2 or later |
 | P.4 | `OrganizationName=sukkula`, `ApplicationName=sukkula` |
 | P.5 | platform QML modules are exactly spec §2's: Sailfish.Silica, Sailfish.Share, Sailfish.Pickers, Nemo.KeepAlive, Nemo.Notifications |
-| P.6 | `rpm.yml` runs Jolla's validator on every pull request that changes the package: its `pull_request` trigger has no `paths:` filter, or one (a block list, no `paths-ignore`) that names the crates, `third_party/`, `src/`, `qml/`, icons, translations, the spec, the manifests and the lockfile |
+| P.6 | `rpm.yml` runs Jolla's validator on every push to `main`, and on every pull request that changes the packaging: its `pull_request` trigger has no `paths:` filter, or one (a block list, no `paths-ignore`) that names the spec, the icons, the `.pro` and `.desktop` files, the lockfile, `build.rs` and `rust-toolchain.toml` |
 
 ## What only the built package shows
 

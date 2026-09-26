@@ -26,6 +26,7 @@ pkg() {
         printf ']\n'
     fi
     printf '\n'
+    return 0
 }
 
 # The baseline: what the real graph has in the shape that matters.
@@ -58,7 +59,10 @@ EOF
     return 0
 }
 
-run() { "$script" --lock "$work/Cargo.lock" --tree "$work/tree" --allow "$work/allow"; }
+run() {
+    "$script" --lock "$work/Cargo.lock" --tree "$work/tree" --allow "$work/allow"
+    return $?
+}
 
 # expect <pass|fail> <what> <script run in $work>
 expect() {

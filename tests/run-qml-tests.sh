@@ -106,10 +106,9 @@ else
 fi
 
 # 4. The checks themselves: each planted fault must be caught.
-if [ -z "${SUKKULA_QML_TESTS_ONLY:-}" ] && [ "$#" -eq 0 ]; then
-    if ! python3 "$root/tests/qml/selftest.py" "$root" "$runner" "$build/qml-runner/harbour-sukkula.qm"; then
-        status=1
-    fi
+if [ -z "${SUKKULA_QML_TESTS_ONLY:-}" ] && [ "$#" -eq 0 ] &&
+    ! python3 "$root/tests/qml/selftest.py" "$root" "$runner" "$build/qml-runner/harbour-sukkula.qm"; then
+    status=1
 fi
 
 exit "$status"

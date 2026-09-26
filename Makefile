@@ -10,9 +10,11 @@
 # and the SDK image; its Harbour validation is part of it.
 #
 # A missing tool fails, like CI's strict modes: a green `make check` that
-# skipped the QML, the cross build or the fuzzers is a green that means
-# nothing. The first run fetches the pinned toolchains (rustup), which is
-# network; nothing after that is.
+# skipped the QML, the cross build or the fuzz crate is a green that means
+# nothing. The fuzzing itself is not per-pull-request: fuzz.yml runs it
+# every night against main, and `make fuzz-smoke` here. The first run
+# fetches the pinned toolchains (rustup), which is network; nothing after
+# that is.
 #
 # Host packages (Debian/Ubuntu):
 #   dbus libdbus-1-dev pkg-config            the bluetooth feature and its tests
@@ -24,7 +26,7 @@
 # and: cargo install --locked cargo-fuzz cargo-deny; pip install actionlint-py
 
 CARGO ?= cargo
-# The nightly the fuzzers use; ci.yml pins the same.
+# The nightly the fuzzers use; fuzz.yml pins the same.
 SUKKULA_NIGHTLY ?= nightly-2026-09-15
 FUZZ_SECONDS ?= 60
 # The toolchain fuzz-smoke fuzzes with; the pinned nightly unless set.
@@ -39,11 +41,11 @@ export SUKKULA_NIGHTLY
 all: check
 
 ## check: every per-pull-request CI job that needs no network: test,
-## features, deps, fuzz-smoke, ffi-asan, cross, qml, cpp, packaging, harbour,
+## features, deps, fuzz-lint, ffi-asan, cross, qml, cpp, packaging, harbour,
 ## and the vendor check's selftest. Not deny, vendor or wormhole-interop
-## (network), not rpm (SDK).
+## (network), not rpm (SDK), not fuzz-smoke (fuzz.yml, nightly).
 check: fmt-check lint test rqs-lib-tests doc features deps lockfile harbour packaging \
-       qml cpp cross ffi-asan fuzz-smoke
+       qml cpp cross ffi-asan fuzz-lint
 	./ci/vendor-check-selftest.sh
 	@echo "== make check passed (deny, vendor and wormhole-interop need the network) =="
 
@@ -118,7 +120,8 @@ fuzz-lint:
 	$(CARGO) clippy --manifest-path fuzz/Cargo.toml --all-targets --locked -- -D warnings
 	$(CARGO) test --manifest-path fuzz/Cargo.toml --lib --locked
 
-## fuzz-smoke: every cargo-fuzz target for FUZZ_SECONDS, from its seeds
+## fuzz-smoke: every cargo-fuzz target for FUZZ_SECONDS, from its seeds, as
+## fuzz.yml runs it every night (for 300 s a target)
 fuzz-smoke: fuzz-lint
 	FUZZ_TOOLCHAIN=$(FUZZ_TOOLCHAIN) ./scripts/fuzz-smoke.sh $(FUZZ_SECONDS)
 

@@ -34,10 +34,6 @@ env:
   # A runner compiles once and throws the machine away, so incremental
   # state is written, cached and never read.
   CARGO_INCREMENTAL: 0
-  # The nightly the fuzzers build with. Pinned, so a nightly regression is
-  # a deliberate bump rather than a red pull request; scripts/fuzz-smoke.sh
-  # defaults to the same one.
-  SUKKULA_NIGHTLY: nightly-2026-09-15
 
 # Every action is pinned by commit, not tag: a tag on a third-party action
 # can be repointed at any commit by whoever owns it, and these run on every
@@ -151,22 +147,22 @@ jobs:
       - run: ./ci/check-deps.sh
       - run: ./ci/check-lockfile.sh
 
-  # The 60-second smoke run over every fuzz target (spec §7), from the
-  # committed seeds; targets come from `cargo fuzz list`, so a new one is
-  # fuzzed from the pull request that adds it. scripts/fuzz-smoke.sh
-  # carries the pitfalls (the toolchain file, the musl cargo-fuzz).
-  # Sixteen targets at 60 s each, plus an ASan build of the three network
-  # protocols' libraries: about half an hour on a hosted runner.
-  fuzz-smoke:
+  # The fuzz targets, checked on every pull request without being fuzzed:
+  # the fuzzing itself is fuzz.yml's, every night against main, because
+  # sixteen targets at 60 s each held every pull request for half an hour.
+  # What stays here is what a pull request can break and a night would
+  # only find later: every target's seeds and dictionary (a bad dictionary
+  # line makes libFuzzer exit before fuzzing, and a target with no seeds
+  # fuzzes nothing it exists for), the smoke's own lengths and boundary
+  # inputs, and the fuzz crate compiling -- a changed signature in the
+  # engine rots a target silently otherwise. `make fuzz-lint` runs the same.
+  fuzz-lint:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # Every target has its seeds and a dictionary libFuzzer can parse,
-      # before anything is built: a bad dictionary line makes libFuzzer
-      # exit before fuzzing, and a target with no seeds fuzzes nothing it
-      # exists for. The checker's own proof first. (scripts/fuzz-smoke.sh
-      # runs the check again, for `make`.)
+      # The checker's own proof first. (scripts/fuzz-smoke.sh runs the
+      # check again, for fuzz.yml and `make fuzz-smoke`.)
       - run: ./ci/check-dicts.sh --self-test
       - run: ./ci/check-dicts.sh
       # Each target's -max_len, its boundary inputs at and one past its cap,
@@ -177,36 +173,18 @@ jobs:
       # libdbus-1-dev: the Quick Share targets build the engine's
       # quickshare feature, whose BLE nudge links the system libdbus-1.
       - run: ./ci/apt-install.sh libdbus-1-dev pkg-config
-      - run: rustup toolchain install "$SUKKULA_NIGHTLY" --profile minimal
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: fuzz
-          # rust-cache keys on the default toolchain, and this job builds
-          # with the nightly; without a key of its own the entry would
-          # collide with the stable jobs' and neither would hit.
-          key: fuzz-${{ env.SUKKULA_NIGHTLY }}
-      - uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2.87.10
-        with:
-          tool: cargo-fuzz@0.13.2
       # The fuzz crate is a workspace of its own, which the test job's
-      # clippy never sees: linted here on the pinned toolchain, before any
-      # fuzzing, so a target that stopped compiling is reported as that.
+      # clippy never sees: linted here on the pinned toolchain (only running
+      # a fuzzer needs the nightly), so a target that stopped compiling is
+      # reported as that.
       - run: cargo clippy --manifest-path fuzz/Cargo.toml --all-targets --locked -- -D warnings
       # The harness's own tests: the Quick Share sender follows the
       # protocol, and each generated seed decodes to its script and still
       # reaches the state it is for (fuzz/README.md, "Seeds").
       - run: cargo test --manifest-path fuzz/Cargo.toml --lib --locked
-      - run: ./scripts/fuzz-smoke.sh 60
-        env:
-          FUZZ_TOOLCHAIN: ${{ env.SUKKULA_NIGHTLY }}
-      # The reproducer is the finding; without it a red job is a rumour.
-      - if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: fuzz-artifacts
-          path: fuzz/artifacts/
-          if-no-files-found: ignore
-          retention-days: 30
 
   # The C ABI under AddressSanitizer, UBSan and LSan: start/stop cycles,
   # bad UTF-8, oversize commands, the callback on a foreign thread
@@ -352,8 +330,22 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: ./ci/apt-install.sh rpm desktop-file-utils shellcheck qttools5-dev-tools
-      # Pinned: a linter that moves under the gate moves the gate.
-      - run: pip install --user actionlint-py==1.7.12.25
+      # Pinned: a linter that moves under the gate moves the gate. From the
+      # release itself, checked against the digest its checksums file gives:
+      # the PyPI wrapper (actionlint-py) is a source package whose setup.py
+      # fetches the same binary at install time, unchecked.
+      - name: Install actionlint
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          tarball="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 3 -o "$RUNNER_TEMP/$tarball" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/$tarball"
+          echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP/bin" actionlint
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       # Strict: a checker that is not installed fails here, so the job
       # cannot quietly stop checking when the lines above change.
       - run: ./ci/packaging-lint.sh

@@ -16,6 +16,8 @@
 //! SUKKULA_FUZZ_WRITE_SEEDS=seeds cargo test --lib seeds::write
 //! ```
 
+use std::borrow::Borrow;
+
 use arbitrary::{Arbitrary, Unstructured};
 
 use crate::handshake::{self, Finish, Init, Key, Pad, Request, Script};
@@ -68,10 +70,13 @@ impl Enc {
         self.bool(false);
     }
 
-    fn opt<T>(&mut self, o: &Option<T>, f: impl FnOnce(&mut Enc, &T)) {
+    /// `f` is handed the value as anything it borrows as -- a `String` as a
+    /// `str`, a `Vec<u8>` as a slice -- so that [`Enc::str`] and
+    /// [`Enc::bytes`] can be passed as they are.
+    fn opt<T: Borrow<U>, U: ?Sized>(&mut self, o: &Option<T>, f: impl FnOnce(&mut Enc, &U)) {
         self.bool(o.is_some());
         if let Some(v) = o {
-            f(self, v);
+            f(self, v.borrow());
         }
     }
 
@@ -161,15 +166,15 @@ fn tamper(e: &mut Enc, v: &Tamper) {
 }
 
 fn file_meta(e: &mut Enc, f: &FileMeta) {
-    e.opt(&f.name, |e, s| e.str(s));
+    e.opt(&f.name, Enc::str);
     e.opt(&f.payload_id, |e, n| e.le(&n.to_le_bytes()));
     e.opt(&f.size, |e, n| e.le(&n.to_le_bytes()));
-    e.opt(&f.mime, |e, s| e.str(s));
+    e.opt(&f.mime, Enc::str);
     e.opt(&f.kind, enum_);
 }
 
 fn text_meta(e: &mut Enc, t: &TextMeta) {
-    e.opt(&t.title, |e, s| e.str(s));
+    e.opt(&t.title, Enc::str);
     e.opt(&t.payload_id, |e, n| e.le(&n.to_le_bytes()));
     e.opt(&t.size, |e, n| e.le(&n.to_le_bytes()));
     e.opt(&t.kind, enum_);
@@ -182,7 +187,7 @@ fn sharing(e: &mut Enc, s: &Sharing) {
             e.list(&i.files, file_meta);
             e.list(&i.texts, text_meta);
             e.bool(i.wifi);
-            e.opt(&i.required_package, |e, s| e.str(s));
+            e.opt(&i.required_package, Enc::str);
             e.byte(i.pad);
             e.le(&i.extra.to_le_bytes());
         }
@@ -347,11 +352,11 @@ fn handshake_input(i: &handshake::Input) -> Vec<u8> {
                     e.variant(1, 2);
                     e.opt(message_type, enum_);
                     e.opt(version, enum_);
-                    e.opt(random, |e, b| e.bytes(b));
+                    e.opt(random, Enc::bytes);
                     e.list(others, enum_);
                     e.bool(*p256);
                     e.bool(*wrong_commitment);
-                    e.opt(next_protocol, |e, s| e.str(s));
+                    e.opt(next_protocol, Enc::str);
                 }
             }
             match &s.finish {
@@ -383,7 +388,7 @@ fn handshake_input(i: &handshake::Input) -> Vec<u8> {
                     }
                 }
             }
-            e.opt(&s.response, |e, b| e.bytes(b));
+            e.opt(&s.response, Enc::bytes);
             e.list(&s.steps, step);
         }
     }

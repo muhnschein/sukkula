@@ -361,29 +361,43 @@ done
 note "[P.3] every SDK version the packaging names is 5.2 or later"
 
 #
-# P.6: the authority runs on every pull request that changes the package.
-# This check reads sources and cannot see what the link and rpm make of
-# them, so rpm.yml runs Jolla's validator on the built RPM for any pull
-# request touching what the package is built from -- the Rust crates and
-# the C++ shell (the binary), the QML (strings(1) reads every shipped
-# file), and the packaging. A pull_request trigger with no `paths:` runs
-# on every pull request, which covers them too. The paths once left out
-# crates/, src/ and qml/, so a home directory in a Rust attribute passed
-# both gates (finding "Harbour source gate skips every '#' line").
+# P.6: the authority runs on everything that reaches main, and before a
+# merge on every pull request that changes the packaging. This check reads
+# sources and cannot see what the link and rpm make of them, so rpm.yml
+# runs Jolla's validator on the built RPM. Every push to main is built, so
+# no change reaches a release without it -- a change to the crates, the C++
+# shell or the QML is judged once it has merged, not before: ten minutes
+# and more on every pull request was the price of the other way. The packaging,
+# which is what a Harbour rule most often turns on and a pull request
+# changes least, is still judged before it merges: the spec, the icons,
+# the .pro and .desktop, and the lockfile, build scripts and toolchain that
+# move the Requires and glibc versions the link needs. A pull_request
+# trigger with no `paths:` runs on every pull request, which covers them
+# too.
 #
-P6_PATHS=("rpm/**" "crates/**" "src/**" "qml/**" "icons/**" "translations/**" "third_party/**"
-          "Cargo.lock" "**/Cargo.toml" "**/build.rs" "rust-toolchain.toml"
+P6_PATHS=("rpm/**" "icons/**" "Cargo.lock" "**/build.rs" "rust-toolchain.toml"
           "$name.pro" "$name.desktop")
 if [[ -f "$workflow" ]]; then
-    # The `on.pull_request` block, as written in this tree: the trigger's
-    # own line, then its `paths:` items (block style, one per line).
-    pr=$(awk '
+    # The `on.push` and `on.pull_request` blocks, as written in this tree:
+    # push's branches (flow style or a block list), and pull_request's own
+    # line and its `paths:` items (block style, one per line).
+    triggers=$(awk '
         /^on:[[:space:]]*$/ { on = 1; next }
         on && /^[^[:space:]#]/ { on = 0 }
         !on { next }
+        /^  [^[:space:]#]/ { push = 0; pr = 0 }
+        /^  push:/ { push = 1; next }
+        push && /^    branches:/ { line = $0; sub(/^    branches:[[:space:]]*/, "", line)
+                                   sub(/[[:space:]]*#.*/, "", line); gsub(/[][,"\047]/, " ", line)
+                                   n = split(line, b, /[[:space:]]+/)
+                                   for (i = 1; i <= n; i++) if (b[i] != "") print "BRANCH " b[i]
+                                   branches = 1; next }
+        push && /^    [^[:space:]#-]/ { branches = 0 }
+        push && branches && /^[[:space:]]*- / { item = $0; sub(/^[[:space:]]*- [[:space:]]*/, "", item)
+                                                sub(/[[:space:]]+#.*/, "", item); gsub(/["\047]/, "", item)
+                                                print "BRANCH " item }
         /^  pull_request:/ { pr = 1; line = $0; sub(/^  pull_request:[[:space:]]*/, "", line)
                              sub(/[[:space:]]*#.*/, "", line); print "TRIGGER " line; next }
-        pr && /^  [^[:space:]#]/ { pr = 0 }
         !pr { next }
         /^    paths-ignore:/ { print "IGNORE"; paths = 0; next }
         /^    paths:/ { print "PATHS"; paths = 1; next }
@@ -392,25 +406,30 @@ if [[ -f "$workflow" ]]; then
                                      sub(/[[:space:]]+#.*/, "", item); gsub(/["\047]/, "", item)
                                      print "PATH " item }
     ' "$workflow")
-    if ! grep -q '^TRIGGER' <<< "$pr"; then
+    p6_ok=1
+    if ! grep -qxF "BRANCH main" <<< "$triggers"; then
         fail P.6 ".github/workflows/rpm.yml" \
-            "no pull_request trigger: Jolla's validator never runs before a change merges"
-    elif grep -qE '^TRIGGER .+' <<< "$pr" || grep -q '^IGNORE' <<< "$pr"; then
+            "no push to main: a change to the program reaches a release without Jolla's validator ever seeing it"
+        p6_ok=0
+    fi
+    if ! grep -q '^TRIGGER' <<< "$triggers"; then
+        fail P.6 ".github/workflows/rpm.yml" \
+            "no pull_request trigger: a change to the packaging merges before Jolla's validator runs on it"
+        p6_ok=0
+    elif grep -qE '^TRIGGER .+' <<< "$triggers" || grep -q '^IGNORE' <<< "$triggers"; then
         fail P.6 ".github/workflows/rpm.yml" \
             "write pull_request's paths as a block list, without paths-ignore, so this check can read them"
-    elif grep -q '^PATHS' <<< "$pr"; then
-        missing=0
+        p6_ok=0
+    elif grep -q '^PATHS' <<< "$triggers"; then
         for want in "${P6_PATHS[@]}"; do
-            grep -qxF "PATH $want" <<< "$pr" && continue
-            missing=1
+            grep -qxF "PATH $want" <<< "$triggers" && continue
+            p6_ok=0
             fail P.6 "$want" \
-                "rpm.yml's pull_request paths leave it out, so a change there merges without Jolla's validator"
+                "rpm.yml's pull_request paths leave it out, so a change to the packaging merges without Jolla's validator"
         done
-        [[ "$missing" = 1 ]] ||
-            note "[P.6] rpm.yml runs the validator on every pull request that changes the package"
-    else
-        note "[P.6] rpm.yml runs the validator on every pull request"
     fi
+    [[ "$p6_ok" = 1 ]] &&
+        note "[P.6] rpm.yml runs the validator on main, and on every pull request that changes the packaging"
 fi
 
 #

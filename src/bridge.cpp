@@ -9,6 +9,7 @@
 #include <QMetaObject>
 #include <QMutexLocker>
 #include <QStandardPaths>
+#include <QTextStream>
 
 #include <sukkula.h>
 
@@ -82,8 +83,9 @@ bool Bridge::start()
     // thread has its own. SUKKULA_TLS_REPORT prints how much was used.
     const size_t used = sukkula_tls_reserve_used();
     if (qEnvironmentVariableIsSet("SUKKULA_TLS_REPORT")) {
-        std::fprintf(stderr, "harbour-sukkula: %zu of the %d bytes at tp+16 written on the GUI thread\n",
-                     used, SUKKULA_TLS_RESERVE);
+        QTextStream(stderr) << QStringLiteral("harbour-sukkula: %1 of the %2 bytes at tp+16 written on the GUI thread\n")
+                                   .arg(used)
+                                   .arg(SUKKULA_TLS_RESERVE);
     }
     if (used > SUKKULA_TLS_RESERVE - SUKKULA_TLS_RESERVE_MARGIN) {
         QMetaObject::invokeMethod(
@@ -160,7 +162,10 @@ void Bridge::deliver(const QString &json)
     emit event(json);
 }
 
-void Bridge::onEvent(const char *json, void *userdata)
+// The C ABI's callback, sukkula_event_cb, which C can only give an untyped
+// context pointer: userdata is the Bridge this object handed sukkula_start().
+// SonarQube's cpp:S5008 asks for a typed one, which the ABI cannot carry.
+void Bridge::onEvent(const char *json, void *userdata) // NOSONAR
 {
     if (!json || !userdata) {
         return;

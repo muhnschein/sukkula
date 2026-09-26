@@ -67,6 +67,7 @@ cargo metadata --format-version 1 --manifest-path "$crate/Cargo.toml" >/dev/null
 
 # name, version, source and checksum of every package in a lockfile.
 packages() {
+    local lockfile=$1
     awk '
         /^\[\[package\]\]/ { if (n != "") print n, v, s, c; n = v = s = c = ""; next }
         /^name = /     { n = $3 }
@@ -74,7 +75,7 @@ packages() {
         /^source = /   { s = $3 }
         /^checksum = / { c = $3 }
         END { if (n != "") print n, v, s, c }
-    ' "$1" | LC_ALL=C sort
+    ' "$lockfile" | LC_ALL=C sort
 }
 extra=$(LC_ALL=C comm -23 <(packages "$crate/Cargo.lock") <(packages "$root/Cargo.lock"))
 if [[ -n "$extra" ]]; then

@@ -93,7 +93,11 @@ END {
 }
 '
 
-check_dict() { awk "$PARSER" "$1" >&2; }
+check_dict() {
+    local dict=$1
+    awk "$PARSER" "$dict" >&2
+    return $?
+}
 
 # check_tree <root>: every rule above, over <root>/fuzz.
 check_tree() {
@@ -214,6 +218,7 @@ EOF
     printf '"{"\n' > "$work/tree/fuzz/dicts/beta.dict"
     printf 'a' > "$work/tree/fuzz/seeds/alpha/0"
     printf '{}' > "$work/tree/fuzz/seeds/beta/0"
+    return 0
 }
 # tree_case <pass|fail> <what> <change, run in the tree>
 tree_case() {

@@ -19,7 +19,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use rqs_lib::hdl::info::Introduction;
+use rqs_lib::hdl::info::{FileChunk, Introduction};
 use rqs_lib::sharing_nearby::connection_response_frame::Status;
 use rqs_lib::{DeviceType, InboundEvent, InboundRequest, MDnsServer};
 use sukkula_core::Protocol;
@@ -385,42 +385,10 @@ async fn receive(
                 if !chunk.body.is_empty() || chunk.last {
                     deadline = progress_deadline(idle);
                 }
-                if !open.contains_key(&chunk.payload_id) {
-                    if open.len() >= MAX_OPEN_FILES {
-                        return Err(protocol_error());
-                    }
-                    let file = files
-                        .iter()
-                        .position(|id| *id == chunk.payload_id)
-                        .and_then(|i| accepted.offer.files.get(i))
-                        .ok_or_else(protocol_error)?;
-                    // The inbox's calls are file system calls: a stuck one
-                    // (a full or hung file system) is given up on like a
-                    // stuck peer (S6).
-                    let incoming = idle_timeout(shared.ctx.begin_file(transfer, file))
-                        .await
-                        .and_then(|r| r)
-                        .map_err(Ended::Failed)?;
-                    open.insert(chunk.payload_id, incoming);
-                }
-                let incoming = open.get_mut(&chunk.payload_id).ok_or_else(protocol_error)?;
-                idle_timeout(incoming.write(&chunk.body))
-                    .await
-                    .and_then(|r| r)
-                    .map_err(|e| {
-                        if transfer.is_cancelled() {
-                            Ended::CancelledHere
-                        } else {
-                            Ended::Failed(e)
-                        }
-                    })?;
-                if chunk.last {
-                    let incoming = open.remove(&chunk.payload_id).ok_or_else(protocol_error)?;
-                    let placed = idle_timeout(incoming.commit())
-                        .await
-                        .and_then(|r| r)
-                        .map_err(Ended::Failed)?;
-                    saved.push(placed.name.as_str().to_owned());
+                if let Some(name) =
+                    receive_chunk(shared, accepted, files, &mut open, &chunk).await?
+                {
+                    saved.push(name);
                     pending.remove(&chunk.payload_id);
                 }
             }
@@ -450,4 +418,54 @@ async fn receive(
     }
     let _ = within(GOODBYE, ir.disconnection()).await;
     Ok(saved)
+}
+
+/// One chunk of a file the transfer is waiting for (`receive` has checked
+/// that it is): the file is begun in the inbox on its first chunk and
+/// committed after its last. The name it was saved under, once committed.
+async fn receive_chunk<'a>(
+    shared: &Arc<Shared>,
+    accepted: &'a Accepted,
+    files: &[i64],
+    open: &mut HashMap<i64, ReceivingFile<'a>>,
+    chunk: &FileChunk,
+) -> Result<Option<String>, Ended> {
+    let transfer = &accepted.transfer;
+    if !open.contains_key(&chunk.payload_id) {
+        if open.len() >= MAX_OPEN_FILES {
+            return Err(protocol_error());
+        }
+        let file = files
+            .iter()
+            .position(|id| *id == chunk.payload_id)
+            .and_then(|i| accepted.offer.files.get(i))
+            .ok_or_else(protocol_error)?;
+        // The inbox's calls are file system calls: a stuck one (a full or
+        // hung file system) is given up on like a stuck peer (S6).
+        let incoming = idle_timeout(shared.ctx.begin_file(transfer, file))
+            .await
+            .and_then(|r| r)
+            .map_err(Ended::Failed)?;
+        open.insert(chunk.payload_id, incoming);
+    }
+    let incoming = open.get_mut(&chunk.payload_id).ok_or_else(protocol_error)?;
+    idle_timeout(incoming.write(&chunk.body))
+        .await
+        .and_then(|r| r)
+        .map_err(|e| {
+            if transfer.is_cancelled() {
+                Ended::CancelledHere
+            } else {
+                Ended::Failed(e)
+            }
+        })?;
+    if !chunk.last {
+        return Ok(None);
+    }
+    let incoming = open.remove(&chunk.payload_id).ok_or_else(protocol_error)?;
+    let placed = idle_timeout(incoming.commit())
+        .await
+        .and_then(|r| r)
+        .map_err(Ended::Failed)?;
+    Ok(Some(placed.name.as_str().to_owned()))
 }

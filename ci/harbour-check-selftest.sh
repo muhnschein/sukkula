@@ -61,7 +61,11 @@ done
 status=0
 cases=0
 
-run_check() { "$1/ci/harbour-check.sh" 2>&1; }
+run_check() {
+    local tree=$1
+    "$tree/ci/harbour-check.sh" 2>&1
+    return $?
+}
 
 # The unbroken tree has to pass, or every case below proves nothing.
 cases=$((cases + 1))
@@ -330,21 +334,26 @@ break_and_expect 2.1 "a JavaScript private field starting with #" \
 break_and_expect 2.1 "code after a block comment closes, on its last line" \
     'printf "/* a\n * b\n */ pub const D: &str = \"/home/nemo/y\";\n" >> crates/sukkula-core/src/lib.rs'
 break_and_expect 2.1 "a home directory after a // inside a string" \
-    'printf "pub const U: &str = \"http://x\"; pub const D: &str = \"/home/nemo/z\";\n" >> crates/sukkula-core/src/lib.rs'
+    'printf "pub const U: &str = \"https://x\"; pub const D: &str = \"/home/nemo/z\";\n" >> crates/sukkula-core/src/lib.rs'
 break_and_expect 2.1 "a data file include_str! can read" \
     'printf "{\"dir\": \"/home/defaultuser/Downloads\"}\n" > crates/sukkula-core/src/defaults.json'
 
-# P.6: Jolla's validator runs on every pull request that changes the package.
-break_and_expect P.6 "rpm.yml no longer built for a change to the Rust crates" \
-    'sed -i "\|^      - \"crates/\*\*\"\$|d" $W'
-break_and_expect P.6 "rpm.yml no longer built for a change to the C++ shell" \
-    'sed -i "\|^      - \"src/\*\*\"\$|d" $W'
-break_and_expect P.6 "rpm.yml no longer built for a change to the QML" \
-    'sed -i "\|^      - \"qml/\*\*\"\$|d" $W'
+# P.6: Jolla's validator runs on main, and on every pull request that
+# changes the packaging.
+break_and_expect P.6 "rpm.yml no longer built on main" \
+    'sed -i "/^    branches: \[main\]\$/d" $W'
+break_and_expect P.6 "rpm.yml built on another branch instead of main" \
+    'sed -i "s/^    branches: \[main\]\$/    branches: [develop]/" $W'
+break_and_expect P.6 "rpm.yml no longer built for a change to the spec" \
+    'sed -i "\|^      - \"rpm/\*\*\"\$|d" $W'
+break_and_expect P.6 "rpm.yml no longer built for a change to the lockfile" \
+    'sed -i "\|^      - \"Cargo.lock\"\$|d" $W'
 break_and_expect P.6 "rpm.yml with no pull_request trigger at all" \
     'sed -i "s/^  pull_request:\$/  pull_request_review:/" $W'
 still_passes "rpm.yml built for every pull request, with no paths filter" \
-    'sed -i "/^  pull_request:\$/,/^\$/{/^    paths:\$/d; /^      /d}" $W && grep -q "^  pull_request:\$" $W && ! grep -q "crates/\*\*" $W'
+    'sed -i "/^  pull_request:\$/,/^\$/{/^    paths:\$/d; /^      /d}" $W && grep -q "^  pull_request:\$" $W && ! grep -q "rpm/\*\*" $W'
+still_passes "rpm.yml on main written as a block list" \
+    'sed -i "s/^    branches: \[main\]\$/    branches:\n      - main/" $W && grep -q "^      - main\$" $W'
 
 # And what the check must leave alone.
 still_passes "a doc comment that mentions /home/defaultuser" \
@@ -504,11 +513,12 @@ fi
 # path with a new error about it is news.
 # waiver_tree <name> <line>: a copy of the pristine tree with one waiver.
 waiver_tree() {
-    local tree="$work/$1"
+    local tree="$work/$1" line=$2
     rm -rf "$tree"
     cp -a "$pristine" "$tree"
-    printf '%s\n' "$2" >> "$tree/ci/harbour/waivers.conf"
+    printf '%s\n' "$line" >> "$tree/ci/harbour/waivers.conf"
     echo "$tree"
+    return 0
 }
 waived_tree=$(waiver_tree waived 'rpm  ERROR  /usr/share/harbour-sukkula/x  Installation not allowed*  # test')
 validate_rpm pass "a finding an rpm waiver names: severity, subject and message" \

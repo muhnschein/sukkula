@@ -649,40 +649,11 @@ impl Gate {
         // The client has sent BEGIN; the bus has spoken since.
         let begun = Arc::new(AtomicBool::new(false));
         let answered = Arc::new(AtomicBool::new(false));
-        let wait = |held: &AtomicBool, open: &AtomicBool| {
-            held.store(true, Ordering::SeqCst);
-            let start = Instant::now();
-            while !open.load(Ordering::SeqCst) && start.elapsed() < Duration::from_secs(20) {
-                std::thread::sleep(Duration::from_millis(1));
-            }
-        };
-        let (mut c_read, mut c_write) = (client.try_clone().unwrap(), client);
-        let (mut b_read, mut b_write) = (bus.try_clone().unwrap(), bus);
+        let (c_read, mut c_write) = (client.try_clone().unwrap(), client);
+        let (mut b_read, b_write) = (bus.try_clone().unwrap(), bus);
         let (b1, a1, h1, o1) = (begun.clone(), answered.clone(), held.clone(), open.clone());
         let up = std::thread::spawn(move || {
-            let mut buf = vec![0u8; 64 * 1024];
-            let mut seen = Vec::new();
-            let mut holding = hold == Hold::FirstCall;
-            loop {
-                let n = match c_read.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => n,
-                };
-                if holding && a1.load(Ordering::SeqCst) {
-                    holding = false;
-                    wait(&h1, &o1);
-                }
-                if !b1.load(Ordering::SeqCst) {
-                    seen.extend_from_slice(&buf[..n]);
-                    if seen.windows(7).any(|w| w == b"BEGIN\r\n") {
-                        b1.store(true, Ordering::SeqCst);
-                    }
-                }
-                if b_write.write_all(&buf[..n]).is_err() {
-                    break;
-                }
-            }
-            let _ = b_write.shutdown(Shutdown::Write);
+            Gate::client_to_bus(c_read, b_write, hold, &b1, &a1, &h1, &o1);
         });
         let mut buf = vec![0u8; 64 * 1024];
         let mut holding = hold == Hold::HelloReply;
@@ -694,7 +665,7 @@ impl Gate {
             if begun.load(Ordering::SeqCst) {
                 if holding {
                     holding = false;
-                    wait(held, open);
+                    Gate::wait(held, open);
                 }
                 answered.store(true, Ordering::SeqCst);
             }
@@ -704,6 +675,55 @@ impl Gate {
         }
         let _ = c_write.shutdown(Shutdown::Write);
         let _ = up.join();
+    }
+
+    /// The client's half of [`Gate::splice`], on a thread of its own: it
+    /// notes when the client has sent BEGIN, and with [`Hold::FirstCall`]
+    /// holds back the first words the client sends after the bus answers.
+    fn client_to_bus(
+        mut client: std::os::unix::net::UnixStream,
+        mut bus: std::os::unix::net::UnixStream,
+        hold: Hold,
+        begun: &AtomicBool,
+        answered: &AtomicBool,
+        held: &AtomicBool,
+        open: &AtomicBool,
+    ) {
+        use std::io::Read;
+        use std::net::Shutdown;
+        let mut buf = vec![0u8; 64 * 1024];
+        let mut seen = Vec::new();
+        let mut holding = hold == Hold::FirstCall;
+        loop {
+            let n = match client.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => n,
+            };
+            if holding && answered.load(Ordering::SeqCst) {
+                holding = false;
+                Gate::wait(held, open);
+            }
+            if !begun.load(Ordering::SeqCst) {
+                seen.extend_from_slice(&buf[..n]);
+                if seen.windows(7).any(|w| w == b"BEGIN\r\n") {
+                    begun.store(true, Ordering::SeqCst);
+                }
+            }
+            if bus.write_all(&buf[..n]).is_err() {
+                break;
+            }
+        }
+        let _ = bus.shutdown(Shutdown::Write);
+    }
+
+    /// Says something is held, and holds it until the test releases the
+    /// gate, or 20 s have passed.
+    fn wait(held: &AtomicBool, open: &AtomicBool) {
+        held.store(true, Ordering::SeqCst);
+        let start = Instant::now();
+        while !open.load(Ordering::SeqCst) && start.elapsed() < Duration::from_secs(20) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 
     /// Waits until the gate holds something back.
