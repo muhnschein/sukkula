@@ -186,99 +186,17 @@ impl Bluez {
                 while let Some(m) = ch.pop_message() {
                     match m.msg_type() {
                         MessageType::MethodCall => {
-                            let member = m.member().map(|s| s.to_string()).unwrap_or_default();
-                            let path = m.path().map(|s| s.to_string()).unwrap_or_default();
-                            if path != ADAPTER
-                                || m.interface().map(|s| s.to_string()).as_deref() != Some(MANAGER)
-                            {
-                                let e = m.error(
-                                    &ErrorName::new("org.freedesktop.DBus.Error.UnknownMethod")
-                                        .unwrap(),
-                                    c"no",
-                                );
-                                let _ = ch.send(e);
-                                continue;
-                            }
-                            match member.as_str() {
-                                "RegisterAdvertisement" => {
-                                    let (obj, _opts): (dbus::Path<'_>, PropMap) =
-                                        m.read2().unwrap();
-                                    l.lock().unwrap().registered.push(obj.to_string());
-                                    match mode {
-                                        Mode::Silent => {}
-                                        Mode::Refuse => {
-                                            let e = m.error(
-                                                &ErrorName::new("org.bluez.Error.NotPermitted")
-                                                    .unwrap(),
-                                                c"Maximum advertisements reached",
-                                            );
-                                            let _ = ch.send(e);
-                                        }
-                                        Mode::Accept | Mode::AcceptThenRelease => {
-                                            let get = Message::new_method_call(
-                                                m.sender().unwrap(),
-                                                obj,
-                                                "org.freedesktop.DBus.Properties",
-                                                "GetAll",
-                                            )
-                                            .unwrap()
-                                            .append1("org.bluez.LEAdvertisement1");
-                                            let serial = ch.send(get).unwrap();
-                                            pending = Some((serial, m));
-                                        }
-                                    }
-                                }
-                                "UnregisterAdvertisement" => {
-                                    let obj: dbus::Path<'_> = m.read1().unwrap();
-                                    l.lock().unwrap().unregistered.push(obj.to_string());
-                                    let _ = ch.send(Message::new_method_return(&m).unwrap());
-                                }
-                                _ => {}
-                            }
+                            Bluez::method_call(&ch, m, mode, &l, &mut pending);
                         }
                         MessageType::MethodReturn => {
-                            let Some((serial, _)) = &pending else {
-                                continue;
-                            };
-                            if m.get_reply_serial() != Some(*serial) {
-                                continue;
-                            }
-                            let props: PropMap = m.read1().unwrap();
-                            {
-                                let mut log = l.lock().unwrap();
-                                for (k, v) in &props {
-                                    log.properties.push((k.clone(), format!("{v:?}")));
-                                }
-                                if let Some(sd) = props.get("ServiceData") {
-                                    let mut it = sd.0.as_iter().unwrap();
-                                    let uuid = it.next().unwrap().as_str().unwrap().to_owned();
-                                    let value = it.next().unwrap();
-                                    // A variant holding an array of bytes.
-                                    let bytes: Vec<u8> = value
-                                        .as_iter()
-                                        .unwrap()
-                                        .next()
-                                        .unwrap()
-                                        .as_iter()
-                                        .unwrap()
-                                        .map(|b| u8::try_from(b.as_u64().unwrap()).unwrap())
-                                        .collect();
-                                    log.service_data = Some((uuid, bytes));
-                                }
-                            }
-                            let (_, register) = pending.take().unwrap();
-                            let _ = ch.send(Message::new_method_return(&register).unwrap());
-                            if mode == Mode::AcceptThenRelease && !release_sent {
-                                release_sent = true;
-                                let release = Message::new_method_call(
-                                    register.sender().unwrap(),
-                                    ADVERTISEMENT_PATH,
-                                    "org.bluez.LEAdvertisement1",
-                                    "Release",
-                                )
-                                .unwrap();
-                                let _ = ch.send(release);
-                            }
+                            Bluez::method_return(
+                                &ch,
+                                &m,
+                                mode,
+                                &l,
+                                &mut pending,
+                                &mut release_sent,
+                            );
                         }
                         MessageType::Error | MessageType::Signal => {}
                     }
@@ -294,6 +212,117 @@ impl Bluez {
             log,
             stop,
             thread: Some(thread),
+        }
+    }
+
+    /// A call to the fake: `RegisterAdvertisement` is answered as `mode`
+    /// says, `UnregisterAdvertisement` recorded, anything else refused.
+    fn method_call(
+        ch: &Channel,
+        m: Message,
+        mode: Mode,
+        l: &Mutex<Log>,
+        pending: &mut Option<(u32, Message)>,
+    ) {
+        let member = m.member().map(|s| s.to_string()).unwrap_or_default();
+        let path = m.path().map(|s| s.to_string()).unwrap_or_default();
+        if path != ADAPTER || m.interface().map(|s| s.to_string()).as_deref() != Some(MANAGER) {
+            let e = m.error(
+                &ErrorName::new("org.freedesktop.DBus.Error.UnknownMethod").unwrap(),
+                c"no",
+            );
+            let _ = ch.send(e);
+            return;
+        }
+        match member.as_str() {
+            "RegisterAdvertisement" => {
+                let (obj, _opts): (dbus::Path<'_>, PropMap) = m.read2().unwrap();
+                l.lock().unwrap().registered.push(obj.to_string());
+                match mode {
+                    Mode::Silent => {}
+                    Mode::Refuse => {
+                        let e = m.error(
+                            &ErrorName::new("org.bluez.Error.NotPermitted").unwrap(),
+                            c"Maximum advertisements reached",
+                        );
+                        let _ = ch.send(e);
+                    }
+                    Mode::Accept | Mode::AcceptThenRelease => {
+                        let get = Message::new_method_call(
+                            m.sender().unwrap(),
+                            obj,
+                            "org.freedesktop.DBus.Properties",
+                            "GetAll",
+                        )
+                        .unwrap()
+                        .append1("org.bluez.LEAdvertisement1");
+                        let serial = ch.send(get).unwrap();
+                        *pending = Some((serial, m));
+                    }
+                }
+            }
+            "UnregisterAdvertisement" => {
+                let obj: dbus::Path<'_> = m.read1().unwrap();
+                l.lock().unwrap().unregistered.push(obj.to_string());
+                let _ = ch.send(Message::new_method_return(&m).unwrap());
+            }
+            _ => {}
+        }
+    }
+
+    /// A reply to the fake. The one to the GetAll a Register is waiting on
+    /// is recorded and the Register answered; with
+    /// [`Mode::AcceptThenRelease`], the advertisement is then released,
+    /// once.
+    fn method_return(
+        ch: &Channel,
+        m: &Message,
+        mode: Mode,
+        l: &Mutex<Log>,
+        pending: &mut Option<(u32, Message)>,
+        release_sent: &mut bool,
+    ) {
+        let Some((serial, _)) = pending.as_ref() else {
+            return;
+        };
+        if m.get_reply_serial() != Some(*serial) {
+            return;
+        }
+        let props: PropMap = m.read1().unwrap();
+        {
+            let mut log = l.lock().unwrap();
+            for (k, v) in &props {
+                log.properties.push((k.clone(), format!("{v:?}")));
+            }
+            if let Some(sd) = props.get("ServiceData") {
+                let mut it = sd.0.as_iter().unwrap();
+                let uuid = it.next().unwrap().as_str().unwrap().to_owned();
+                let value = it.next().unwrap();
+                // A variant holding an array of bytes.
+                let bytes: Vec<u8> = value
+                    .as_iter()
+                    .unwrap()
+                    .next()
+                    .unwrap()
+                    .as_iter()
+                    .unwrap()
+                    .map(|b| u8::try_from(b.as_u64().unwrap()).unwrap())
+                    .collect();
+                log.service_data = Some((uuid, bytes));
+            }
+        }
+        let (_, register) = pending.take().unwrap();
+        let _ = ch.send(Message::new_method_return(&register).unwrap());
+        if mode == Mode::AcceptThenRelease && !*release_sent {
+            *release_sent = true;
+            let release = Message::new_method_call(
+                register.sender().unwrap(),
+                ADVERTISEMENT_PATH,
+                "org.bluez.LEAdvertisement1",
+                "Release",
+            )
+            .unwrap();
+            let _ = ch.send(release);
         }
     }
 

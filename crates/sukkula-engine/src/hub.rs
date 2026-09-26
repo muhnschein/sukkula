@@ -2725,6 +2725,27 @@ mod tests {
         }
     }
 
+    /// Whether `protocol` receives: the others only send.
+    fn receives(protocol: Protocol) -> bool {
+        matches!(protocol, Protocol::LocalSend | Protocol::QuickShare)
+    }
+
+    /// The state the last `receiving` event gave `protocol`.
+    fn final_state(log: &Arc<Mutex<Vec<Event>>>, protocol: Protocol) -> ProtocolState {
+        log.lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find_map(|e| match e {
+                Event::Receiving { protocols, .. } => protocols
+                    .iter()
+                    .find(|s| s.protocol == protocol)
+                    .map(|s| s.state),
+                _ => None,
+            })
+            .unwrap()
+    }
+
     /// F-C1: each protocol can be switched off in the settings, and then
     /// nothing uses it. Receive switched on leaves it off, discovery does
     /// not start it, and its commands -- sends, a receive by code, the
@@ -2735,101 +2756,92 @@ mod tests {
     /// Settings").
     #[test]
     fn a_protocol_switched_off_in_the_settings_is_used_by_no_command() {
-        let final_state = |log: &Arc<Mutex<Vec<Event>>>, protocol: Protocol| {
-            log.lock()
-                .unwrap()
-                .iter()
-                .rev()
-                .find_map(|e| match e {
-                    Event::Receiving { protocols, .. } => protocols
-                        .iter()
-                        .find(|s| s.protocol == protocol)
-                        .map(|s| s.state),
-                    _ => None,
-                })
-                .unwrap()
-        };
-        let receives = |p: Protocol| matches!(p, Protocol::LocalSend | Protocol::QuickShare);
         for off in EVERY_PROTOCOL {
-            let dir = tempfile::tempdir().unwrap();
-            let runtime = paused_runtime();
-            let calls = Calls::default();
-            let adapters: Vec<Arc<dyn Adapter>> = EVERY_PROTOCOL
-                .iter()
-                .map(|&protocol| {
-                    Arc::new(Fake {
-                        protocol,
-                        calls: calls.clone(),
-                    }) as Arc<dyn Adapter>
-                })
-                .collect();
-            let (hub, delivery, log) = test_hub(dir.path(), adapters);
-            let mut next = 0;
-            let mut run = |cmd: &str| {
-                next += 1;
-                take(&hub, &runtime, next, cmd);
-                runtime.block_on(async { tokio::time::sleep(Duration::from_secs(1)).await });
-                reply_to(&log, next)
-            };
-            let mut settings = Settings::default();
-            switch_off(&mut settings, off);
-            let set = serde_json::json!({"type": "set_settings", "settings": settings});
-            run(&set.to_string()).unwrap();
-            run(r#"{"type":"set_receiving","on":true}"#).unwrap();
-            run(r#"{"type":"start_discovery"}"#).unwrap();
-            for p in EVERY_PROTOCOL {
-                for (cmd, _) in commands_of(p) {
-                    let reply = run(&cmd);
-                    if p == off {
-                        assert_eq!(
-                            reply.unwrap_err().code,
-                            ErrorCode::Unavailable,
-                            "{off:?} off: {cmd}"
-                        );
-                    } else {
-                        assert!(reply.is_ok(), "{off:?} off: {cmd}: {reply:?}");
-                    }
-                }
-            }
-            let asked = calls.lock().unwrap().clone();
-            assert!(
-                asked.iter().all(|(p, _)| *p != off),
-                "{off:?} is off, yet: {asked:?}"
-            );
-            for p in EVERY_PROTOCOL.into_iter().filter(|p| *p != off) {
-                let mut expected = vec!["start_discovery"];
-                if receives(p) {
-                    expected.push("start_receiving");
-                }
-                expected.extend(commands_of(p).into_iter().map(|(_, call)| call));
-                for call in expected {
-                    assert!(asked.contains(&(p, call)), "{p:?} never asked {call}");
-                }
-            }
-            for p in EVERY_PROTOCOL {
-                let expected = match (receives(p), p == off) {
-                    (false, _) => ProtocolState::SendOnly,
-                    (true, true) => ProtocolState::Off,
-                    (true, false) => ProtocolState::Ready,
-                };
-                assert_eq!(final_state(&log, p), expected, "{off:?} off: {p:?}");
-            }
-
-            // Everything on while receiving, then `off` switched off again:
-            // it stops, and its commands go with it.
-            run(r#"{"type":"set_settings","settings":{}}"#).unwrap();
-            for p in EVERY_PROTOCOL.into_iter().filter(|p| receives(*p)) {
-                assert_eq!(final_state(&log, p), ProtocolState::Ready, "{p:?}");
-            }
-            run(&set.to_string()).unwrap();
-            if receives(off) {
-                assert_eq!(final_state(&log, off), ProtocolState::Off, "{off:?}");
-            }
-            for (cmd, _) in commands_of(off) {
-                assert_eq!(run(&cmd).unwrap_err().code, ErrorCode::Unavailable, "{cmd}");
-            }
-            drop(delivery);
+            switched_off_is_used_by_no_command(off);
         }
+    }
+
+    /// One round of the test above: `off` switched off, every other
+    /// protocol on.
+    fn switched_off_is_used_by_no_command(off: Protocol) {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = paused_runtime();
+        let calls = Calls::default();
+        let adapters: Vec<Arc<dyn Adapter>> = EVERY_PROTOCOL
+            .iter()
+            .map(|&protocol| {
+                Arc::new(Fake {
+                    protocol,
+                    calls: calls.clone(),
+                }) as Arc<dyn Adapter>
+            })
+            .collect();
+        let (hub, delivery, log) = test_hub(dir.path(), adapters);
+        let mut next = 0;
+        let mut run = |cmd: &str| {
+            next += 1;
+            take(&hub, &runtime, next, cmd);
+            runtime.block_on(async { tokio::time::sleep(Duration::from_secs(1)).await });
+            reply_to(&log, next)
+        };
+        let mut settings = Settings::default();
+        switch_off(&mut settings, off);
+        let set = serde_json::json!({"type": "set_settings", "settings": settings});
+        run(&set.to_string()).unwrap();
+        run(r#"{"type":"set_receiving","on":true}"#).unwrap();
+        run(r#"{"type":"start_discovery"}"#).unwrap();
+        for p in EVERY_PROTOCOL {
+            for (cmd, _) in commands_of(p) {
+                let reply = run(&cmd);
+                if p == off {
+                    assert_eq!(
+                        reply.unwrap_err().code,
+                        ErrorCode::Unavailable,
+                        "{off:?} off: {cmd}"
+                    );
+                } else {
+                    assert!(reply.is_ok(), "{off:?} off: {cmd}: {reply:?}");
+                }
+            }
+        }
+        let asked = calls.lock().unwrap().clone();
+        assert!(
+            asked.iter().all(|(p, _)| *p != off),
+            "{off:?} is off, yet: {asked:?}"
+        );
+        for p in EVERY_PROTOCOL.into_iter().filter(|p| *p != off) {
+            let mut expected = vec!["start_discovery"];
+            if receives(p) {
+                expected.push("start_receiving");
+            }
+            expected.extend(commands_of(p).into_iter().map(|(_, call)| call));
+            for call in expected {
+                assert!(asked.contains(&(p, call)), "{p:?} never asked {call}");
+            }
+        }
+        for p in EVERY_PROTOCOL {
+            let expected = match (receives(p), p == off) {
+                (false, _) => ProtocolState::SendOnly,
+                (true, true) => ProtocolState::Off,
+                (true, false) => ProtocolState::Ready,
+            };
+            assert_eq!(final_state(&log, p), expected, "{off:?} off: {p:?}");
+        }
+
+        // Everything on while receiving, then `off` switched off again:
+        // it stops, and its commands go with it.
+        run(r#"{"type":"set_settings","settings":{}}"#).unwrap();
+        for p in EVERY_PROTOCOL.into_iter().filter(|p| receives(*p)) {
+            assert_eq!(final_state(&log, p), ProtocolState::Ready, "{p:?}");
+        }
+        run(&set.to_string()).unwrap();
+        if receives(off) {
+            assert_eq!(final_state(&log, off), ProtocolState::Off, "{off:?}");
+        }
+        for (cmd, _) in commands_of(off) {
+            assert_eq!(run(&cmd).unwrap_err().code, ErrorCode::Unavailable, "{cmd}");
+        }
+        drop(delivery);
     }
 
     #[tokio::test]
