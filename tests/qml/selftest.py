@@ -132,15 +132,45 @@ import QtQuick.Controls 2.0""",
      """        if (false) {
             return 0
         }""",
-     ["tst_engine.qml", "tst_stack.qml"]),
-    ("a send's reply that pops whatever is on top", "qml/pages/SendPage.qml",
-     """        if (pageStack.currentPage !== page || page.status !== PageStatus.Active) {
-            return
+     ["tst_engine.qml", "tst_send.qml"]),
+    ("discovery left running in Receive mode", "qml/pages/MainPage.qml",
+     """    readonly property bool wantDiscovery: page.alive && page.engine.running && !page.engine.receiving""",
+     """    readonly property bool wantDiscovery: page.alive && page.engine.running && true""",
+     ["tst_main.qml", "tst_stack.qml"]),
+    ("the page stack read off a page", "qml/pages/MainPage.qml",
+     """                onClicked: pageStack.push(Qt.resolvedUrl("AboutPage.qml"), { engine: page.engine })""",
+     """                onClicked: page.pageStack.push(Qt.resolvedUrl("AboutPage.qml"), { engine: page.engine })""",
+     ["static"]),
+    ("discovery kept running in the background", "qml/pages/MainPage.qml",
+     """    readonly property bool wantDiscovery: page.alive && page.engine.running && !page.engine.receiving
+                                          && page.awake""",
+     """    readonly property bool wantDiscovery: page.alive && page.engine.running && !page.engine.receiving""",
+     ["tst_app.qml"]),
+    ("Send mode that turns with the phone", "qml/pages/MainPage.qml",
+     """            return page.showSend ? Orientation.Portrait : page.freeOrientations""",
+     """            return page.freeOrientations""",
+     ["tst_main.qml"]),
+    ("a share that leaves the phone receiving", "qml/pages/MainPage.qml",
+     """        } else if (page.engine.receiving) {
+            page.setMode(false)
         }""",
-     """        if (false) {
-            return
-        }""",
-     ["tst_stack.qml"]),
+     """        }""",
+     ["tst_app.qml"]),
+    ("a text offered to Bluetooth", "qml/components/SendView.qml",
+     """        if (peer.protocol === "bluetooth" && view.payload.hasText) {""",
+     """        if (false) {""",
+     ["tst_send.qml"]),
+    ("a peer name drawn by Silica", "qml/components/SendView.qml",
+     """            protocol: "local_send"
+            onClicked: view.choose(view.lanPeer(model), slot)""",
+     """            protocol: "local_send"
+            onClicked: view.choose(view.lanPeer(model), slot)
+            PageHeader { title: model.name }""",
+     ["tst_send.qml"]),
+    ("a second send while one is on its way", "qml/components/SendView.qml",
+     """        if (view.hasOutgoing || view.sending || !peer) {""",
+     """        if (!peer) {""",
+     ["tst_send.qml"]),
     ("a code's reply that pops whatever is on top", "qml/pages/WormholeReceivePage.qml",
      """        if (pageStack.currentPage !== page || page.status !== PageStatus.Active) {
             return

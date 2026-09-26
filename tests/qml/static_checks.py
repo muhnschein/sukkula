@@ -174,6 +174,12 @@ def check_qml():
             (r"linkActivated|linkHovered|hoveredLink", "reacts to links (S8)"),
             (r"\b(Text|TextEdit)\.(RichText|StyledText|AutoText|MarkdownText)\b", "asks for non-plain text (S2)"),
             (r"\bQt\.openUrl|\bXMLHttpRequest\b|\bQt\.createQmlObject\b", "a side effect or dynamic code the app never needs"),
+            # Silica's Page has no pageStack property: the page stack is the
+            # window's, reached as a bare `pageStack`. The stub's Page has
+            # one, so a qualified read works in the tests and is undefined
+            # on the phone.
+            (r"[\w)\]]\s*\.\s*pageStack\b", "reads pageStack off an item (Silica's Page has none; use the bare `pageStack`)"),
+            (r"(?m)^\s*pageStack\s*:", "binds a pageStack property (Silica's Page has none; use the bare `pageStack`)"),
         ]:
             for m in re.finditer(pattern, code):
                 fail(path, f"line {line_of(code, m.start())}: {what}")

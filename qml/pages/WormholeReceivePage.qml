@@ -50,8 +50,7 @@ Page {
 
     /// Back to the main page -- this page only, from the top only: the
     /// reply can come while a consent dialog is over this page, and a bare
-    /// pop() took the dialog, declining its offer unanswered (as in
-    /// SendPage.leave()).
+    /// pop() took the dialog, declining its offer unanswered.
     function leave() {
         if (!page.leaving || page.alive !== true) {
             return
