@@ -1,0 +1,13 @@
+# A croc relay's banner: ports, separators, the address, the refusal.
+# Generated spelling: non-ASCII and controls as \xHH of their UTF-8.
+"|||"
+","
+"ok"
+"bad password"
+"0"
+"65535"
+"65536"
+"9009"
+"9010"
+"127.0.0.1:1"
+"[::1]:1"

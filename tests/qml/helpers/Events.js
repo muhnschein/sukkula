@@ -26,6 +26,7 @@ function receiving(on, failed) {
                    : { protocol: "local_send", state: on ? "ready" : "off" },
             { protocol: "quick_share", state: on ? "ready" : "off" },
             { protocol: "wormhole", state: "send_only" },
+            { protocol: "croc", state: "send_only" },
             { protocol: "bluetooth", state: "send_only" }
         ]
     })
@@ -120,6 +121,10 @@ function wormholeCode(id, code, qr) {
     return json({ type: "wormhole_code", transfer: id, code: code, qr: qr ? qr : qr21() })
 }
 
+function crocCode(id, code) {
+    return json({ type: "croc_code", transfer: id, code: code })
+}
+
 function bluetoothDevices(devices) {
     return json({ type: "bluetooth_devices", devices: devices })
 }
@@ -130,6 +135,7 @@ function settings(overrides) {
         localsend: { enabled: true, pin: null },
         quickshare: { enabled: true, visibility: "everyone", ble_nudge: true },
         wormhole: { enabled: true, mailbox_url: null, relay_url: null },
+        croc: { enabled: true, relay: null, password: null },
         bluetooth: { enabled: true },
         logging: false
     }

@@ -114,7 +114,7 @@ static string. Never free it.
 | --- | --- | --- |
 | A command, or the start configuration | 64 KiB of UTF-8, not counting the NUL | `SUKKULA_ERR_TOO_LONG`, or a `fatal` event; nothing is parsed |
 | Commands waiting for their reply | 64 | `SUKKULA_ERR_BUSY`; nothing is parsed |
-| One command's work | 60 s; `receive_wormhole` 150 s, since it waits for the user | Answered with `internal` |
+| One command's work | 60 s; `receive_wormhole` 150 s, `receive_croc` 160 s, since they wait for the user | Answered with `internal` |
 | `set_receiving` and `set_settings` waiting for the receive switch | 60 s; then they run to the end, each protocol bounded as below | Answered with `internal`; nothing was changed |
 | One protocol's start or stop | 15 s | That protocol reports `failed`; the others go on |
 | An event | 256 KiB of JSON | Never happens: events are bounded by construction. A `reply` or `transfer_finished` would be replaced by an `internal` failure, anything else dropped |
@@ -199,12 +199,18 @@ with them. Fields left out take their defaults.
 
 Every protocol has `enabled`, on by default (F-C1). A protocol switched off
 is not started by `set_receiving` and not used by `start_discovery`, and
-its `send`, `receive_wormhole` or `list_bluetooth_devices` is
-`unavailable`. A settings file from before `wormhole.enabled` existed
-reads as on.
+its `send`, `receive_wormhole`, `receive_croc` or `list_bluetooth_devices`
+is `unavailable`. A settings file from before `wormhole.enabled` existed
+reads as on, and one from before `croc` as croc's defaults.
+
+`croc.relay` is a relay other than croc's own `croc.schollz.com:9009`:
+`host`, `host:port` or `[v6]:port`, no scheme (`bad_settings` otherwise).
+`croc.password` is that relay's password when it is not croc's default,
+`pass123`: printable ASCII, at most 64 bytes. Like the PIN, it is never
+logged.
 
 ```json command
-{"v":1,"id":2,"cmd":{"type":"set_settings","settings":{"device_name":"Pekka's Jolla","localsend":{"enabled":true,"pin":"4711"},"quickshare":{"enabled":true,"visibility":"hidden","ble_nudge":false},"wormhole":{"enabled":true,"mailbox_url":"wss://relay.example.org/v1","relay_url":"tcp://transit.example.org:4001"},"bluetooth":{"enabled":false},"logging":false}}}
+{"v":1,"id":2,"cmd":{"type":"set_settings","settings":{"device_name":"Pekka's Jolla","localsend":{"enabled":true,"pin":"4711"},"quickshare":{"enabled":true,"visibility":"hidden","ble_nudge":false},"wormhole":{"enabled":true,"mailbox_url":"wss://relay.example.org/v1","relay_url":"tcp://transit.example.org:4001"},"bluetooth":{"enabled":false},"croc":{"enabled":true,"relay":"croc.example.org:9009","password":"hunter2"},"logging":false}}}
 ```
 
 ```json command
@@ -267,6 +273,13 @@ as `wormhole_code` (F-MW1):
 {"v":1,"id":11,"cmd":{"type":"send","target":{"protocol":"bluetooth","address":"AA:BB:CC:DD:EE:FF"},"items":[{"kind":"file","path":"/home/defaultuser/Downloads/song.ogg"}]}}
 ```
 
+croc sends files, or one text on its own (`too_large` for a text with
+anything else), and reports the code to read out as `croc_code`:
+
+```json command
+{"v":1,"id":14,"cmd":{"type":"send","target":{"protocol":"croc"},"items":[{"kind":"file","path":"/home/defaultuser/Pictures/Jolla/20260926_1200.jpg"},{"kind":"file","path":"/home/defaultuser/Documents/plan.pdf"}]}}
+```
+
 ### receive_wormhole
 
 Receives with a code the sender's screen shows (F-MW2). The offer then goes
@@ -282,6 +295,25 @@ offers from the LAN, so a LAN flood cannot make it `busy`.
 
 ```json command
 {"v":1,"id":12,"cmd":{"type":"receive_wormhole","code":"7-guitarist-revenge"}}
+```
+
+### receive_croc
+
+Receives with a croc code the sender's screen shows, e.g.
+`8123-alpha-bravo-charlie`; words separated by spaces are joined with
+hyphens, as croc's command line joins them, and nothing else is changed.
+As for `receive_wormhole`, the offer goes through consent like any other,
+the reply comes once the user has answered it, and an offer the user
+asked for does not count against the LAN's limit. `bad_code` for a
+malformed code, or one nobody is sending with; `unavailable` for a
+sender that hashes with anything but croc's default xxhash.
+
+It may take up to 160 s: four steps of at most 20 s (the relay, the sender
+and the key, the data rooms, the offer), the dialog's whole 60 s, and room
+to spare.
+
+```json command
+{"v":1,"id":15,"cmd":{"type":"receive_croc","code":"8123-alpha-bravo-charlie"}}
 ```
 
 ### cancel
@@ -321,13 +353,14 @@ The first event after start: the version, the API version, and the
 protocols in this build.
 
 ```json event
-{"type":"started","version":"0.1.0","api":1,"protocols":["local_send","quick_share","wormhole","bluetooth"]}
+{"type":"started","version":"0.1.0","api":1,"protocols":["local_send","quick_share","wormhole","bluetooth","croc"]}
 ```
 
 ### reply
 
 The answer to one command: `ok`, and `error` when not, and `transfer` for a
-`send` or `receive_wormhole`. For long work, `ok` means started.
+`send`, `receive_wormhole` or `receive_croc`. For long work, `ok` means
+started.
 
 ```json event
 {"type":"reply","id":1,"ok":true}
@@ -347,7 +380,7 @@ The settings and the name peers see, after start, `get_settings` and
 `set_settings`.
 
 ```json event
-{"type":"settings","settings":{"device_name":"","localsend":{"enabled":true,"pin":null},"quickshare":{"enabled":true,"visibility":"everyone","ble_nudge":true},"wormhole":{"enabled":true,"mailbox_url":null,"relay_url":null},"bluetooth":{"enabled":true},"logging":false},"effective_device_name":"Jolla Phone"}
+{"type":"settings","settings":{"device_name":"","localsend":{"enabled":true,"pin":null},"quickshare":{"enabled":true,"visibility":"everyone","ble_nudge":true},"wormhole":{"enabled":true,"mailbox_url":null,"relay_url":null},"bluetooth":{"enabled":true},"croc":{"enabled":true,"relay":null,"password":null},"logging":false},"effective_device_name":"Jolla Phone"}
 ```
 
 `recovered` is there, `true`, when the saved settings file could not be
@@ -362,7 +395,7 @@ the next `set_settings`. Here the wormhole section held a mailbox URL
 this version refuses, and the PIN and `hidden` were kept:
 
 ```json event
-{"type":"settings","settings":{"device_name":"Pekka","localsend":{"enabled":true,"pin":"4711"},"quickshare":{"enabled":true,"visibility":"hidden","ble_nudge":false},"wormhole":{"enabled":false,"mailbox_url":null,"relay_url":null},"bluetooth":{"enabled":true},"logging":false},"effective_device_name":"Pekka","recovered":true}
+{"type":"settings","settings":{"device_name":"Pekka","localsend":{"enabled":true,"pin":"4711"},"quickshare":{"enabled":true,"visibility":"hidden","ble_nudge":false},"wormhole":{"enabled":false,"mailbox_url":null,"relay_url":null},"bluetooth":{"enabled":true},"croc":{"enabled":true,"relay":null,"password":null},"logging":false},"effective_device_name":"Pekka","recovered":true}
 ```
 
 ### receiving
@@ -370,11 +403,11 @@ this version refuses, and the PIN and `hidden` were kept:
 The receive switch, and how each protocol in the build is doing (F-C1).
 
 ```json event
-{"type":"receiving","on":true,"protocols":[{"protocol":"local_send","state":"ready"},{"protocol":"quick_share","state":"failed","error":{"code":"network","message":"the port is in use"}},{"protocol":"wormhole","state":"send_only"},{"protocol":"bluetooth","state":"send_only"}]}
+{"type":"receiving","on":true,"protocols":[{"protocol":"local_send","state":"ready"},{"protocol":"quick_share","state":"failed","error":{"code":"network","message":"the port is in use"}},{"protocol":"wormhole","state":"send_only"},{"protocol":"bluetooth","state":"send_only"},{"protocol":"croc","state":"send_only"}]}
 ```
 
 ```json event
-{"type":"receiving","on":false,"protocols":[{"protocol":"local_send","state":"off"},{"protocol":"quick_share","state":"off"},{"protocol":"wormhole","state":"send_only"},{"protocol":"bluetooth","state":"send_only"}]}
+{"type":"receiving","on":false,"protocols":[{"protocol":"local_send","state":"off"},{"protocol":"quick_share","state":"off"},{"protocol":"wormhole","state":"send_only"},{"protocol":"bluetooth","state":"send_only"},{"protocol":"croc","state":"send_only"}]}
 ```
 
 ### peer_found, peer_lost
@@ -503,6 +536,15 @@ The code a wormhole send waits on (F-MW1), and the same code as a QR code:
 }
 ```
 
+### croc_code
+
+The code a croc send waits on. croc has no URI scheme, so there is no QR
+code to go with it.
+
+```json event
+{"type":"croc_code","transfer":17,"code":"0655-natural-analyze-verbal"}
+```
+
 ### bluetooth_devices
 
 Paired devices that accept Object Push, after `list_bluetooth_devices`.
@@ -528,7 +570,7 @@ Every `error` is an object with a `code` for the UI to translate and a
 | `too_large` | Over a limit: size, count, text length, concurrent transfers, commands waiting. |
 | `refused` | The peer refused, or the user declined. |
 | `peer_mismatch` | The peer's certificate did not match what it announced (F-LS3). |
-| `bad_code` | A wormhole code that is malformed, or wrong. |
+| `bad_code` | A wormhole or croc code that is malformed, or wrong. |
 | `network` | A network failure or timeout. |
 | `storage` | The file system said no, or there is no space. |
 | `internal` | Anything else, including a command that failed internally or ran out of time. |
@@ -537,7 +579,7 @@ Every `error` is an object with a `code` for the UI to translate and a
 
 | Value | Where | Values |
 | --- | --- | --- |
-| Protocol | `protocols`, `protocol` | `local_send`, `quick_share`, `wormhole`, `bluetooth` |
+| Protocol | `protocols`, `protocol` | `local_send`, `quick_share`, `wormhole`, `bluetooth`, `croc` |
 | Protocol state | `receiving` | `off`, `starting`, `ready`, `failed` (see `error`), `send_only` |
 | Why an offer closed | `offer_closed` | `accepted`, `declined`, `timed_out`, `withdrawn` (the sender went away), `shutdown` (the engine is stopping) |
 | Direction | `transfer_started` | `incoming`, `outgoing` |

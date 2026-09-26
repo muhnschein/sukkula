@@ -1,9 +1,10 @@
 # The gate (spec §7). A change merges only when every job here is green.
 #
-# `make check` runs the same commands, job for job, minus the three that
+# `make check` runs the same commands, job for job, minus the four that
 # need the network rather than the tree: deny (the advisory database),
-# vendor (the upstream fetch) and wormhole-interop (the Python client from
-# PyPI); the Makefile says which. The device RPM, and Jolla's
+# vendor (the upstream fetch), wormhole-interop (the Python client from
+# PyPI) and croc-interop (croc from Go's module proxy); the Makefile says
+# which. The device RPM, and Jolla's
 # own validator on it, are rpm.yml's: they need the Sailfish SDK.
 name: ci
 
@@ -94,7 +95,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        feature: [localsend, quickshare, wormhole, bluetooth, none]
+        feature: [localsend, quickshare, wormhole, croc, bluetooth, none]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: ./ci/apt-install.sh dbus libdbus-1-dev pkg-config
@@ -240,6 +241,39 @@ jobs:
           SUKKULA_PY_WORMHOLE="$RUNNER_TEMP/mw/bin/wormhole" \
             cargo test -p sukkula-engine --no-default-features --features wormhole --locked \
             --test wormhole_interop -- --include-ignored 2>&1 | tee "$RUNNER_TEMP/interop.log"
+          grep -qE '^test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored' "$RUNNER_TEMP/interop.log" || {
+            echo "::error::no interop test ran"; exit 1; }
+
+  # Sukkula against croc itself, v10.7.0's Go binary, in both directions
+  # and as the relay (spec §7, the adapters layer). Offline once built:
+  # the binary is its own relay on loopback. Built from source by version,
+  # every module checked against Go's checksum database, so the test moves
+  # only when the version here does. croc 10.7.0 needs Go 1.25.
+  croc-interop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: "1.25"
+          cache: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: croc-interop
+      - name: croc, pinned
+        run: |
+          GOBIN="$RUNNER_TEMP/croc-bin" GOSUMDB=sum.golang.org GOTOOLCHAIN=local \
+            go install github.com/schollz/croc/v10@v10.7.0
+          "$RUNNER_TEMP/croc-bin/croc" --version
+      # --include-ignored, and the count checked, as for the wormhole
+      # client: a run that selected none of the tests would prove nothing.
+      - name: Sukkula and croc, both ways
+        run: |
+          set -o pipefail
+          SUKKULA_CROC="$RUNNER_TEMP/croc-bin/croc" \
+            cargo test -p sukkula-engine --no-default-features --features croc --locked \
+            --test croc_interop -- --include-ignored 2>&1 | tee "$RUNNER_TEMP/interop.log"
           grep -qE '^test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored' "$RUNNER_TEMP/interop.log" || {
             echo "::error::no interop test ran"; exit 1; }
 

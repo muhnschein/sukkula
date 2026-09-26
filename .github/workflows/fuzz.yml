@@ -45,8 +45,8 @@ env:
 jobs:
   # Every target from `cargo fuzz list`, so a new one is fuzzed from the
   # first night after it merges. scripts/fuzz-smoke.sh carries the pitfalls
-  # (the toolchain file, the musl cargo-fuzz). Sixteen targets at 300 s
-  # each, plus the ASan build: about an hour and a half.
+  # (the toolchain file, the musl cargo-fuzz). Twenty-one targets at 300 s
+  # each, plus the ASan build: about two hours.
   fuzz:
     runs-on: ubuntu-latest
     timeout-minutes: 180

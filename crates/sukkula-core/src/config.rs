@@ -42,6 +42,9 @@ use crate::text;
 /// Longest custom server URL accepted.
 pub const MAX_URL_BYTES: usize = 256;
 
+/// Longest croc relay password accepted, in bytes.
+pub const MAX_RELAY_PASSWORD_BYTES: usize = 64;
+
 /// The settings file's name in the data directory.
 pub const SETTINGS_FILE: &str = "settings.json";
 
@@ -62,6 +65,10 @@ pub struct Settings {
     pub wormhole: WormholeSettings,
     /// Bluetooth.
     pub bluetooth: BluetoothSettings,
+    /// croc.
+    // CONTRACT: new section (additive); a file without it reads as the
+    // defaults, as any section left out does.
+    pub croc: CrocSettings,
     /// Debug logging (S9). Off by default, and never file names or text at
     /// info level even when on.
     pub logging: bool,
@@ -126,6 +133,29 @@ pub struct WormholeSettings {
     pub relay_url: Option<String>,
 }
 
+/// croc settings.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct CrocSettings {
+    /// Send and receive with croc (F-C1).
+    pub enabled: bool,
+    /// A relay instead of croc's own, `host` or `host:port`.
+    pub relay: Option<String>,
+    /// The relay's password, when it is not croc's default.
+    pub password: Option<String>,
+}
+
+impl std::fmt::Debug for CrocSettings {
+    /// S9: the relay password is a shared secret, like the PIN.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CrocSettings")
+            .field("enabled", &self.enabled)
+            .field("relay", &self.relay)
+            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
 /// Bluetooth settings.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -169,6 +199,16 @@ impl Default for BluetoothSettings {
     }
 }
 
+impl Default for CrocSettings {
+    fn default() -> Self {
+        CrocSettings {
+            enabled: true,
+            relay: None,
+            password: None,
+        }
+    }
+}
+
 impl LocalSendSettings {
     /// Off, and no PIN kept.
     fn locked_down() -> Self {
@@ -208,6 +248,17 @@ impl BluetoothSettings {
     }
 }
 
+impl CrocSettings {
+    /// Off, and no relay of anyone's choosing.
+    fn locked_down() -> Self {
+        CrocSettings {
+            enabled: false,
+            relay: None,
+            password: None,
+        }
+    }
+}
+
 /// What [`Settings::from_stored`] made of a settings file.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Stored {
@@ -215,7 +266,8 @@ pub struct Stored {
     pub settings: Settings,
     /// The parts of the file that could not be used as they were, by name:
     /// `device_name`, `localsend`, `quickshare`, `wormhole`, `bluetooth`,
-    /// `logging`, `unknown` for a key this build does not know, `file` when
+    /// `croc`, `logging`, `unknown` for a key this build does not know,
+    /// `file` when
     /// nothing could be read. Empty when the file was used whole. Fixed
     /// names, never the file's content: safe to log (S9).
     pub unusable: Vec<&'static str>,
@@ -230,6 +282,12 @@ pub enum ConfigError {
     /// A server URL that is too long or has the wrong scheme.
     #[error("the {0} URL is not usable")]
     BadUrl(&'static str),
+    /// A croc relay that is not a host and an optional port.
+    #[error("the croc relay must be a host and an optional port")]
+    BadRelay,
+    /// A croc relay password that is too long or not printable ASCII.
+    #[error("the croc relay password must be 1 to {MAX_RELAY_PASSWORD_BYTES} printable characters")]
+    BadRelayPassword,
 }
 
 impl Settings {
@@ -257,6 +315,8 @@ impl Settings {
             "mailbox",
         )?;
         self.wormhole.relay_url = check_url(self.wormhole.relay_url.take(), &["tcp://"], "relay")?;
+        self.croc.relay = check_relay(self.croc.relay.take())?;
+        self.croc.password = check_relay_password(self.croc.password.take())?;
         Ok(self)
     }
 
@@ -271,6 +331,7 @@ impl Settings {
             quickshare: QuickShareSettings::locked_down(),
             wormhole: WormholeSettings::locked_down(),
             bluetooth: BluetoothSettings::locked_down(),
+            croc: CrocSettings::locked_down(),
             logging: false,
         }
     }
@@ -303,6 +364,7 @@ impl Settings {
                 "quickshare" => ("quickshare", s.adopt(value, |s, v| s.quickshare = v)),
                 "wormhole" => ("wormhole", s.adopt(value, |s, v| s.wormhole = v)),
                 "bluetooth" => ("bluetooth", s.adopt(value, |s, v| s.bluetooth = v)),
+                "croc" => ("croc", s.adopt(value, |s, v| s.croc = v)),
                 "logging" => ("logging", s.adopt(value, |s, v| s.logging = v)),
                 _ => ("unknown", false),
             };
@@ -314,6 +376,7 @@ impl Settings {
                 "quickshare" => s.quickshare = QuickShareSettings::locked_down(),
                 "wormhole" => s.wormhole = WormholeSettings::locked_down(),
                 "bluetooth" => s.bluetooth = BluetoothSettings::locked_down(),
+                "croc" => s.croc = CrocSettings::locked_down(),
                 // The name falls back to the model and logging stays off:
                 // neither lets anything in.
                 _ => {}
@@ -327,6 +390,7 @@ impl Settings {
             s.quickshare.enabled = false;
             s.wormhole.enabled = false;
             s.bluetooth.enabled = false;
+            s.croc.enabled = false;
         }
         Stored {
             settings: s,
@@ -441,6 +505,73 @@ impl<'de> Visitor<'de> for UniqueVisitor {
         }
         Ok(Unique(Value::Object(out)))
     }
+}
+
+/// A croc relay: a host name, an IPv4 address or a bracketed IPv6
+/// address, and an optional port (croc's 9009 when absent). No scheme, no
+/// credentials, no path.
+fn check_relay(relay: Option<String>) -> Result<Option<String>, ConfigError> {
+    let Some(relay) = relay.map(|r| r.trim().to_owned()).filter(|r| !r.is_empty()) else {
+        return Ok(None);
+    };
+    if relay.len() > MAX_URL_BYTES || relay_host_port(&relay).is_none() {
+        return Err(ConfigError::BadRelay);
+    }
+    Ok(Some(relay))
+}
+
+/// `relay` split into host and port, if it is one: `host`, `host:port`,
+/// `[v6]` or `[v6]:port`, with a host of letters, digits, dots and
+/// hyphens (or an IPv6 address) and a port of 1 to 65535. The port is
+/// 9009, croc's, when absent.
+#[must_use]
+pub fn relay_host_port(relay: &str) -> Option<(String, u16)> {
+    const CROC_PORT: u16 = 9009;
+    let (host, port) = if let Some(rest) = relay.strip_prefix('[') {
+        let (v6, after) = rest.split_once(']')?;
+        v6.parse::<std::net::Ipv6Addr>().ok()?;
+        let port = match after {
+            "" => None,
+            p => Some(p.strip_prefix(':')?),
+        };
+        (v6.to_owned(), port)
+    } else {
+        match relay.split_once(':') {
+            Some((h, p)) => (h.to_owned(), Some(p)),
+            None => (relay.to_owned(), None),
+        }
+    };
+    let port = match port {
+        None => CROC_PORT,
+        Some(p) if !p.is_empty() && p.len() <= 5 && p.bytes().all(|b| b.is_ascii_digit()) => {
+            p.parse::<u16>().ok().filter(|p| *p > 0)?
+        }
+        Some(_) => return None,
+    };
+    let host_ok = !host.is_empty()
+        && (host.parse::<std::net::Ipv6Addr>().is_ok()
+            || host
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-'));
+    host_ok.then_some((host, port))
+}
+
+/// A croc relay password: printable ASCII, at most
+/// [`MAX_RELAY_PASSWORD_BYTES`]; blank means croc's default. The relay
+/// compares passwords with spaces trimmed, and so does this.
+fn check_relay_password(password: Option<String>) -> Result<Option<String>, ConfigError> {
+    let Some(password) = password
+        .map(|p| p.trim().to_owned())
+        .filter(|p| !p.is_empty())
+    else {
+        return Ok(None);
+    };
+    if password.len() > MAX_RELAY_PASSWORD_BYTES
+        || !password.bytes().all(|b| (0x20..0x7f).contains(&b))
+    {
+        return Err(ConfigError::BadRelayPassword);
+    }
+    Ok(Some(password))
 }
 
 fn check_url(
@@ -620,6 +751,7 @@ mod tests {
         "quickshare": {"enabled": true, "visibility": "hidden", "ble_nudge": false},
         "wormhole": {"enabled": true, "mailbox_url": "wss://m.example/v1", "relay_url": "tcp://r.example:4001"},
         "bluetooth": {"enabled": false},
+        "croc": {"enabled": true, "relay": "relay.example:9009", "password": "s3cret"},
         "logging": false
     }"#;
 
@@ -746,9 +878,83 @@ mod tests {
         let s = Settings::locked_down();
         assert!(!s.localsend.enabled && !s.quickshare.enabled);
         assert!(!s.wormhole.enabled && !s.bluetooth.enabled && !s.logging);
+        assert!(!s.croc.enabled && s.croc.relay.is_none() && s.croc.password.is_none());
         assert_eq!(s.quickshare.visibility, Visibility::Hidden);
         assert!(!s.quickshare.ble_nudge);
         assert_eq!(s.clone().validate().unwrap(), s);
+    }
+
+    #[test]
+    fn a_croc_relay_is_a_host_and_a_port() {
+        for (relay, host, port) in [
+            ("croc.example", "croc.example", 9009),
+            ("croc.example:9010", "croc.example", 9010),
+            ("192.0.2.7:1", "192.0.2.7", 1),
+            ("[2001:db8::1]", "2001:db8::1", 9009),
+            ("[2001:db8::1]:65535", "2001:db8::1", 65535),
+        ] {
+            assert_eq!(
+                relay_host_port(relay),
+                Some((host.to_owned(), port)),
+                "{relay}"
+            );
+            let mut s = Settings::default();
+            s.croc.relay = Some(format!("  {relay} "));
+            assert_eq!(s.validate().unwrap().croc.relay.as_deref(), Some(relay));
+        }
+        for bad in [
+            "tcp://croc.example:9009",
+            "user@croc.example",
+            "croc.example:0",
+            "croc.example:65536",
+            "croc.example:",
+            "croc.example:90a",
+            ":9009",
+            "croc.example/path",
+            "croc example",
+            "2001:db8::1",
+            "[2001:db8::1",
+            "[not-v6]:9009",
+            "[2001:db8::1]9009",
+            "cröc.example",
+        ] {
+            assert_eq!(relay_host_port(bad), None, "{bad}");
+            let mut s = Settings::default();
+            s.croc.relay = Some(bad.into());
+            assert_eq!(s.validate().unwrap_err(), ConfigError::BadRelay, "{bad}");
+        }
+        let mut s = Settings::default();
+        s.croc.relay = Some(format!("{}.example", "a".repeat(MAX_URL_BYTES)));
+        assert_eq!(s.clone().validate().unwrap_err(), ConfigError::BadRelay);
+        s.croc.relay = Some("   ".into());
+        assert_eq!(
+            s.validate().unwrap().croc.relay,
+            None,
+            "blank is the default"
+        );
+    }
+
+    #[test]
+    fn a_croc_relay_password_is_printable_and_never_shown() {
+        let mut s = Settings::default();
+        s.croc.password = Some(" pass 123 ".into());
+        let s = s.validate().unwrap();
+        assert_eq!(s.croc.password.as_deref(), Some("pass 123"));
+        let shown = format!("{s:?}");
+        assert!(!shown.contains("pass 123"), "{shown}");
+        for bad in [
+            "a\u{7}b".to_owned(),
+            "ä".to_owned(),
+            "x".repeat(MAX_RELAY_PASSWORD_BYTES + 1),
+        ] {
+            let mut s = Settings::default();
+            s.croc.password = Some(bad.clone());
+            assert_eq!(
+                s.validate().unwrap_err(),
+                ConfigError::BadRelayPassword,
+                "{bad:?}"
+            );
+        }
     }
 
     /// Every part of the careful file, damaged every way: the result is never
@@ -770,6 +976,8 @@ mod tests {
             serde_json::json!({"enabled": true, "ble_nudge": "on"}),
             serde_json::json!({"enabled": true, "mailbox_url": "http://evil/v1"}),
             serde_json::json!({"enabled": true, "relay_url": "tcp://u@evil:1"}),
+            serde_json::json!({"enabled": true, "relay": "tcp://evil:9009"}),
+            serde_json::json!({"enabled": true, "password": "x\u{7}y"}),
         ];
         let keys = [
             "device_name",
@@ -777,6 +985,7 @@ mod tests {
             "quickshare",
             "wormhole",
             "bluetooth",
+            "croc",
             "logging",
             "extra",
         ];
@@ -806,6 +1015,10 @@ mod tests {
                     assert_eq!(s.wormhole.mailbox_url, base.wormhole.mailbox_url, "{at}");
                     assert_eq!(s.wormhole.relay_url, base.wormhole.relay_url, "{at}");
                 }
+                if s.croc.enabled {
+                    assert_eq!(s.croc.relay, base.croc.relay, "{at}");
+                    assert_eq!(s.croc.password, base.croc.password, "{at}");
+                }
                 assert!(!s.bluetooth.enabled, "{at}");
                 assert!(!s.logging, "{at}");
                 assert_eq!(s.clone().validate().unwrap(), s, "{at}");
@@ -833,7 +1046,7 @@ mod tests {
         // one element too many is still refused.
         let positional: Settings = serde_json::from_str("[]").unwrap();
         assert_eq!(positional, Settings::default());
-        assert!(serde_json::from_str::<Settings>(r#"["", {}, {}, {}, {}, false, 1]"#).is_err());
+        assert!(serde_json::from_str::<Settings>(r#"["", {}, {}, {}, {}, {}, false, 1]"#).is_err());
         assert_eq!(
             serde_json::to_string(&Visibility::Everyone).unwrap(),
             r#""everyone""#

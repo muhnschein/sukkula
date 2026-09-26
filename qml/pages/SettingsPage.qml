@@ -7,7 +7,8 @@ import "../components"
  * Settings, saved when the page is left: the device name (F-C7), each
  * protocol on or off (F-C1), the LocalSend PIN (F-LS4), Quick Share
  * visibility and the BLE nudge (F-QS4, F-QS2), Magic Wormhole and its
- * servers (F-MW4), and debug logging, off by default (S9).
+ * servers (F-MW4), croc and its relay (F-CR3), and debug logging, off by
+ * default (S9).
  *
  * The fields are checked here the way sukkula-core checks them
  * (config.rs), so a bad value is caught while it can still be fixed; the
@@ -24,7 +25,10 @@ Page {
     readonly property bool pinValid: /^[A-Za-z0-9]{0,16}$/.test(pinField.text)
     readonly property bool mailboxValid: page.urlValid(mailboxField.text, ["ws://", "wss://"])
     readonly property bool relayValid: page.urlValid(relayField.text, ["tcp://"])
+    readonly property bool crocRelayValid: page.hostPortValid(crocRelayField.text)
+    readonly property bool crocPasswordValid: /^[\x20-\x7e]{0,64}$/.test(page.trimmed(crocPasswordField.text))
     readonly property bool valid: page.pinValid && page.mailboxValid && page.relayValid
+                                  && page.crocRelayValid && page.crocPasswordValid
 
     // A bad value keeps the page open, highlighted, rather than being
     // thrown away on the way out.
@@ -49,6 +53,25 @@ Page {
         return false
     }
 
+    /// Empty, or `host`, `host:port`, `[v6]` or `[v6]:port`, at most 256
+    /// characters, with a host of letters, digits, dots and hyphens and a
+    /// port of 1 to 65535 (config.rs, relay_host_port). Whether the
+    /// bracketed part is an IPv6 address is the engine's to say.
+    function hostPortValid(text) {
+        var r = page.trimmed(text)
+        if (r.length === 0) {
+            return true
+        }
+        if (r.length > 256) {
+            return false
+        }
+        var m = /^\[[0-9A-Fa-f:.]+\](?::([0-9]{1,5}))?$/.exec(r) || /^[A-Za-z0-9.-]+(?::([0-9]{1,5}))?$/.exec(r)
+        if (!m) {
+            return false
+        }
+        return m[1] === undefined || (parseInt(m[1], 10) >= 1 && parseInt(m[1], 10) <= 65535)
+    }
+
     function trimmed(text) {
         return text.replace(/^\s+|\s+$/g, "")
     }
@@ -58,6 +81,7 @@ Page {
         var ls = s.localsend || {}
         var qs = s.quickshare || {}
         var mw = s.wormhole || {}
+        var cr = s.croc || {}
         var bt = s.bluetooth || {}
         nameField.text = typeof s.device_name === "string" ? s.device_name : ""
         localSendSwitch.checked = ls.enabled !== false
@@ -68,6 +92,9 @@ Page {
         wormholeSwitch.checked = mw.enabled !== false
         mailboxField.text = typeof mw.mailbox_url === "string" ? mw.mailbox_url : ""
         relayField.text = typeof mw.relay_url === "string" ? mw.relay_url : ""
+        crocSwitch.checked = cr.enabled !== false
+        crocRelayField.text = typeof cr.relay === "string" ? cr.relay : ""
+        crocPasswordField.text = typeof cr.password === "string" ? cr.password : ""
         bluetoothSwitch.checked = bt.enabled !== false
         loggingSwitch.checked = s.logging === true
         page.loaded = true
@@ -81,6 +108,7 @@ Page {
         if (!s.localsend) { s.localsend = {} }
         if (!s.quickshare) { s.quickshare = {} }
         if (!s.wormhole) { s.wormhole = {} }
+        if (!s.croc) { s.croc = {} }
         if (!s.bluetooth) { s.bluetooth = {} }
         s.device_name = page.trimmed(nameField.text)
         s.localsend.enabled = localSendSwitch.checked
@@ -93,6 +121,11 @@ Page {
         var relay = page.trimmed(relayField.text)
         s.wormhole.mailbox_url = mailbox.length > 0 ? mailbox : null
         s.wormhole.relay_url = relay.length > 0 ? relay : null
+        s.croc.enabled = crocSwitch.checked
+        var crocRelay = page.trimmed(crocRelayField.text)
+        var crocPassword = page.trimmed(crocPasswordField.text)
+        s.croc.relay = crocRelay.length > 0 ? crocRelay : null
+        s.croc.password = crocPassword.length > 0 ? crocPassword : null
         s.bluetooth.enabled = bluetoothSwitch.checked
         s.logging = loggingSwitch.checked
         return s
@@ -302,6 +335,50 @@ Page {
                 inputMethodHints: Qt.ImhUrlCharactersOnly | Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
                 maximumLength: 256
                 errorHighlight: !page.relayValid
+            }
+
+            SectionHeader {
+                text: "croc"
+                visible: page.engine.hasProtocol("croc")
+            }
+            TextSwitch {
+                id: crocSwitch
+                objectName: "crocSwitch"
+                visible: page.engine.hasProtocol("croc")
+                //: Settings: switch a protocol on or off.
+                text: qsTr("Use croc")
+                //: Settings: what the croc switch covers (F-C1): sending to a code and receiving with one.
+                description: qsTr("Send and receive with a code, through a croc relay on the internet.")
+            }
+            TextField {
+                id: crocRelayField
+                objectName: "crocRelayField"
+                width: parent.width
+                visible: page.engine.hasProtocol("croc")
+                //: Settings: the croc relay (F-CR3).
+                label: page.crocRelayValid ? qsTr("Relay")
+                                           //: Settings: the croc relay is not usable.
+                                           : qsTr("Must look like host or host:port")
+                //: Settings: an empty server field means the built-in default.
+                placeholderText: qsTr("Default server")
+                inputMethodHints: Qt.ImhUrlCharactersOnly | Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
+                maximumLength: 256
+                errorHighlight: !page.crocRelayValid
+            }
+            TextField {
+                id: crocPasswordField
+                objectName: "crocPasswordField"
+                width: parent.width
+                visible: page.engine.hasProtocol("croc")
+                //: Settings: the croc relay's password (F-CR3).
+                label: page.crocPasswordValid ? qsTr("Relay password")
+                                              //: Settings: the croc relay password is not usable.
+                                              : qsTr("Up to 64 plain letters, digits and signs")
+                //: Settings: an empty croc relay password means croc's own.
+                placeholderText: qsTr("Default password")
+                inputMethodHints: Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
+                maximumLength: 64
+                errorHighlight: !page.crocPasswordValid
             }
 
             SectionHeader {

@@ -9,11 +9,6 @@
         <translation>Tietoja Sukkulasta</translation>
     </message>
     <message>
-        <source>Sends and receives files and texts over LocalSend, Quick Share, Magic Wormhole and Bluetooth.</source>
-        <extracomment>About page: what the app does.</extracomment>
-        <translation>Lähettää ja vastaanottaa tiedostoja ja tekstejä LocalSendin, Quick Sharen, Magic Wormholen ja Bluetoothin kautta.</translation>
-    </message>
-    <message>
         <source>Version %1</source>
         <extracomment>About page: %1 is the version number.</extracomment>
         <translation>Versio %1</translation>
@@ -32,6 +27,11 @@
         <source>Sukkula is Finnish for “shuttle”: it carries things back and forth.</source>
         <extracomment>About page: the name.</extracomment>
         <translation>Sukkula kuljettaa asioita edestakaisin kuin kangaspuiden sukkula.</translation>
+    </message>
+    <message>
+        <source>Sends and receives files and texts over LocalSend, Quick Share, Magic Wormhole, croc and Bluetooth.</source>
+        <extracomment>About page: what the app does.</extracomment>
+        <translation>Lähettää ja vastaanottaa tiedostoja ja tekstejä LocalSendin, Quick Sharen, Magic Wormholen, crocin ja Bluetoothin kautta.</translation>
     </message>
 </context>
 <context>
@@ -152,7 +152,7 @@
     </message>
     <message>
         <source>Send only</source>
-        <extracomment>The protocol can only send from this phone (Bluetooth, Wormhole).</extracomment>
+        <extracomment>The protocol can only send from this phone, or receive by a typed code (Bluetooth, Magic Wormhole, croc).</extracomment>
         <translation>Vain lähetys</translation>
     </message>
     <message>
@@ -610,6 +610,41 @@ Send screen: under croc&apos;s name on its tile.</extracomment>
         <extracomment>Settings: what the Bluetooth nudge does. It works only while Send mode looks for devices; it does not make this phone visible.</extracomment>
         <translation>Kun Lähetä-tila etsii laitteita, Bluetooth-signaali saa lähellä olevat Android-puhelimet tulemaan näkyviin.</translation>
     </message>
+    <message>
+        <source>Use croc</source>
+        <extracomment>Settings: switch a protocol on or off.</extracomment>
+        <translation>Käytä crocia</translation>
+    </message>
+    <message>
+        <source>Send and receive with a code, through a croc relay on the internet.</source>
+        <extracomment>Settings: what the croc switch covers (F-C1): sending to a code and receiving with one.</extracomment>
+        <translation>Lähetä ja vastaanota koodilla croc-välityspalvelimen kautta internetissä.</translation>
+    </message>
+    <message>
+        <source>Relay</source>
+        <extracomment>Settings: the croc relay (F-CR3).</extracomment>
+        <translation>Välityspalvelin</translation>
+    </message>
+    <message>
+        <source>Must look like host or host:port</source>
+        <extracomment>Settings: the croc relay is not usable.</extracomment>
+        <translation>Muodon on oltava host tai host:portti</translation>
+    </message>
+    <message>
+        <source>Relay password</source>
+        <extracomment>Settings: the croc relay&apos;s password (F-CR3).</extracomment>
+        <translation>Välityspalvelimen salasana</translation>
+    </message>
+    <message>
+        <source>Up to 64 plain letters, digits and signs</source>
+        <extracomment>Settings: the croc relay password is not usable.</extracomment>
+        <translation>Enintään 64 tavallista kirjainta, numeroa ja merkkiä</translation>
+    </message>
+    <message>
+        <source>Default password</source>
+        <extracomment>Settings: an empty croc relay password means croc&apos;s own.</extracomment>
+        <translation>Oletussalasana</translation>
+    </message>
 </context>
 <context>
     <name>ShareTarget</name>
@@ -740,7 +775,7 @@ Send screen: under croc&apos;s name on its tile.</extracomment>
     <name>WormholeReceivePage</name>
     <message>
         <source>Receive with a code</source>
-        <extracomment>Page title: receive over Magic Wormhole.</extracomment>
+        <extracomment>Page title: receive over Magic Wormhole or croc.</extracomment>
         <translation>Vastaanota koodilla</translation>
     </message>
     <message>
@@ -750,13 +785,18 @@ Send screen: under croc&apos;s name on its tile.</extracomment>
     </message>
     <message>
         <source>Code</source>
-        <extracomment>The text field for a Magic Wormhole code.</extracomment>
+        <extracomment>The text field for a Magic Wormhole or croc code.</extracomment>
         <translation>Koodi</translation>
     </message>
     <message>
         <source>Receive</source>
         <extracomment>Starts receiving with the typed code.</extracomment>
         <translation>Vastaanota</translation>
+    </message>
+    <message>
+        <source>Type the code the sender&apos;s croc shows, such as 1234-alpha-bravo-charlie. You will see what is offered before anything is saved.</source>
+        <extracomment>How to receive with croc.</extracomment>
+        <translation>Kirjoita koodi, jonka lähettäjän croc näyttää, esimerkiksi 1234-alpha-bravo-charlie. Näet, mitä tarjotaan, ennen kuin mitään tallennetaan.</translation>
     </message>
 </context>
 <context>

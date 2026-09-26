@@ -12,8 +12,9 @@ import "helpers/Events.js" as Ev
  * line to this phone, fills it and the sender, can be cancelled, and
  * leaves a moment after it ends, or when tapped; a declined offer leaves
  * at once; what comes over the internet comes from its tile through the
- * cloud; and the cloud's tiles open the page to type a code on, and go
- * with Magic Wormhole switched off.
+ * cloud; and the cloud's tiles open the page to type a code on, for
+ * Magic Wormhole or croc, and each goes with its protocol switched off,
+ * the cloud with both.
  */
 Script {
     id: test
@@ -151,11 +152,21 @@ Script {
             // The cloud's tiles: receiving with a code.
             test.find("cloud").clicked()
             test.verify(test.find("wormholeTile").visible, "Magic Wormhole's tile")
-            test.verify(!test.find("crocTile").visible, "none for a croc this engine lacks")
+            test.verify(test.find("crocTile").visible, "and croc's")
             test.find("wormholeTile").clicked()
         },
         function () {
             test.compare(window.pageStack.currentPage.objectName, "wormholeReceivePage")
+            test.compare(window.pageStack.currentPage.protocol, "wormhole")
+            window.pageStack.pop()
+            return 50
+        },
+        function () {
+            test.find("crocTile").clicked()
+        },
+        function () {
+            test.compare(window.pageStack.currentPage.objectName, "wormholeReceivePage")
+            test.compare(window.pageStack.currentPage.protocol, "croc", "the same page, for croc")
             window.pageStack.pop()
             // What comes over the internet comes from its tile.
             bridge.emitEvent(Ev.offer(10, { protocol: "wormhole", sender: "" }))
@@ -181,12 +192,20 @@ Script {
         function () {
             test.compare(test.shown("incomingBubble").length, 0)
             test.compare(test.find("cloudLabel").text, "Receive with a code", "the cloud's own again")
-            // Magic Wormhole switched off: no cloud.
+            // Magic Wormhole switched off: croc keeps the cloud.
             bridge.emitEvent(Ev.settings({ wormhole: { enabled: false, mailbox_url: null, relay_url: null } }))
+        },
+        function () {
+            test.verify(test.find("cloud").visible, "croc still receives with a code")
+            test.verify(!test.find("wormholeTile").visible)
+            // And croc: no cloud.
+            bridge.emitEvent(Ev.settings({ wormhole: { enabled: false, mailbox_url: null, relay_url: null },
+                                           croc: { enabled: false, relay: null, password: null } }))
         },
         function () {
             test.verify(!test.find("cloud").visible, "nothing to receive a code over")
             test.verify(!test.find("wormholeTile").visible)
+            test.verify(!test.find("crocTile").visible)
         }
     ]
 }

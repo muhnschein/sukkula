@@ -15,7 +15,8 @@ import "helpers/Events.js" as Ev
  * command's exact shape; a send's line, progress, cancel and end;
  * refusals said and the chosen items kept; Magic Wormhole's one-item
  * rule, its code on the tile and on the code page with the QR (F-MW1);
- * Bluetooth's files-only rule (F-BT1); more peers than the rings hold, as
+ * croc's rule for texts, its code on the tile and on the code page with
+ * no QR (F-CR1); Bluetooth's files-only rule (F-BT1); more peers than the rings hold, as
  * a list; and each protocol switched off in Settings gone from the radar
  * (F-C1).
  */
@@ -109,7 +110,7 @@ Script {
             test.verify(!test.find("radarHint").visible, "nothing to say yet")
             test.verify(!test.find("cloud").visible, "no cloud before a file")
             test.verify(!test.find("wormholeTile").visible)
-            test.verify(!test.find("crocTile").visible, "croc is not in this engine")
+            test.verify(!test.find("crocTile").visible, "nor croc's")
             test.verify(!test.find("clearPayload").visible)
             test.verify(!test.view.pulsing, "the rings keep still")
             bridge.emitEvent(Ev.peerFound("p1", "local_send"))
@@ -220,8 +221,12 @@ Script {
             // The cloud: its tiles come out.
             test.find("cloud").clicked()
             test.verify(test.find("wormholeTile").visible, "Magic Wormhole's tile")
-            test.verify(!test.find("crocTile").visible, "and none for a croc this engine lacks")
+            test.verify(test.find("crocTile").visible, "and croc's")
             test.compare(test.find("cloudLabel").visible, false, "the label has said its piece")
+            // croc: files, or one text on its own (F-CR1).
+            test.find("crocTile").clicked()
+            test.compare(test.commandsOfType("send").length, 2, "not a text with a file")
+            test.compare(probe.find(test.main, "bannerLabel").text, "croc sends files, or one text on its own.")
             // Magic Wormhole: one item only (F-MW1).
             test.find("wormholeTile").clicked()
             test.compare(test.commandsOfType("send").length, 2, "not two items")
@@ -388,7 +393,7 @@ Script {
         function () {
             test.verify(test.view.outgoing === null)
             test.compare(test.main.payload.texts, ["next"], "a share that came during a send outlives it")
-            // F-C1: every protocol but Magic Wormhole off.
+            // F-C1: every protocol but Magic Wormhole and croc off.
             bridge.emitEvent(Ev.settings({ localsend: { enabled: false, pin: null },
                                            quickshare: { enabled: false, visibility: "hidden", ble_nudge: false },
                                            bluetooth: { enabled: false } }))
@@ -400,6 +405,7 @@ Script {
             test.verify(test.find("cloud").visible, "the cloud stays")
             test.find("cloud").clicked()
             test.verify(test.find("wormholeTile").visible, "with Magic Wormhole")
+            test.verify(test.find("crocTile").visible, "and croc")
             // Magic Wormhole switched off as well.
             bridge.emitEvent(Ev.settings({ localsend: { enabled: false, pin: null },
                                            quickshare: { enabled: false, visibility: "hidden", ble_nudge: false },
@@ -408,6 +414,54 @@ Script {
         },
         function () {
             test.verify(!test.find("wormholeTile").visible, "Magic Wormhole has a switch as well (F-C1)")
+            test.verify(test.find("cloud").visible, "croc keeps the cloud")
+            test.verify(test.find("crocTile").visible)
+            // croc sends the one text (F-CR1).
+            bridge.nextTransfer = 91
+            test.find("crocTile").clicked()
+            test.compare(test.lastOf("send"), { type: "send", target: { protocol: "croc" },
+                                                items: [{ kind: "text", text: "next" }] })
+        },
+        function () {
+            var tile = test.find("crocTile")
+            test.verify(tile.visible && tile.starting, "croc's tile waits for its code")
+            test.verify(test.find("internetLine").visible, "through the cloud")
+            bridge.emitEvent(Ev.crocCode(91, "1234-alpha-bravo-charlie"))
+            bridge.emitEvent(Ev.transferStarted(91, "outgoing", { protocol: "croc", peer: "croc" }))
+        },
+        function () {
+            test.compare(probe.find(test.find("crocTile"), "tileCode").text, "1234-alpha-bravo-charlie")
+            test.find("crocTile").clicked()
+            test.page = window.pageStack.currentPage
+            test.compare(test.page.objectName, "wormholeCodePage")
+            test.compare(test.page.protocol, "croc")
+        },
+        function () {
+            test.compare(probe.find(test.page, "wormholeCode").text, "1234-alpha-bravo-charlie")
+            test.verify(!probe.find(test.page, "wormholeQr").visible, "croc has no QR code")
+            test.compare(probe.find(test.page, "pageHeaderTitle").text, "croc")
+            window.pageStack.pop()
+            bridge.emitEvent(Ev.progress(91, 2, 4))
+        },
+        function () {
+            test.verify(!test.find("crocTile").visible, "the receiver has come")
+            test.compare(test.find("outgoingBubble").x + test.find("outgoingBubble").width / 2,
+                         test.view.rightTileX, "croc's side")
+            bridge.emitEvent(Ev.finished(91, "cancelled"))
+            return 150
+        },
+        function () {
+            test.verify(test.view.outgoing === null)
+            test.compare(test.main.payload.texts, ["next"], "a cancelled send keeps its text")
+            // And croc switched off.
+            bridge.emitEvent(Ev.settings({ localsend: { enabled: false, pin: null },
+                                           quickshare: { enabled: false, visibility: "hidden", ble_nudge: false },
+                                           wormhole: { enabled: false, mailbox_url: null, relay_url: null },
+                                           croc: { enabled: false, relay: null, password: null },
+                                           bluetooth: { enabled: false } }))
+        },
+        function () {
+            test.verify(!test.find("crocTile").visible, "croc has a switch too")
             test.verify(!test.find("cloud").visible)
             test.verify(test.find("radarHint").visible)
             test.compare(test.find("radarHint").text, "Every way of sending is switched off in Settings.")

@@ -75,10 +75,10 @@ programs; Ubuntu's gcc does, with its own libasan and libubsan.
 ## make check is CI
 
 `make check` runs exactly what `ci.yml` runs on a pull request, job for
-job, minus the three that need the network rather than this tree: `make
+job, minus the four that need the network rather than this tree: `make
 deny` (the RustSec advisory database), `make vendor` (open-quickshare at
-the pinned commit) and `make wormhole-interop` (the Python client, from
-PyPI). A missing tool fails it, as CI's strict modes do: a
+the pinned commit), `make wormhole-interop` (the Python client, from
+PyPI) and `make croc-interop` (croc, from Go's module proxy). A missing tool fails it, as CI's strict modes do: a
 green that skipped the QML or the cross build is a green that means
 nothing.
 
@@ -97,13 +97,14 @@ nothing.
 | `packaging` | `packaging` | spec parses and builds out of tree, desktop entry, catalogs, shellcheck on every script, actionlint on every workflow; `scripts/sonar-report.sh` against a stub server (`ci/sonar-report-selftest.sh`) |
 | `vendor` | `vendor` | `third_party/rqs_lib` is upstream plus its patches (with the checker's selftest) |
 | `wormhole-interop` | `wormhole-interop` | Sukkula against the Python magic-wormhole client, both ways (below, "Interop with the reference clients") |
+| `croc-interop` | `croc-interop` | Sukkula against croc's Go binary, as the peer and as the relay, both ways (below) |
 | `harbour` | `harbour` | the source-level Harbour gate, then its selftest (`docs/HARBOUR.md`) |
 | `rpm` | `rpm.yml` | the device RPM, its binary rules and Jolla's validator; not per pull request (below) |
 | `fuzz-smoke` | `fuzz.yml` | every cargo-fuzz target from its committed seeds and the corpus of the nights before, at its own `-max_len`: 300 s each, nightly against `main`, not per pull request (`FUZZ_SECONDS`, 60 by default here) |
 
 The first run fetches the pinned toolchains through rustup, which is
-network; nothing after that is, until `deny`, `vendor` or
-`wormhole-interop`.
+network; nothing after that is, until `deny`, `vendor`,
+`wormhole-interop` or `croc-interop`.
 
 ## Tests
 
@@ -382,6 +383,17 @@ client on the same host, as `cargo test`:
   wormhole-interop` (`PYTHON=` names another 3.12). To move to a newer
   client, run the tests against it by hand, then regenerate the file with
   the command in its header.
+- **croc**: `tests/croc_interop.rs` runs croc v10.7.0's Go binary as
+  the relay and as the other peer, on loopback: files and a text each
+  way, a declined offer, a sender with `--no-compress --no-multi`, and a
+  receiver on croc's own curve. Its tests are `#[ignore]` on a machine
+  without croc; the `croc-interop` job builds the pinned version with `go
+  install github.com/schollz/croc/v10@v10.7.0`, every module checked
+  against Go's checksum database, runs them with `--include-ignored`, and
+  fails if none ran. Locally: `make croc-interop` (Go 1.25 or later;
+  `GO=` names another). To move to a newer croc, change the version in
+  both, run the tests, and read croc's changes to the protocol first:
+  the implementation is ours (`src/croc/mod.rs`).
 - **Quick Share: no reference-client test.** `tests/quickshare.rs` is
   Sukkula to Sukkula and a hand-built hostile sender. rquickshare is a
   desktop GUI over the same `rqs_lib` Sukkula vendors, so a test against

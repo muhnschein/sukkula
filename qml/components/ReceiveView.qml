@@ -315,9 +315,8 @@ Radar {
     }
 
     function receiveWithCode(protocol) {
-        if (protocol === "wormhole") {
-            pageStack.push(Qt.resolvedUrl("../pages/WormholeReceivePage.qml"), { engine: view.engine })
-        }
+        pageStack.push(Qt.resolvedUrl("../pages/WormholeReceivePage.qml"),
+                       { engine: view.engine, protocol: protocol })
     }
 
     function cancelFocused() {

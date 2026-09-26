@@ -9,11 +9,6 @@
         <translation>Über Sukkula</translation>
     </message>
     <message>
-        <source>Sends and receives files and texts over LocalSend, Quick Share, Magic Wormhole and Bluetooth.</source>
-        <extracomment>About page: what the app does.</extracomment>
-        <translation>Sendet und empfängt Dateien und Texte über LocalSend, Quick Share, Magic Wormhole und Bluetooth.</translation>
-    </message>
-    <message>
         <source>Version %1</source>
         <extracomment>About page: %1 is the version number.</extracomment>
         <translation>Version %1</translation>
@@ -32,6 +27,11 @@
         <source>Sukkula is Finnish for “shuttle”: it carries things back and forth.</source>
         <extracomment>About page: the name.</extracomment>
         <translation>Sukkula ist Finnisch für „Weberschiffchen“: Es trägt Dinge hin und her.</translation>
+    </message>
+    <message>
+        <source>Sends and receives files and texts over LocalSend, Quick Share, Magic Wormhole, croc and Bluetooth.</source>
+        <extracomment>About page: what the app does.</extracomment>
+        <translation>Sendet und empfängt Dateien und Texte über LocalSend, Quick Share, Magic Wormhole, croc und Bluetooth.</translation>
     </message>
 </context>
 <context>
@@ -152,7 +152,7 @@
     </message>
     <message>
         <source>Send only</source>
-        <extracomment>The protocol can only send from this phone (Bluetooth, Wormhole).</extracomment>
+        <extracomment>The protocol can only send from this phone, or receive by a typed code (Bluetooth, Magic Wormhole, croc).</extracomment>
         <translation>Nur senden</translation>
     </message>
     <message>
@@ -610,6 +610,41 @@ Send screen: under croc&apos;s name on its tile.</extracomment>
         <extracomment>Settings: what the Bluetooth nudge does. It works only while Send mode looks for devices; it does not make this phone visible.</extracomment>
         <translation>Während der Sendemodus nach Geräten sucht, bringt ein Bluetooth-Signal Android-Telefone in der Nähe dazu, sich zu zeigen.</translation>
     </message>
+    <message>
+        <source>Use croc</source>
+        <extracomment>Settings: switch a protocol on or off.</extracomment>
+        <translation>croc verwenden</translation>
+    </message>
+    <message>
+        <source>Send and receive with a code, through a croc relay on the internet.</source>
+        <extracomment>Settings: what the croc switch covers (F-C1): sending to a code and receiving with one.</extracomment>
+        <translation>Mit einem Code senden und empfangen, über ein croc-Relay im Internet.</translation>
+    </message>
+    <message>
+        <source>Relay</source>
+        <extracomment>Settings: the croc relay (F-CR3).</extracomment>
+        <translation>Relay</translation>
+    </message>
+    <message>
+        <source>Must look like host or host:port</source>
+        <extracomment>Settings: the croc relay is not usable.</extracomment>
+        <translation>Muss wie host oder host:port aussehen</translation>
+    </message>
+    <message>
+        <source>Relay password</source>
+        <extracomment>Settings: the croc relay&apos;s password (F-CR3).</extracomment>
+        <translation>Relay-Passwort</translation>
+    </message>
+    <message>
+        <source>Up to 64 plain letters, digits and signs</source>
+        <extracomment>Settings: the croc relay password is not usable.</extracomment>
+        <translation>Bis zu 64 einfache Buchstaben, Ziffern und Zeichen</translation>
+    </message>
+    <message>
+        <source>Default password</source>
+        <extracomment>Settings: an empty croc relay password means croc&apos;s own.</extracomment>
+        <translation>Standardpasswort</translation>
+    </message>
 </context>
 <context>
     <name>ShareTarget</name>
@@ -740,7 +775,7 @@ Send screen: under croc&apos;s name on its tile.</extracomment>
     <name>WormholeReceivePage</name>
     <message>
         <source>Receive with a code</source>
-        <extracomment>Page title: receive over Magic Wormhole.</extracomment>
+        <extracomment>Page title: receive over Magic Wormhole or croc.</extracomment>
         <translation>Mit Code empfangen</translation>
     </message>
     <message>
@@ -750,13 +785,18 @@ Send screen: under croc&apos;s name on its tile.</extracomment>
     </message>
     <message>
         <source>Code</source>
-        <extracomment>The text field for a Magic Wormhole code.</extracomment>
+        <extracomment>The text field for a Magic Wormhole or croc code.</extracomment>
         <translation>Code</translation>
     </message>
     <message>
         <source>Receive</source>
         <extracomment>Starts receiving with the typed code.</extracomment>
         <translation>Empfangen</translation>
+    </message>
+    <message>
+        <source>Type the code the sender&apos;s croc shows, such as 1234-alpha-bravo-charlie. You will see what is offered before anything is saved.</source>
+        <extracomment>How to receive with croc.</extracomment>
+        <translation>Gib den Code ein, den croc beim Absender zeigt, etwa 1234-alpha-bravo-charlie. Du siehst, was angeboten wird, bevor etwas gespeichert wird.</translation>
     </message>
 </context>
 <context>

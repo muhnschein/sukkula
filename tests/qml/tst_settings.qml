@@ -6,11 +6,11 @@ import "helpers"
 import "helpers/Events.js" as Ev
 
 /*
- * Settings (F-C1, F-C7, F-LS4, F-QS4, F-QS2, F-MW4, S9): loaded from the
- * engine, checked as sukkula-core checks them, saved when the page is left
- * -- not when a page is pushed over it -- and only when something changed,
- * with every field the page does not know kept. Then the About page and
- * receiving by wormhole code (F-MW2).
+ * Settings (F-C1, F-C7, F-LS4, F-QS4, F-QS2, F-MW4, F-CR3, S9): loaded
+ * from the engine, checked as sukkula-core checks them, saved when the
+ * page is left -- not when a page is pushed over it -- and only when
+ * something changed, with every field the page does not know kept. Then
+ * the About page and receiving by wormhole or croc code (F-MW2, F-CR2).
  */
 Script {
     id: test
@@ -53,6 +53,9 @@ Script {
             test.compare(test.field("visibilityBox").currentIndex, 0, "Everyone by default")
             test.compare(test.field("loggingSwitch").checked, false, "logging off by default (S9)")
             test.compare(test.field("wormholeSwitch").checked, true, "Magic Wormhole on by default (F-C1)")
+            test.compare(test.field("crocSwitch").checked, true, "croc too")
+            test.compare(test.field("crocRelayField").text, "", "croc's own relay by default (F-CR3)")
+            test.compare(test.field("crocPasswordField").text, "")
             test.compare(test.field("nudgeSwitch").description,
                          "While Send mode looks for devices, a Bluetooth signal prompts Android phones nearby to show up.",
                          "the nudge said as what it is: a sending aid (F-QS2)")
@@ -87,6 +90,24 @@ Script {
             test.verify(!test.page.relayValid, "tcp:// only")
             test.field("relayField").text = ""
             test.verify(test.page.valid, "all good again")
+            // croc's relay: host, host:port, [v6] or [v6]:port.
+            var relays = { "croc.example.org": true, "croc.example.org:9009": true, "[::1]:9009": true,
+                           "[2001:db8::1]": true, " 10.0.0.2:9009 ": true, "croc.example.org:": false,
+                           "croc.example.org:0": false, "croc.example.org:65536": false,
+                           "tcp://croc.example.org": false, "bad host": false, "a/b": false,
+                           "host:9009:1": false, "[::1]x": false }
+            for (var r in relays) {
+                test.field("crocRelayField").text = r
+                test.compare(test.page.crocRelayValid, relays[r], "relay " + r)
+            }
+            test.field("crocRelayField").text = "croc.example.org:9009"
+            test.field("crocPasswordField").text = "pass 123"
+            test.verify(test.page.crocPasswordValid, "printable, spaces too")
+            test.field("crocPasswordField").text = "pässword"
+            test.verify(!test.page.crocPasswordValid, "ASCII only")
+            test.verify(!test.page.valid)
+            test.field("crocPasswordField").text = " s3cret "
+            test.verify(test.page.valid)
             test.field("deviceNameField").text = "  Pekka  "
             test.field("loggingSwitch").click()
             test.field("wormholeSwitch").click()
@@ -115,6 +136,7 @@ Script {
                 localsend: { enabled: true, pin: "4711" },
                 quickshare: { enabled: true, visibility: "hidden", ble_nudge: true },
                 wormhole: { enabled: false, mailbox_url: "WSS://relay.example/v1", relay_url: null },
+                croc: { enabled: true, relay: "croc.example.org:9009", password: "s3cret" },
                 bluetooth: { enabled: true },
                 logging: true
             })
@@ -165,7 +187,7 @@ Script {
             var all = probe.texts(test.page).join("\n")
             test.verify(all.indexOf("GPL-3.0-or-later") >= 0, "the licence")
             test.verify(all.indexOf("LocalSend") >= 0 && all.indexOf("magic-wormhole") >= 0
-                        && all.indexOf("open-quickshare") >= 0, "the upstreams")
+                        && all.indexOf("open-quickshare") >= 0 && all.indexOf("croc") >= 0, "the upstreams")
             window.pageStack.pop()
             // Receiving by code (F-MW2).
             test.page = window.pageStack.push(Qt.resolvedUrl("../../qml/pages/WormholeReceivePage.qml"),
@@ -190,6 +212,30 @@ Script {
         function () {
             test.compare(window.pageStack.currentPage.objectName, "mainPage",
                          "back to the main page; the consent dialog does the rest")
+            // Receiving by croc code (F-CR2): compared byte for byte.
+            test.page = window.pageStack.push(Qt.resolvedUrl("../../qml/pages/WormholeReceivePage.qml"),
+                                              { engine: engine, protocol: "croc" })
+        },
+        function () {
+            var field = test.field("codeField")
+            test.verify(probe.texts(test.page).join("\n").indexOf("1234-alpha-bravo-charlie") >= 0,
+                        "croc's example")
+            var bad = ["12345", "1234-ä-b", "1234\u0007xyz", "  a b  "]
+            for (var i = 0; i < bad.length; i++) {
+                field.text = bad[i]
+                test.verify(!test.page.valid, "refused: " + bad[i])
+            }
+            field.text = "abcdef"
+            test.verify(test.page.valid, "croc takes any six")
+            field.text = " 1234 Alpha  bravo charlie\n"
+            test.verify(test.page.valid)
+            test.compare(test.page.code, "1234-Alpha-bravo-charlie", "spaces joined, the case kept")
+            test.field("receiveButton").clicked()
+            test.compare(test.commandsOfType("receive_croc"),
+                         [{ type: "receive_croc", code: "1234-Alpha-bravo-charlie" }])
+        },
+        function () {
+            test.compare(window.pageStack.currentPage.objectName, "mainPage")
         }
     ]
 }

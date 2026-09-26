@@ -9,11 +9,12 @@ Everything the spec asks for in v1.0:
 
 - `sukkula-core` (S1–S7), the trust boundary and the only code that
   writes files.
-- `sukkula-engine` with the four adapters:
+- `sukkula-engine` with the five adapters:
   - LocalSend v2, over the upstream core's DTOs and certificate code;
   - Quick Share, over `third_party/rqs_lib` (open-quickshare 5a31145 plus
     20 patches) and `third_party/mdns-sd` (0.21.4 plus 4 patches);
   - Magic Wormhole v1;
+  - croc v10, our own implementation of its protocol (spec v0.5);
   - Bluetooth OBEX send.
 - The hub, the C ABI (`sukkula-ffi`) and per-engine logging (S9).
 - The Qt/C++ shell and the Silica UI in en/fi/de/sv, with the Share menu
@@ -21,8 +22,9 @@ Everything the spec asks for in v1.0:
   radar puts every protocol's peers on one screen, the receive radar
   shows who is sending, and History lists what went and came.
 - The RPM spec for the Jolla Phone 2026 (Sailfish OS 5.2+, aarch64 only).
-- CI with the Harbour gate, 16 fuzz targets, the dependency policy and
-  the vendor check.
+- CI with the Harbour gate, 21 fuzz targets, the dependency policy,
+  the vendor check, and interop against the Python wormhole client and
+  croc's Go binary.
 
 ## Verified
 
@@ -31,7 +33,8 @@ On an x86_64 host, from a clean checkout:
 - `make check`: 1,123 test passes across the workspace and the
   per-protocol feature builds.
 - The rest of `make check`:
-  - the fuzz smoke over 16 targets;
+  - the fuzz smoke over 16 targets (the five croc targets since: 60 s
+    each, no finding in the engine);
   - the C harness under ASan/UBSan/LSan;
   - the Qt bridge and QML suites;
   - the aarch64 cross-build of the engine;
@@ -40,6 +43,7 @@ On an x86_64 host, from a clean checkout:
 - `make deny`.
 - `make vendor`.
 - `make wormhole-interop` against the pinned Python client (run during the fix round; it needs PyPI, so it is not part of `make check`).
+- croc's interop tests against croc v10.7.0's Go binary, all seven, on the development container (spec v0.5).
 
 On GitHub, in pull request #2 (the first runs of `ci.yml` and `rpm.yml`):
 
@@ -94,7 +98,7 @@ docs; the upstream ones are in `docs/UPSTREAM-QUICKSHARE.md`.
 - **Everything in `docs/MANUAL-TESTS.md`:**
   - the phone's firewall;
   - Sailjail;
-  - real Android, LocalSend, wormhole and Bluetooth peers;
+  - real Android, LocalSend, wormhole, croc and Bluetooth peers;
   - the Share-menu activation (`ExecDBus`);
   - how the radars and the tabs look and feel on the phone (M-18, M-19):
     the host tests lay them out but never look at them or swipe.

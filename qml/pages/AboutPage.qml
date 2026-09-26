@@ -30,7 +30,7 @@ Page {
                 x: Theme.horizontalPageMargin
                 width: parent.width - 2 * Theme.horizontalPageMargin
                 //: About page: what the app does.
-                text: qsTr("Sends and receives files and texts over LocalSend, Quick Share, Magic Wormhole and Bluetooth.")
+                text: qsTr("Sends and receives files and texts over LocalSend, Quick Share, Magic Wormhole, croc and Bluetooth.")
                 textFormat: Text.PlainText
                 wrapMode: Text.Wrap
                 color: Theme.highlightColor
@@ -67,6 +67,8 @@ Page {
                     "LocalSend core – Apache-2.0",
                     "open-quickshare (rqs_lib) – GPL-3.0",
                     "magic-wormhole.rs – EUPL-1.2",
+                    "croc's protocol, and mnemonicode's words – MIT",
+                    "RustCrypto (p256, aes-gcm), miniz_oxide – MIT / Apache-2.0",
                     "dbus-rs – MIT / Apache-2.0",
                     "tokio, serde – MIT / Apache-2.0",
                     "Qt – LGPL-3.0, Sailfish Silica"

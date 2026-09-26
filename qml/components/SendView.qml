@@ -169,7 +169,7 @@ Radar {
                 view.refreshOutgoing()
             }
         }
-        onWormholeCodeArrived: {
+        onCodeArrived: {
             if (view.hasOutgoing && transferId === view.outgoing.transferId) {
                 view.refreshOutgoing()
             }
@@ -211,7 +211,8 @@ Radar {
         if (view.hasOutgoing) {
             if (view.outgoing.protocol === protocol && view.outgoing.transferId >= 0 && view.outgoingCode !== "") {
                 pageStack.push(Qt.resolvedUrl("../pages/WormholeCodePage.qml"),
-                               { engine: view.engine, transferId: view.outgoing.transferId })
+                               { engine: view.engine, transferId: view.outgoing.transferId,
+                                 protocol: protocol })
             } else if (view.outgoingEnded) {
                 view.dismiss()
             }
@@ -256,7 +257,7 @@ Radar {
             return
         }
         view.outgoingTransfer = view.engine.transfer(view.outgoing.transferId)
-        var c = view.engine.wormholeCode(view.outgoing.transferId)
+        var c = view.engine.sendCode(view.outgoing.transferId)
         view.outgoingCode = c ? c.code : ""
     }
 

@@ -30,8 +30,8 @@ or the root `Cargo.lock`. Being outside it, `cargo test --workspace` does not
 compile it, so CI must build it on every push (below): otherwise a changed
 signature in `sukkula-core` rots a target silently.
 
-It builds the engine with the three network protocols (`localsend`,
-`quickshare`, `wormhole`; not `bluetooth`, whose D-Bus replies have sweeps
+It builds the engine with the four network protocols (`localsend`,
+`quickshare`, `wormhole`, `croc`; not `bluetooth`, whose D-Bus replies have sweeps
 of their own), so building needs `libdbus-1-dev` and `pkg-config` like the
 workspace does. `fuzz/Cargo.lock` was made from the root `Cargo.lock`, so
 every protocol library is fuzzed at the version the phone runs; after a
@@ -60,10 +60,10 @@ bidi override has not crashed, and is still the bug.
 Every byte a peer, a mailbox server or the LAN sends is parsed by one of
 these first (spec §7: "LocalSend DTOs, Quick Share frames, wormhole
 offers"). Each goes through the adapter's real code -- upstream's DTOs,
-rqs_lib's state machine, the wormhole guards -- via thin `#[doc(hidden)]`
-entry points (`sukkula_engine::localsend::{offer_from_prepare_upload,
+rqs_lib's state machine, the wormhole guards, the croc parsers -- via thin
+`#[doc(hidden)]` entry points (`sukkula_engine::localsend::{offer_from_prepare_upload,
 from_peer}`, `sukkula_engine::wormhole::fuzzing`,
-`sukkula_engine::quickshare::fuzzing`), and every offer that comes out
+`sukkula_engine::quickshare::fuzzing`, `sukkula_engine::croc::fuzzing`), and every offer that comes out
 validated is held to the same S-rules as `offer_validate`'s
 (`sukkula_fuzz::assert_offer`), every listed peer to S2
 (`sukkula_fuzz::assert_peer`). Beyond the S-rules, each target restates what
@@ -80,6 +80,11 @@ library's own types -- and asserts the adapter kept it.
 | `quickshare_handshake` | the plaintext handshake from the first byte: frame reader, connection request and endpoint info, UKEY2 client init and finish, the peer's P-256 key; then the channel it keys | no event of any kind before the key exchange; an honest connection request's name read exactly and shown S2-clean; a finished exchange gives a four-digit PIN; then everything `quickshare_frame` asserts, under the derived keys |
 | `quickshare_frame` | everything inside the encrypted channel: offline frames, byte payloads and their reassembly, sharing frames, the introduction, file chunks, texts, spoiled seals | no file byte or text before the user accepts (S5); ≤ 1000 files, no negative size, no repeated payload id, text ≤ 64 KiB; chunks in order, never past the declared size, ending exactly there; ≤ 2 byte payloads buffered; ≤ 16 KiB of reply per frame; the raw offer is the introduction as sent and validates S-clean; a received text is S2-clean |
 | `quickshare_mdns` | an mDNS service's instance name and `n` record, from anyone on the link | a listed peer's id is `qs:` and the endpoint id (letters and digits, or hex), its name exactly S2 of what the record carries, decoded here independently |
+| `croc_code` | the croc code the user types, and the room and password croc derives from it | an accepted code is the input's words joined by hyphens, 6 to 128 bytes of printable ASCII; its room is SHA-256 of its first four bytes and `croc`, computed independently; its password everything after the fifth byte; white space around it changes nothing |
+| `croc_pake` | the PAKE message from the relay (every connection) and the peer, the only bytes read before a seal, on both curves | an answer only to ≤ 8 KiB of JSON with `Role` 0 and decimal coordinates of ≤ 78 digits; a curve named only from a `Uᵤ`, and only one of the two spoken |
+| `croc_banner` | the relay's banner: its data ports and our address | taken only as `ports\|\|\|address`, the address ≤ 64 bytes, `ok` or 1 to 16 decimal ports of 1 to 65535, and then exactly those ports, restated independently; "bad password" is a refusal |
+| `croc_control` | every control message: raw DEFLATE of JSON, sealed after the key; the LAN probe's JSON | nothing read from over 1 MiB nor inflated past it; a stream inflated only whole and under its cap; an unsealed message is exactly its JSON (kind, text, base64 bytes); nothing opens without the key; sealing and opening changes nothing; a probe only under 16 KiB, as its JSON says |
+| `croc_file_list` | the sender's file list and the offer made of it; the receiver's request for a file of ours | a list only with XXH64 or no hash, then exactly the sender's files in its order, links left out, at least one; a text is one file ≤ 64 KiB offered as `text.txt`; the offer from "croc" with those names and sizes, S-clean once validated; a request is for a file with bytes, its chunks in order, none twice, none past the end, and exactly those asked for |
 
 The two Quick Share targets play the sender (`src/quickshare.rs`): rqs_lib's
 `InboundRequest` reads real frames from a socket that never waits, and the
@@ -187,8 +192,8 @@ check, the second fails it with libFuzzer's own message, and a run that
 fails without writing a reproducer to `fuzz/artifacts/<t>/` is reported as
 a broken run, not a finding.
 
-Sixteen targets at 300 s each is eighty minutes, plus one ASan build of the
-protocol libraries of about ten; a matrix over the targets would run them in
+Twenty-one targets at 300 s each is an hour and three quarters, plus one
+ASan build of the protocol libraries of about ten; a matrix over the targets would run them in
 parallel instead. On failure the job uploads `fuzz/artifacts/` as
 `fuzz-artifacts`: that directory holds the input that failed, and `cargo fuzz
 run <target> <file>` replays it.
@@ -330,3 +335,36 @@ and coverage instrumentation takes tens of milliseconds. The code is typed
 by the user, never sent by a peer, so this is a cost of fuzzing, not an
 exposure; the deterministic sweep in `wormhole/sweep.rs` covers the grammar
 at full speed on every `cargo test`.
+
+## The croc targets' first runs (2026-09-26)
+
+Each 60 s with its dictionary, from the committed seeds, one core, ASan,
+on the development container, after shorter runs had found two
+disagreements in the harness (below).
+
+| Target | Executions (per second) | Coverage, start -> end | Findings |
+| --- | ---: | ---: | --- |
+| `croc_code` | 4,100,516 (67,221) | 379 -> 379 | none (a dozen lines; saturated at once) |
+| `croc_pake` | 2,245 (36) | 1179 -> 1266 | none; see below |
+| `croc_banner` | 8,764,853 (143,686) | 320 -> 320 | none |
+| `croc_control` | 527,292 (8,644) | 2723 -> 2748 | none |
+| `croc_file_list` | 1,841,841 (30,194) | 3731 -> 3758 | none in the engine; two in the harness, below |
+
+What the short runs found was `serde_json::Value` being stricter than
+what it restated: inside a field the engine skips -- an unknown key, or a
+file's time, kept raw and never read -- serde_json checks neither a lone
+surrogate escape nor a number's range, and `Value` refuses both. Go reads
+the first as U+FFFD and ignores the second, so the engine taking them is
+croc's behaviour, not a bug; `sukkula_fuzz::value_of` now skips the
+restatement for exactly those two errors and panics on any other. A
+third was handled before a run could find it: serde's array form of a
+struct (`["pake","",null,null]` is a message), which
+`sukkula_fuzz::as_struct` reads as the object it stands for.
+
+`croc_pake` is slow for the reason `wormhole_code` is: every message that
+parses is answered on both curves, and SIEC255, croc's own, is ours and
+unoptimised, which under ASan costs tens of milliseconds a message. A
+peer or relay sends one such message per connection, so this is a cost of
+fuzzing, not an exposure; `pake.rs`'s unit tests hold the refusals at full
+speed.
+

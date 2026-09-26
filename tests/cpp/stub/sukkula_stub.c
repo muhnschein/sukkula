@@ -55,17 +55,19 @@ static int g_fail_next;
 
 static const char *const START_EVENTS[] = {
     "{\"type\":\"started\",\"version\":\"0.0.0-stub\",\"api\":1,"
-    "\"protocols\":[\"local_send\",\"quick_share\",\"wormhole\",\"bluetooth\"]}",
+    "\"protocols\":[\"local_send\",\"quick_share\",\"wormhole\",\"croc\",\"bluetooth\"]}",
     "{\"type\":\"settings\",\"settings\":{\"device_name\":\"\","
     "\"localsend\":{\"enabled\":true,\"pin\":null},"
     "\"quickshare\":{\"enabled\":true,\"visibility\":\"everyone\",\"ble_nudge\":true},"
     "\"wormhole\":{\"enabled\":true,\"mailbox_url\":null,\"relay_url\":null},"
+    "\"croc\":{\"enabled\":true,\"relay\":null,\"password\":null},"
     "\"bluetooth\":{\"enabled\":true},\"logging\":false},"
     "\"effective_device_name\":\"Stub Phone\"}",
     "{\"type\":\"receiving\",\"on\":false,\"protocols\":["
     "{\"protocol\":\"local_send\",\"state\":\"off\"},"
     "{\"protocol\":\"quick_share\",\"state\":\"off\"},"
     "{\"protocol\":\"wormhole\",\"state\":\"send_only\"},"
+    "{\"protocol\":\"croc\",\"state\":\"send_only\"},"
     "{\"protocol\":\"bluetooth\",\"state\":\"send_only\"}]}",
 };
 

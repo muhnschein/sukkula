@@ -76,7 +76,7 @@ tst_consent.qml` runs single QML tests without the other stages.
    | `tst_app.qml` | the whole window: start-up, discovery paused after a while in the background, consent queueing over any page and around transitions, the Share menu, KeepAlive, notifications (§2, F-C6) |
    | `tst_stack.qml` | the whole window while pages cover each other: a consent dialog over Settings saves nothing, a share over another page keeps discovery and its peers, Receive mode gives them back, send and code replies never pop a consent dialog, a closed offer's dialog never stays under the next one and is not answered (F-C2, F-C3, F-C6, F-LS1, F-QS1, S5) |
 4. **`tests/qml/selftest.py`** first requires every check to pass on an
-   untouched copy of the tree, then plants 40 faults one at a time -- a
+   untouched copy of the tree, then plants 44 faults one at a time -- a
    label without `PlainText`, the sender in a Silica header, a misspelt
    `Text.Plaintext`, rich text, a clickable link, an Accept that does not
    accept, a countdown that never declines, KeepAlive held forever, a peer

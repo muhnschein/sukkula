@@ -18,7 +18,7 @@ use crate::limits::{
 use crate::name::{self, SafeName};
 use crate::text;
 
-/// The four protocols.
+/// The five protocols.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Protocol {
@@ -30,15 +30,19 @@ pub enum Protocol {
     Wormhole,
     /// Bluetooth OBEX Object Push.
     Bluetooth,
+    /// croc v10, through a relay (spec v0.5).
+    // CONTRACT: new (additive), last, so the others keep their order.
+    Croc,
 }
 
 impl Protocol {
     /// Every protocol, in the order the UI lists them.
-    pub const ALL: [Protocol; 4] = [
+    pub const ALL: [Protocol; 5] = [
         Protocol::LocalSend,
         Protocol::QuickShare,
         Protocol::Wormhole,
         Protocol::Bluetooth,
+        Protocol::Croc,
     ];
 }
 

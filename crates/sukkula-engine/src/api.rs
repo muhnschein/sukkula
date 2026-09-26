@@ -141,6 +141,14 @@ pub enum Command {
         /// The code the sender's screen shows, e.g. `7-guitarist-revenge`.
         code: String,
     },
+    /// Receives with a croc code (spec v0.5). As with
+    /// [`Command::ReceiveWormhole`], the offer goes through consent like
+    /// any other, and the reply comes once the user has answered it.
+    // CONTRACT: new (additive).
+    ReceiveCroc {
+        /// The code the sender's screen shows, e.g. `8123-alpha-bravo-charlie`.
+        code: String,
+    },
     /// Cancels a transfer in either direction (F-C5).
     Cancel {
         /// From [`Event::TransferStarted`].
@@ -178,6 +186,11 @@ pub enum SendTarget {
         /// Its address, `AA:BB:CC:DD:EE:FF`.
         address: String,
     },
+    /// croc: the engine makes a code and reports it in
+    /// [`Event::CrocCode`]. Files, or one text.
+    // CONTRACT: new (additive), read through `no_fields` as `Wormhole` is.
+    #[serde(deserialize_with = "no_fields")]
+    Croc,
 }
 
 /// One thing to send.
@@ -224,7 +237,8 @@ pub enum Event {
         /// Why not.
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<ErrorInfo>,
-        /// The transfer a `send` or `receive_wormhole` started.
+        /// The transfer a `send`, `receive_wormhole` or `receive_croc`
+        /// started.
         #[serde(skip_serializing_if = "Option::is_none")]
         transfer: Option<TransferId>,
     },
@@ -316,6 +330,15 @@ pub enum Event {
         code: String,
         /// The same code as a QR code.
         qr: QrCode,
+    },
+    /// The code a croc send is waiting on. croc has no URI to put in a QR
+    /// code.
+    // CONTRACT: new (additive).
+    CrocCode {
+        /// The transfer.
+        transfer: TransferId,
+        /// The code to read out.
+        code: String,
     },
     /// Paired devices that accept Object Push.
     BluetoothDevices {

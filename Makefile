@@ -2,11 +2,11 @@
 #
 # The rule, from vuo: `make check` runs exactly what CI's per-pull-request
 # gate runs (.github/workflows/ci.yml), job for job, from a clean checkout,
-# with no phone and no Sailfish SDK. Three jobs are left out because they
+# with no phone and no Sailfish SDK. Four jobs are left out because they
 # need the network rather than this tree -- `deny` (the RustSec advisory
-# database), `vendor` (open-quickshare at the pinned commit) and
-# `wormhole-interop` (the Python client from PyPI) -- and are targets of
-# their own. The device RPM is `make rpm`, which needs Docker
+# database), `vendor` (open-quickshare at the pinned commit),
+# `wormhole-interop` (the Python client from PyPI) and `croc-interop`
+# (croc from Go's module proxy) -- and are targets of their own. The device RPM is `make rpm`, which needs Docker
 # and the SDK image; its Harbour validation is part of it.
 #
 # A missing tool fails, like CI's strict modes: a green `make check` that
@@ -31,23 +31,23 @@ SUKKULA_NIGHTLY ?= nightly-2026-09-15
 FUZZ_SECONDS ?= 60
 # The toolchain fuzz-smoke fuzzes with; the pinned nightly unless set.
 FUZZ_TOOLCHAIN ?= $(SUKKULA_NIGHTLY)
-FEATURES := localsend quickshare wormhole bluetooth none
+FEATURES := localsend quickshare wormhole croc bluetooth none
 export SUKKULA_NIGHTLY
 
 .PHONY: all check fmt fmt-check lint test rqs-lib-tests doc features deny deps \
         lockfile fuzz-lint fuzz-smoke ffi-asan cross qml cpp packaging vendor harbour \
-        wormhole-interop sonar-reports rpm sdk-image clean help
+        wormhole-interop croc-interop sonar-reports rpm sdk-image clean help
 
 all: check
 
 ## check: every per-pull-request CI job that needs no network: test,
 ## features, deps, fuzz-lint, ffi-asan, cross, qml, cpp, packaging, harbour,
-## and the vendor check's selftest. Not deny, vendor or wormhole-interop
-## (network), not rpm (SDK), not fuzz-smoke (fuzz.yml, nightly).
+## and the vendor check's selftest. Not deny, vendor, wormhole-interop or
+## croc-interop (network), not rpm (SDK), not fuzz-smoke (fuzz.yml, nightly).
 check: fmt-check lint test rqs-lib-tests doc features deps lockfile harbour packaging \
        qml cpp cross ffi-asan fuzz-lint
 	./ci/vendor-check-selftest.sh
-	@echo "== make check passed (deny, vendor and wormhole-interop need the network) =="
+	@echo "== make check passed (deny, vendor, wormhole-interop and croc-interop need the network) =="
 
 ## fmt: format the workspace
 fmt:
@@ -182,6 +182,18 @@ wormhole-interop:
 		SUKKULA_PY_WORMHOLE="$$v/bin/wormhole" $(CARGO) test -p sukkula-engine \
 			--no-default-features --features wormhole --locked \
 			--test wormhole_interop -- --include-ignored
+
+## croc-interop: Sukkula against croc v10.7.0's Go binary, as the other peer
+## and as the relay, both ways. Network (Go's module proxy, checked against
+## its checksum database), and Go 1.25 or later (GO=...).
+GO ?= go
+croc-interop:
+	@t=$${CARGO_TARGET_DIR:-target}; case $$t in /*) ;; *) t="$(CURDIR)/$$t" ;; esac; \
+		b="$$t/croc-interop-bin"; rm -rf "$$b"; \
+		GOBIN="$$b" GOSUMDB=sum.golang.org $(GO) install github.com/schollz/croc/v10@v10.7.0 && \
+		SUKKULA_CROC="$$b/croc" $(CARGO) test -p sukkula-engine \
+			--no-default-features --features croc --locked \
+			--test croc_interop -- --include-ignored
 
 ## sonar-reports: the coverage report SonarQube Cloud imports
 ## (.github/workflows/build.yml), written to target/sonar/lcov.info: the

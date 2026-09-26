@@ -16,12 +16,13 @@ with every way of sending on one send screen. The changes are marked
 v0.5 (Sep 26, 2026) makes the two modes tabs at the top of the main page,
 gives Receive mode a radar of its own, moves the transfers and received
 texts to a History page, and grants the Sailjail permissions for sending
-from the user's folders and memory cards. The changes are marked
-**(v0.5)**.
+from the user's folders and memory cards. It adds croc as a fifth
+protocol, over the internet like Magic Wormhole (§4, F-CR). The changes
+are marked **(v0.5)**.
 
 ## 1. Purpose, scope and name
 
-Sukkula is a GPL-3.0-or-later Sailfish OS app for the Jolla Phone 2026, distributed only through Jolla's Harbour store -- never OpenRepos, never Chum **(v0.2)** -- that sends and receives files and text over four protocols from one UI.
+Sukkula is a GPL-3.0-or-later Sailfish OS app for the Jolla Phone 2026, distributed only through Jolla's Harbour store -- never OpenRepos, never Chum **(v0.2)** -- that sends and receives files and text over four protocols from one UI. **(v0.5: five, with croc.)**
 
 **Name:** *Sukkula* (Finnish for "shuttle" -- the loom's and the space kind; say SOOK-koo-lah). It carries things back and forth, which is the whole app. Package and binary name: `harbour-sukkula`. **(v0.2)**
 
@@ -32,6 +33,7 @@ Sukkula is a GPL-3.0-or-later Sailfish OS app for the Jolla Phone 2026, distribu
 | LocalSend v2 | Yes | Yes | LocalSend app, same LAN |
 | Quick Share | Yes | Yes | Stock Android, same LAN (BLE only for discovery) |
 | Magic Wormhole v1 | Yes | Yes | Any wormhole client, internet |
+| croc v10 **(v0.5)** | Yes | Yes | Any croc client, internet |
 | Bluetooth OBEX Object Push | Yes | No (system handles it) | Bluetooth |
 
 Sukkula also registers as a target in the system Share menu, so any app can hand it files.
@@ -113,6 +115,13 @@ Each requirement has an ID; every ID gets at least one automated test or a named
 - **F-MW3** Folder offers arrive as the sender's `.zip` and are saved unopened.
 - **F-MW4** Default mailbox and relay servers, with custom URLs in Settings.
 
+**croc (F-CR) (v0.5)**, our own implementation of croc v10's protocol (`crates/sukkula-engine/src/croc/`; no Rust library speaks it), checked against croc v10.7.0's Go binary:
+
+- **F-CR1** Send files, or one text on its own, and show the generated code (four digits and three words) as text. No QR code: croc has no URI for one.
+- **F-CR2** Receive by typing a code, then show the consent dialog before any data flows; the sender's file list is checked (S1-S6) before the user sees it.
+- **F-CR3** croc's public relay by default, with a custom relay and its password in Settings.
+- **F-CR4** Data always goes through the relay: no LAN shortcut, no resume. Folders arrive flat, each file under its own name; symbolic links are left out.
+
 **Bluetooth (F-BT)**, via obexd over D-Bus:
 
 - **F-BT1** Send files to a paired device over OBEX Object Push, with progress and cancel.
@@ -120,7 +129,7 @@ Each requirement has an ID; every ID gets at least one automated test or a named
 
 ## 5. Security requirements
 
-The attacker is anyone on the same Wi-Fi, within Bluetooth range, or holding a wormhole code; every byte, name, size and alias they send is hostile. Goals: no file written outside `~/Downloads/Sukkula/`, nothing accepted without consent, no crash or memory exhaustion from any input, and no spoofing in the UI.
+The attacker is anyone on the same Wi-Fi, within Bluetooth range, or holding a wormhole or croc code -- and, for croc, the relay **(v0.5)**; every byte, name, size and alias they send is hostile. Goals: no file written outside `~/Downloads/Sukkula/`, nothing accepted without consent, no crash or memory exhaustion from any input, and no spoofing in the UI.
 
 **Rules (S)**
 
@@ -151,6 +160,8 @@ The patched copy lives in `third_party/` with the patches kept separate, so we c
 
 The upstream LocalSend core already sanitises names and verifies client certificates. Sukkula still takes its data as a stream and writes it through its own inbox. For magic-wormhole, Sukkula uses only the v1 transfer API, because the v2 accept path contains `panic!`/`expect` on unexpected offer shapes.
 
+**(v0.5)** croc is the one protocol with no library to adapt: the crates that carry its name speak protocols of their own. Sukkula implements it from croc v10.7.0's source, against Go's own test vectors, with every frame and message capped before it is read (`docs/SECURITY.md`, croc).
+
 ## 6. Dependencies and licensing
 
 Sukkula writes adapters, not protocols: each protocol comes from one maintained library, and our own dependencies stay close to this list.
@@ -161,6 +172,7 @@ Sukkula writes adapters, not protocols: each protocol comes from one maintained 
 | [rqs\_lib](https://github.com/ignotusbucius/open-quickshare) | Quick Share | GPL-3.0 | vendored + patches |
 | [magic-wormhole](https://github.com/magic-wormhole/magic-wormhole.rs) | Wormhole | EUPL-1.2 | crates.io `=0.8.1` |
 | dbus | BlueZ obexd | MIT/Apache-2.0 | crates.io |
+| p256, crypto-bigint, aes-gcm, hmac, base64, miniz\_oxide **(v0.5)** | croc: its PAKE, key and seal, and DEFLATE (croc's own curve, SIEC255, is ours) | MIT/Apache-2.0 (miniz\_oxide also Zlib) | crates.io |
 | tokio, serde, serde\_json, thiserror, sha2, tracing | Runtime and plumbing | MIT/Apache-2.0 | crates.io |
 | proptest, tempfile (dev only) | Tests | MIT/Apache-2.0 | crates.io |
 
@@ -180,9 +192,9 @@ A change merges only when CI passes: `cargo fmt --check`, `clippy -D warnings`, 
 | Layer | What | Tool |
 | --- | --- | --- |
 | Core | Every S-rule as a property test (names, display text, inbox caps and cleanup) | proptest |
-| Adapters | Loopback transfers per protocol: Sukkula to Sukkula, and Sukkula to the reference client on the same host (LocalSend CLI, `wormhole` CLI, rquickshare) **(v0.2: LocalSend against the upstream core's own client and server; `wormhole` against the pinned Python client in CI's `wormhole-interop` job; no rquickshare interop yet -- Quick Share is Sukkula to Sukkula over the patched library plus hand-built frames, and real Android peers are M-30)** | cargo test (integration) |
+| Adapters | Loopback transfers per protocol: Sukkula to Sukkula, and Sukkula to the reference client on the same host (LocalSend CLI, `wormhole` CLI, rquickshare) **(v0.2: LocalSend against the upstream core's own client and server; `wormhole` against the pinned Python client in CI's `wormhole-interop` job; (v0.5) croc against croc v10.7.0's Go binary, as the peer and as the relay, in CI's `croc-interop` job; no rquickshare interop yet -- Quick Share is Sukkula to Sukkula over the patched library plus hand-built frames, and real Android peers are M-30)** | cargo test (integration) |
 | Hostile input | Malicious peers replaying Q1–Q5 and S1–S7 cases: traversal names, negative and oversized sizes, endless chunks, bidi aliases, slow senders | cargo test with hand-built frames |
-| Parsers | FFI command JSON, LocalSend DTOs, Quick Share frames, wormhole offers | cargo-fuzz, corpus in repo |
+| Parsers | FFI command JSON, LocalSend DTOs, Quick Share frames, wormhole offers, croc's PAKE, banner, messages and file lists **(v0.5)** | cargo-fuzz, corpus in repo |
 | FFI | Start/stop cycles, bad UTF-8, oversize commands, callback on a foreign thread | cargo test + a small C harness under ASan |
 | Device | Manual checklist per release on the Jolla Phone 2026, against Pixel, Samsung, LocalSend iOS/desktop and Bluetooth | Named test IDs M-1… (`docs/MANUAL-TESTS.md`) |
 

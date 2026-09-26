@@ -9,7 +9,7 @@ repository.workspace = true
 publish.workspace = true
 
 [features]
-default = ["localsend", "quickshare", "wormhole", "bluetooth"]
+default = ["localsend", "quickshare", "wormhole", "bluetooth", "croc"]
 # One feature per protocol, so each can be built and tested alone (spec §3).
 localsend = [
     "dep:localsend",
@@ -39,6 +39,18 @@ wormhole = [
     "tokio-util/compat",
 ]
 bluetooth = ["dep:dbus"]
+croc = [
+    "dep:p256",
+    "dep:crypto-bigint",
+    "dep:aes-gcm",
+    "dep:hmac",
+    "dep:sha2",
+    "dep:base64",
+    "dep:miniz_oxide",
+    "dep:getrandom",
+    "dep:rustix",
+    "serde_json/raw_value",
+]
 
 [dependencies]
 sukkula-core.workspace = true
@@ -103,6 +115,20 @@ sha2 = { workspace = true, optional = true }
 rustls-platform-verifier = { version = "0.7", optional = true }
 # BlueZ obexd over the system libdbus-1.so.3 (Harbour-allowed). Never `vendored`.
 dbus = { version = "0.9", optional = true }
+# croc v10 (src/croc/mod.rs). No croc library exists for Rust, so the
+# protocol is ours; its primitives are crates already in the tree through
+# Quick Share (p256, hmac), Magic Wormhole (aes-gcm, through
+# noise-rust-crypto) and LocalSend (base64), plus crypto-bigint, under
+# p256's elliptic-curve, for the arithmetic of croc's own curve. The one
+# crate new to the tree is miniz_oxide, to inflate the raw DEFLATE every
+# croc control message is wrapped in: pure Rust, no unsafe of its own,
+# and nothing else with it but adler2.
+p256 = { version = "0.13", default-features = false, features = ["arithmetic"], optional = true }
+crypto-bigint = { version = "0.5", default-features = false, optional = true }
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"], optional = true }
+hmac = { version = "0.12", optional = true }
+base64 = { version = "0.22", default-features = false, features = ["alloc"], optional = true }
+miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"], optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

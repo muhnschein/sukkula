@@ -98,6 +98,16 @@ const RECEIVE_CODE_TIMEOUT: Duration = HANDSHAKE_TIMEOUT
     .saturating_add(OFFER_TIMEOUT)
     .saturating_add(Duration::from_secs(20));
 
+/// The most a `receive_croc` may take: 160 s. As for a wormhole receive,
+/// the network and then the user, each bounded by the adapter: four steps
+/// of [`HANDSHAKE_TIMEOUT`] (the relay, the sender and the key, the data
+/// rooms, the offer), the consent dialog's full [`OFFER_TIMEOUT`], and
+/// room to spare.
+const RECEIVE_CROC_TIMEOUT: Duration = HANDSHAKE_TIMEOUT
+    .saturating_mul(4)
+    .saturating_add(OFFER_TIMEOUT)
+    .saturating_add(Duration::from_secs(20));
+
 /// Most events waiting for the sink, not counting replies (which are
 /// bounded by [`MAX_IN_FLIGHT_COMMANDS`]).
 const MAX_QUEUED_EVENTS: usize = 1024;
@@ -534,6 +544,7 @@ impl Hub {
                     SendTarget::QuickShare { .. } => Protocol::QuickShare,
                     SendTarget::Wormhole => Protocol::Wormhole,
                     SendTarget::Bluetooth { .. } => Protocol::Bluetooth,
+                    SendTarget::Croc => Protocol::Croc,
                 };
                 let adapter = self.adapter(protocol)?;
                 let items = prepare(items).await?;
@@ -541,6 +552,10 @@ impl Hub {
             }
             Command::ReceiveWormhole { code } => {
                 let adapter = self.adapter(Protocol::Wormhole)?;
+                adapter.receive_code(code).await.map(Some)
+            }
+            Command::ReceiveCroc { code } => {
+                let adapter = self.adapter(Protocol::Croc)?;
                 adapter.receive_code(code).await.map(Some)
             }
             Command::Cancel { transfer } => {
@@ -760,6 +775,7 @@ fn enabled(settings: &Settings, protocol: Protocol) -> bool {
         Protocol::QuickShare => settings.quickshare.enabled,
         Protocol::Wormhole => settings.wormhole.enabled,
         Protocol::Bluetooth => settings.bluetooth.enabled,
+        Protocol::Croc => settings.croc.enabled,
     }
 }
 
@@ -774,6 +790,8 @@ fn build_adapters(ctx: &Arc<Ctx>) -> Vec<Arc<dyn Adapter>> {
     adapters.push(crate::wormhole::adapter(ctx.clone()));
     #[cfg(feature = "bluetooth")]
     adapters.push(crate::bluetooth::adapter(ctx.clone()));
+    #[cfg(feature = "croc")]
+    adapters.push(crate::croc::adapter(ctx.clone()));
     let _ = ctx;
     adapters
 }
@@ -956,6 +974,7 @@ fn command_timeout(cmd: &Command) -> Option<Duration> {
         Command::SetReceiving { .. } | Command::SetSettings { .. } => None,
         // It waits for the user too.
         Command::ReceiveWormhole { .. } => Some(RECEIVE_CODE_TIMEOUT),
+        Command::ReceiveCroc { .. } => Some(RECEIVE_CROC_TIMEOUT),
         _ => Some(COMMAND_TIMEOUT),
     }
 }
@@ -1335,6 +1354,7 @@ fn event_kind(event: &Event) -> &'static str {
         Event::TransferFinished { .. } => "transfer_finished",
         Event::TextReceived { .. } => "text_received",
         Event::WormholeCode { .. } => "wormhole_code",
+        Event::CrocCode { .. } => "croc_code",
         Event::BluetoothDevices { .. } => "bluetooth_devices",
     }
 }
@@ -2675,11 +2695,12 @@ mod tests {
         }
     }
 
-    const EVERY_PROTOCOL: [Protocol; 4] = [
+    const EVERY_PROTOCOL: [Protocol; 5] = [
         Protocol::LocalSend,
         Protocol::QuickShare,
         Protocol::Wormhole,
         Protocol::Bluetooth,
+        Protocol::Croc,
     ];
 
     fn switch_off(settings: &mut Settings, protocol: Protocol) {
@@ -2688,6 +2709,7 @@ mod tests {
             Protocol::QuickShare => settings.quickshare.enabled = false,
             Protocol::Wormhole => settings.wormhole.enabled = false,
             Protocol::Bluetooth => settings.bluetooth.enabled = false,
+            Protocol::Croc => settings.croc.enabled = false,
         }
     }
 
@@ -2720,6 +2742,13 @@ mod tests {
                 (
                     r#"{"type":"list_bluetooth_devices"}"#.to_owned(),
                     "list_devices",
+                ),
+            ],
+            Protocol::Croc => vec![
+                (send(r#"{"protocol":"croc"}"#), "send"),
+                (
+                    r#"{"type":"receive_croc","code":"8123-alpha-bravo-charlie"}"#.to_owned(),
+                    "receive_code",
                 ),
             ],
         }

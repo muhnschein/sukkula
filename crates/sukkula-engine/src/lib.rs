@@ -28,6 +28,8 @@ mod slots;
 
 #[cfg(feature = "bluetooth")]
 pub mod bluetooth;
+#[cfg(feature = "croc")]
+pub mod croc;
 #[cfg(feature = "localsend")]
 pub mod localsend;
 #[cfg(feature = "quickshare")]
