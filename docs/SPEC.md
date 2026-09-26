@@ -1,4 +1,4 @@
-# Sukkula — Specification v0.4
+# Sukkula — Specification v0.5
 
 Sep 24, 2026 · @Philipp
 
@@ -12,6 +12,12 @@ Linking). The changes are marked **(v0.3)**.
 v0.4 (Sep 26, 2026) makes Send and Receive the two modes of one main page,
 with every way of sending on one send screen. The changes are marked
 **(v0.4)**.
+
+v0.5 (Sep 26, 2026) makes the two modes tabs at the top of the main page,
+gives Receive mode a radar of its own, moves the transfers and received
+texts to a History page, and grants the Sailjail permissions for sending
+from the user's folders and memory cards. The changes are marked
+**(v0.5)**.
 
 ## 1. Purpose, scope and name
 
@@ -37,7 +43,7 @@ Sukkula also registers as a target in the system Share menu, so any app can hand
 Every package must pass `sfdk check -s harbour`; anything the validator rejects is out of scope, not worked around.
 
 - **Targets:** aarch64 only, Sailfish OS 5.2 and later, which is the Jolla Phone 2026 and nothing else. No armv7hl, no i486, no compatibility code for older releases. **(v0.2)**
-- **Sailjail permissions:** `Internet;Bluetooth;Downloads` and nothing else. `Bluetooth` grants BlueZ on the system bus (`org.bluez`) and obexd on the session bus (`org.bluez.obex`), which is everything Bluetooth and the Quick Share BLE nudge need. Received files go to `~/Downloads/Sukkula/`, staged in `~/Downloads/Sukkula/.partial/` (see S3); files to send arrive via the Share menu or a file picker.
+- **Sailjail permissions:** `Internet;Bluetooth;Downloads` and nothing else. `Bluetooth` grants BlueZ on the system bus (`org.bluez`) and obexd on the session bus (`org.bluez.obex`), which is everything Bluetooth and the Quick Share BLE nudge need. Received files go to `~/Downloads/Sukkula/`, staged in `~/Downloads/Sukkula/.partial/` (see S3); files to send arrive via the Share menu or a file picker. **(v0.5: `Internet;Bluetooth;Downloads;Documents;Music;Pictures;Videos;RemovableMedia`. The five added are read-only in practice -- nothing is written outside `~/Downloads/Sukkula/` -- and let a file be sent from the user's folders and memory cards, whether picked in the file browser or handed over through the Share menu, where Gallery's photos come from `~/Pictures`. Not `UserDirs`, which would take in the whole home directory, and not `MediaIndexing`: the file browser needs no media index.)**
 - **Linked system libraries** (all on the Harbour allow-list): Qt5 Core/Gui/Qml/Quick/DBus, libsailfishapp, libdbus-1.so.3, libz. Everything else is Rust, statically linked into one private library, `/usr/share/harbour-sukkula/lib/libsukkula_ffi.so`, which the binary finds through its RPATH **(v0.3: not into the binary itself. The `silica-qt5` booster `dlopen()`s the binary, and an executable's thread-locals are resolved to fixed offsets that a `dlopen()`ed one does not get.)**
 - **QML imports:** Sailfish.Silica, Sailfish.Share (ShareProvider), Sailfish.Pickers, Nemo.KeepAlive, Nemo.Notifications. QtBluetooth is not allowed, so BlueZ is reached over raw D-Bus from Rust.
 - **Lifecycle:** receiving only while the app runs (cover page shows "Receiving"). KeepAlive holds the CPU awake during an active transfer only.
@@ -77,12 +83,12 @@ Each requirement has an ID; every ID gets at least one automated test or a named
 
 **Common (F-C)**
 
-- **F-C1** One Receive switch turns all enabled receivers on or off together; each protocol can be disabled in Settings. **(v0.4: the switch is the Send \| Receive mode at the foot of the main page. Receive switches every enabled receiver on; Send switches them off and runs discovery instead, while the app is in front: after 5 s in the background discovery pauses, and it resumes when the app comes back. The mode shown is the engine's state, so the cover's action changes it too.)**
+- **F-C1** One Receive switch turns all enabled receivers on or off together; each protocol can be disabled in Settings. **(v0.4: the switch is the Send \| Receive mode at the foot of the main page. Receive switches every enabled receiver on; Send switches them off and runs discovery instead, while the app is in front: after 5 s in the background discovery pauses, and it resumes when the app comes back. The mode shown is the engine's state, so the cover's action changes it too.)** **(v0.5: Send and Receive are two tabs at the top of the main page, tapped or swiped between, and the page stays in portrait. Receive mode is a radar like Send mode's: this phone at the centre with the name others see, the rings pulsing while it is visible, and a device that offers something on the rings while the consent dialog asks; an accepted transfer draws a line from the sender to the centre and both fill as it comes. The cloud above holds the tiles to receive with a code.)**
 - **F-C2** Every incoming offer shows a consent dialog: sanitised sender name, protocol, file names, sizes and total. There is no auto-accept, not even for known devices.
 - **F-C3** Unanswered offers are declined after 60 s. At most 2 offers wait at once; further ones are declined without UI.
 - **F-C4** Received text is shown as plain text with a Copy button. URLs are never opened automatically.
-- **F-C5** Progress, success and failure are shown per transfer; any transfer can be cancelled.
-- **F-C6** Sukkula appears in the system Share menu (ShareProvider) for files and text, and opens a "Send via…" page. **(v0.4: there is no separate page. Send mode shows every way of sending on one screen, in portrait only: this phone at the centre of a radar of round rings, holding what is to be sent; the LocalSend and Quick Share peers discovery finds and the paired Bluetooth devices on its rings, as many as fit without covering each other and the rest behind "+N", each with a protocol badge; above them a cloud with Magic Wormhole's tile, and a tile kept for croc. A share opens Send mode with its items at the centre; tapping a peer sends, with the file picker first if nothing is chosen. A running send draws a line from the centre to its peer -- through the cloud for Magic Wormhole -- and both fill as it goes.)**
+- **F-C5** Progress, success and failure are shown per transfer; any transfer can be cancelled. **(v0.5: on the radars while a transfer runs and a few seconds after, and on the History page, reached from either tab's pulley menu, for every transfer of the session and the received texts.)**
+- **F-C6** Sukkula appears in the system Share menu (ShareProvider) for files and text, and opens a "Send via…" page. **(v0.4: there is no separate page. Send mode shows every way of sending on one screen, in portrait only: this phone at the centre of a radar of round rings, holding what is to be sent; the LocalSend and Quick Share peers discovery finds and the paired Bluetooth devices on its rings, as many as fit without covering each other and the rest behind "+N", each with a protocol badge; above them a cloud with Magic Wormhole's tile, and a tile kept for croc. A share opens Send mode with its items at the centre; tapping a peer sends, with the file picker first if nothing is chosen. A running send draws a line from the centre to its peer -- through the cloud for Magic Wormhole -- and both fill as it goes.)** **(v0.5: until something is chosen, the centre -- a plus, which opens the file browser, several files at a time -- is all there is; discovery runs meanwhile, and the peers and the cloud appear with the first file. The cloud's tiles come out when it is tapped. Tapping the centre again adds files, and a cross beside it clears them. Texts come from the Share menu only.)**
 - **F-C7** The device name shown to peers defaults to the device model and can be edited.
 
 **LocalSend (F-LS)**, via the upstream `localsend` crate, protocol v2:

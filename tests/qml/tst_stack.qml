@@ -131,9 +131,9 @@ Script {
         },
         function () {
             test.compare(test.engine.localSendPeers.count, 1)
-            // A share while the "What to send" page is over the main page.
-            probe.find(test.find("mainPage"), "origin").clicked()
-            test.compare(test.top(), "payloadPage")
+            // A share while the History page is over the main page.
+            test.find("mainPage").openHistory()
+            test.compare(test.top(), "historyPage")
             test.find("shareText").triggered([{ data: "second" }])
             return 200
         },

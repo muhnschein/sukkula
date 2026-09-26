@@ -35,6 +35,14 @@
     </message>
 </context>
 <context>
+    <name>CodeTile</name>
+    <message>
+        <source>Tap for the QR code</source>
+        <extracomment>Under a code on the send screen: tapping shows it big, with a QR code.</extracomment>
+        <translation type="unfinished"></translation>
+    </message>
+</context>
+<context>
     <name>ConsentDialog</name>
     <message>
         <source>Accept</source>
@@ -192,25 +200,15 @@
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <source>A file could not be read. Sukkula can read files in Downloads only.</source>
+        <source>A file could not be read. Sukkula can send files from Downloads, Documents, Music, Pictures, Videos and memory cards only.</source>
         <translation type="unfinished"></translation>
     </message>
 </context>
 <context>
-    <name>MainPage</name>
+    <name>HistoryPage</name>
     <message>
         <source>Copied</source>
         <extracomment>Shown after a received text was copied to the clipboard.</extracomment>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <source>About Sukkula</source>
-        <extracomment>Pulley menu: the page with the version and licence.</extracomment>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <source>Settings</source>
-        <extracomment>Pulley menu.</extracomment>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -219,28 +217,8 @@
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <source>Receive with a code</source>
-        <extracomment>Pulley menu: receive over Magic Wormhole by typing the sender&apos;s code.</extracomment>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <source>Sukkula could not start: %1</source>
-        <extracomment>The engine failed to start; %1 says why.</extracomment>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <source>Nearby devices can offer you files</source>
-        <extracomment>Receive mode, at the top: what receiving means.</extracomment>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <source>Shown to others as %1</source>
-        <extracomment>The name other devices see; %1 is that name.</extracomment>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <source>%1: %2</source>
-        <extracomment>A protocol and its state, e.g. &quot;LocalSend: Ready&quot;.</extracomment>
+        <source>History</source>
+        <extracomment>Page title: what was sent and received.</extracomment>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -259,8 +237,21 @@
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <source>Waiting for offers. Nothing is saved until you accept it.</source>
-        <extracomment>Receive mode with nothing received yet.</extracomment>
+        <source>Nothing sent or received yet.</source>
+        <extracomment>History page with nothing sent or received yet.</extracomment>
+        <translation type="unfinished"></translation>
+    </message>
+</context>
+<context>
+    <name>MainPage</name>
+    <message>
+        <source>Settings</source>
+        <extracomment>Pulley menu.</extracomment>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Sukkula could not start: %1</source>
+        <extracomment>The engine failed to start; %1 says why.</extracomment>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -268,57 +259,18 @@
         <extracomment>Pulley menu in Send mode: stop the send that is running.</extracomment>
         <translation type="unfinished"></translation>
     </message>
-</context>
-<context>
-    <name>ModeSwitch</name>
     <message>
-        <source>Receive</source>
-        <extracomment>The mode switch at the foot of the main page: receive files.</extracomment>
+        <source>History</source>
+        <extracomment>Pulley menu: the page with what was sent and received.</extracomment>
         <translation type="unfinished"></translation>
     </message>
     <message>
         <source>Send</source>
-        <extracomment>The mode switch at the foot of the main page: send files.</extracomment>
-        <translation type="unfinished"></translation>
-    </message>
-</context>
-<context>
-    <name>PayloadPage</name>
-    <message>
-        <source>Clear</source>
-        <extracomment>Pulley menu on the &quot;What to send&quot; page: take everything off it.</extracomment>
+        <extracomment>The main page&apos;s tabs.</extracomment>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <source>Add file</source>
-        <extracomment>Pulley menu on the &quot;What to send&quot; page: choose a file with the file picker.
-----------
-Opens the file picker.</extracomment>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <source>What to send</source>
-        <extracomment>Page title: choose the files and text to send.</extracomment>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <source>Outside Downloads: Sukkula may not be allowed to read it.</source>
-        <extracomment>&quot;What to send&quot; page: a file outside ~/Downloads, which the sandbox may not let Sukkula read.</extracomment>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <source>Text to send (optional)</source>
-        <extracomment>Placeholder of the text box on the &quot;What to send&quot; page.</extracomment>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <source>Text</source>
-        <extracomment>Label of the text box on the &quot;What to send&quot; page.</extracomment>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <source>Then go back and tap who to send it to.</source>
-        <extracomment>&quot;What to send&quot; page: how to go on once something is chosen.</extracomment>
+        <source>Receive</source>
         <translation type="unfinished"></translation>
     </message>
 </context>
@@ -332,6 +284,76 @@ Opens the file picker.</extracomment>
     <message>
         <source>%1 · %2</source>
         <extracomment>A peer in the device list: its protocol (%1), then its model or address (%2).</extracomment>
+        <translation type="unfinished"></translation>
+    </message>
+</context>
+<context>
+    <name>ReceiveView</name>
+    <message>
+        <source>Receive with a code</source>
+        <extracomment>Receive screen, under the cloud: tapping it shows Magic Wormhole and croc.</extracomment>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Type the code</source>
+        <extracomment>Receive screen: under Magic Wormhole&apos;s name on its tile.
+----------
+Receive screen: under croc&apos;s name on its tile.</extracomment>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>%1 of %2</source>
+        <extracomment>Progress of a transfer: %1 bytes so far, %2 bytes in all, both formatted.</extracomment>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Saved in Downloads/Sukkula</source>
+        <extracomment>Receive screen: files arrived.</extracomment>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Received. It is in History.</source>
+        <extracomment>Receive screen: a text arrived; it is on the History page.</extracomment>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Cancelled</source>
+        <extracomment>A transfer was stopped by one of the two sides.</extracomment>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Failed: %1</source>
+        <extracomment>A transfer failed; %1 says why.</extracomment>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Switching on…</source>
+        <extracomment>Receive screen: Receive mode was asked for and is not on yet.</extracomment>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Waiting for offers. Nothing is saved until you accept it.</source>
+        <extracomment>Receive screen with nothing coming yet.</extracomment>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Nobody nearby can see this phone.</source>
+        <extracomment>Receive screen: no protocol could start.</extracomment>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Starting…</source>
+        <extracomment>Receive screen: the protocols are starting.</extracomment>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Visible over %1</source>
+        <extracomment>Receive screen: the protocols this phone can be found over; %1 lists them.</extracomment>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>%1 could not start: %2</source>
+        <extracomment>A protocol could not start; %1 is its name, %2 why.</extracomment>
         <translation type="unfinished"></translation>
     </message>
 </context>
@@ -413,12 +435,34 @@ Opens the file picker.</extracomment>
         <extracomment>Send screen: nobody found and discovery is not running.</extracomment>
         <translation type="unfinished"></translation>
     </message>
+    <message>
+        <source>croc sends files, or one text on its own.</source>
+        <extracomment>Send screen: croc tapped with a text and something else chosen.</extracomment>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>That is as many files as one send can take.</source>
+        <extracomment>Send screen: the most files one send can carry are chosen already.</extracomment>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>More options</source>
+        <extracomment>Send screen, under the cloud: tapping it shows Magic Wormhole and croc.</extracomment>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Send with a code</source>
+        <extracomment>Send screen: under Magic Wormhole&apos;s name on its tile.
+----------
+Send screen: under croc&apos;s name on its tile.</extracomment>
+        <translation type="unfinished"></translation>
+    </message>
 </context>
 <context>
     <name>SettingsPage</name>
     <message>
         <source>About Sukkula</source>
-        <extracomment>Pulley menu: the page with the version and licence.</extracomment>
+        <extracomment>Settings, at the foot: the page with the version and licence.</extracomment>
         <translation type="unfinished"></translation>
     </message>
     <message>
@@ -712,14 +756,6 @@ Opens the file picker.</extracomment>
     <message>
         <source>Receive</source>
         <extracomment>Starts receiving with the typed code.</extracomment>
-        <translation type="unfinished"></translation>
-    </message>
-</context>
-<context>
-    <name>WormholeTile</name>
-    <message>
-        <source>Tap for the QR code</source>
-        <extracomment>Under a wormhole code on the send screen: tapping shows it big, with a QR code.</extracomment>
         <translation type="unfinished"></translation>
     </message>
 </context>

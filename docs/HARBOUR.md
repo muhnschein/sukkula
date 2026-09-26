@@ -126,7 +126,7 @@ policy, stricter than Harbour.
 | 2.6 | nothing writes to a path the package installs |
 | 2.7 | every platform QML module imported has its package required (`Nemo.Notifications`, `Nemo.KeepAlive`) |
 | P.1 | no other device architecture anywhere in the spec, the workflows or the build scripts |
-| P.2 | the sandbox permissions are exactly `Internet;Bluetooth;Downloads` |
+| P.2 | the sandbox permissions are exactly spec §2's: `Internet;Bluetooth;Downloads;Documents;Music;Pictures;Videos;RemovableMedia` |
 | P.3 | every SDK version the packaging can build against is 5.2 or later |
 | P.4 | `OrganizationName=sukkula`, `ApplicationName=sukkula` |
 | P.5 | platform QML modules are exactly spec §2's: Sailfish.Silica, Sailfish.Share, Sailfish.Pickers, Nemo.KeepAlive, Nemo.Notifications |
@@ -164,10 +164,10 @@ policy, stricter than Harbour.
 
 ## Sailjail permissions, and why each
 
-`Permissions=Internet;Bluetooth;Downloads` and nothing else (spec §2). P.2
-fails a tree that asks for less or for more: each one missing is a feature
-that silently does not work in the sandbox, and each one extra is reach
-nobody reviewed.
+`Permissions=Internet;Bluetooth;Downloads;Documents;Music;Pictures;Videos;RemovableMedia`
+and nothing else (spec §2). P.2 fails a tree that asks for less or for
+more: each one missing is a feature that silently does not work in the
+sandbox, and each one extra is reach nobody reviewed.
 
 - **Internet** -- LocalSend and Quick Share over the LAN (multicast
   discovery, mDNS, the HTTPS and TCP servers peers connect to), and Magic
@@ -180,16 +180,20 @@ nobody reviewed.
 - **Downloads** -- received files land in `~/Downloads/Sukkula/`, staged in
   its hidden `.partial/` (S3). Staging there, not in the app's data
   directory, is deliberate: Sailjail's bind mounts make a link or rename
-  from the data directory into `~/Downloads` fail with `EXDEV`.
+  from the data directory into `~/Downloads` fail with `EXDEV`. Files in
+  `~/Downloads` can be sent, too.
+- **Documents, Music, Pictures, Videos, RemovableMedia** -- files to send.
+  Silica's file browser runs inside the app's process, so the sandbox
+  decides what it can open, and a file handed over through the Share menu
+  is read by the app itself: a photo shared from Gallery lives in
+  `~/Pictures` (piirit found the same). Nothing is written in these
+  folders. `UserDirs` would cover them all, and the rest of the home
+  directory with them; `MediaIndexing` would feed the content pickers,
+  which the file browser does not need.
 
-**To verify on hardware** (milestone 1): whether a file handed to Sukkula
-through the Share menu, or chosen with the Silica file picker, from outside
-`~/Downloads` -- a photo in `~/Pictures` -- is readable by the sandboxed
-app. Silica's pickers run inside the app's process, so the sandbox decides
-what they can open; piirit found it needed `UserDirs` for exactly that. If
-the answer is no, the fix is a spec change (a permission added to §2 and to
-`POLICY_PERMISSIONS` in `ci/harbour-check.sh` in the same commit), never a
-workaround.
+A permission added or dropped is a spec change: §2, the `.desktop` file
+and `POLICY_PERMISSIONS` in `ci/harbour-check.sh` in the same commit,
+never a workaround.
 
 ## The SDK version is a Harbour rule
 

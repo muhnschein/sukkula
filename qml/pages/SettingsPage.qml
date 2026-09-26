@@ -127,14 +127,6 @@ Page {
         anchors.fill: parent
         contentHeight: column.height + Theme.paddingLarge
 
-        PullDownMenu {
-            MenuItem {
-                //: Pulley menu: the page with the version and licence.
-                text: qsTr("About Sukkula")
-                onClicked: pageStack.push(Qt.resolvedUrl("AboutPage.qml"), { engine: page.engine })
-            }
-        }
-
         Column {
             id: column
             width: parent.width
@@ -336,6 +328,29 @@ Page {
                 text: qsTr("Debug logging")
                 //: Settings: what debug logging does.
                 description: qsTr("Only for finding faults. Leave it off otherwise.")
+            }
+
+            Item {
+                width: 1
+                height: Theme.paddingLarge
+            }
+
+            // The version, the licence and what Sukkula is built on.
+            BackgroundItem {
+                id: aboutItem
+                objectName: "openAbout"
+                width: parent.width
+                onClicked: pageStack.push(Qt.resolvedUrl("AboutPage.qml"), { engine: page.engine })
+
+                Label {
+                    x: Theme.horizontalPageMargin
+                    width: parent.width - 2 * Theme.horizontalPageMargin
+                    anchors.verticalCenter: parent.verticalCenter
+                    //: Settings, at the foot: the page with the version and licence.
+                    text: qsTr("About Sukkula")
+                    textFormat: Text.PlainText
+                    color: aboutItem.highlighted ? Theme.highlightColor : Theme.primaryColor
+                }
             }
         }
 

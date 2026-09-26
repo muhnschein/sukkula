@@ -376,7 +376,7 @@ jobs:
   # it rather than at intake. Mandatory (spec §7). `sfdk check -s harbour`
   # on the real RPM is the authority and runs in rpm.yml; this asks the same
   # questions of the sources, plus Sukkula's own stricter policy
-  # (aarch64 and 5.2+ only, exactly Internet;Bluetooth;Downloads).
+  # (aarch64 and 5.2+ only, and exactly spec §2's Sailjail permissions).
   # docs/HARBOUR.md.
   harbour:
     runs-on: ubuntu-latest

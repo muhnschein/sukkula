@@ -85,9 +85,10 @@ consent.**
 - **libdbus accepts messages up to 128 MiB.** Lowering it needs unsafe
   FFI in the engine, which is forbidden. Replies from BlueZ and obexd are
   walked in place and only small copies are kept.
-- **Files outside `~/Downloads` may be unreadable.** The sandbox grants
-  only `Internet;Bluetooth;Downloads` (spec §2). The UI says so; this is a
-  policy choice, not a bug.
+- **Files outside the granted folders are unreadable.** The sandbox
+  grants `~/Downloads`, `~/Documents`, `~/Music`, `~/Pictures`, `~/Videos`
+  and memory cards (spec §2), and nothing else of the home directory. The
+  UI says so; this is a policy choice, not a bug.
 
 **Out of scope:**
 
@@ -187,8 +188,11 @@ These are enforced in the code and checked in CI, not merely intended.
   the four C functions, read the command string and call the callback,
   each with a `SAFETY:` comment; handles are registry ids, never
   dereferenced; no panic crosses the C boundary.
-- **Minimal sandbox.** Sailjail grants `Internet;Bluetooth;Downloads` and
-  nothing else, and the Harbour gate fails on any other permission.
+- **Minimal sandbox.** Sailjail grants `Internet;Bluetooth` and the
+  folders files are sent from and received into (`Downloads`, `Documents`,
+  `Music`, `Pictures`, `Videos`, `RemovableMedia`), and nothing else; the
+  Harbour gate fails on any other permission. Files are written only
+  under `~/Downloads/Sukkula/`.
 - **The log keeps quiet.** The engine logs to standard error (the
   journal), never to a file. Off by default, it says only what Sukkula's
   own crates report at warn and error; with debug logging on, Sukkula's

@@ -1,6 +1,6 @@
 # Status
 
-Where Sukkula stands against `docs/SPEC.md` (v0.4), what has been
+Where Sukkula stands against `docs/SPEC.md` (v0.5), what has been
 verified and how, and what is waiting on the owner or on hardware.
 
 ## Built
@@ -17,8 +17,9 @@ Everything the spec asks for in v1.0:
   - Bluetooth OBEX send.
 - The hub, the C ABI (`sukkula-ffi`) and per-engine logging (S9).
 - The Qt/C++ shell and the Silica UI in en/fi/de/sv, with the Share menu
-  and Send | Receive as the main page's two modes (spec v0.4): the send
-  radar puts every protocol's peers on one screen.
+  and Send | Receive as the main page's two tabs (spec v0.5): the send
+  radar puts every protocol's peers on one screen, the receive radar
+  shows who is sending, and History lists what went and came.
 - The RPM spec for the Jolla Phone 2026 (Sailfish OS 5.2+, aarch64 only).
 - CI with the Harbour gate, 16 fuzz targets, the dependency policy and
   the vendor check.
@@ -95,8 +96,8 @@ docs; the upstream ones are in `docs/UPSTREAM-QUICKSHARE.md`.
   - Sailjail;
   - real Android, LocalSend, wormhole and Bluetooth peers;
   - the Share-menu activation (`ExecDBus`);
-  - how the send radar looks and feels on the phone (M-18): the host
-    tests lay it out but never look at it.
+  - how the radars and the tabs look and feel on the phone (M-18, M-19):
+    the host tests lay them out but never look at them or swipe.
 
 ## Waiting on the owner
 
@@ -107,9 +108,6 @@ docs; the upstream ones are in `docs/UPSTREAM-QUICKSHARE.md`.
   - switching Wormhole off does not cancel a wormhole transfer already
     running;
   - `docs/UPSTREAM-QUICKSHARE.md` is drafted, not filed.
-- **Receive mode's own design** (spec v0.4): it keeps the list it had
-  for now. The tile beside Magic Wormhole's on the send radar is kept for
-  croc.
 - **The default branch.** `main` exists now; making it the repository's
   default (Settings, General) is the owner's. Until then Dependabot and
   `workflow_dispatch` keep using the old branch.
@@ -121,12 +119,6 @@ spec §2 does not grant. Either is a spec change: the permission goes into
 §2, `harbour-sukkula.desktop` and `POLICY_PERMISSIONS` in
 `ci/harbour-check.sh` in one commit, never a workaround.
 
-- **Sending from the other folders and Gallery.** With only `Downloads`,
-  a photo shared from Gallery (`~/Pictures`) or a file picked in
-  `~/Documents` is probably unreadable inside the sandbox; M-8 records
-  what the phone does. Candidates: `Pictures` and `Videos` for Gallery,
-  `Documents` and `Music` for the rest, or `UserDirs` for all of them.
-  Received files still go to `~/Downloads/Sukkula/` either way.
 - **Scanning a wormhole code as a QR code** (F-MW2). Needs `Camera`, a
   camera view in QML and a QR decoder. The decoder reads what the lens
   sees, so it is hostile input: a new dependency with its own review

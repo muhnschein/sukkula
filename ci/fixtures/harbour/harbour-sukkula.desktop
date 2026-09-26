@@ -18,6 +18,6 @@ Description=Send via Sukkula
 Capabilities=text/*
 
 [X-Sailjail]
-Permissions=Internet;Bluetooth;Downloads
+Permissions=Internet;Bluetooth;Downloads;Documents;Music;Pictures;Videos;RemovableMedia
 OrganizationName=sukkula
 ApplicationName=sukkula

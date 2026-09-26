@@ -2,9 +2,9 @@
 import QtQuick 2.6
 
 /*
- * The send radar's line drawings, in the ambience's colours: a person, a
- * file, a text, a plus, the cloud the internet protocols go through, and
- * the protocol marks. The marks are Sukkula's own, not the protocols'
+ * The radars' line drawings, in the ambience's colours: a person, a
+ * phone, a file, a text, a plus, the cloud the internet protocols go
+ * through, and the protocol marks. The marks are Sukkula's own, not the protocols'
  * logos.
  *
  * A canvas loses what it drew when the scene graph lets go of its
@@ -17,7 +17,7 @@ import QtQuick 2.6
 Canvas {
     id: glyph
 
-    /// "person", "file", "text", "add", "cloud", "local_send",
+    /// "person", "phone", "file", "text", "add", "cloud", "local_send",
     /// "quick_share" or "bluetooth".
     property string kind: "person"
     property color color: "white"
@@ -55,6 +55,27 @@ Canvas {
         ctx.stroke()
         ctx.beginPath()
         ctx.arc(0.5, 0.92, 0.32, Math.PI * 1.08, Math.PI * 1.92, false)
+        ctx.stroke()
+    }
+
+    // A phone: a rounded slab with a line for its speaker.
+    function _phone(ctx) {
+        var l = 0.30, t = 0.12, r = 0.70, b = 0.88, c = 0.08
+        ctx.beginPath()
+        ctx.moveTo(l + c, t)
+        ctx.lineTo(r - c, t)
+        ctx.arcTo(r, t, r, t + c, c)
+        ctx.lineTo(r, b - c)
+        ctx.arcTo(r, b, r - c, b, c)
+        ctx.lineTo(l + c, b)
+        ctx.arcTo(l, b, l, b - c, c)
+        ctx.lineTo(l, t + c)
+        ctx.arcTo(l, t, l + c, t, c)
+        ctx.closePath()
+        ctx.stroke()
+        ctx.beginPath()
+        ctx.moveTo(0.44, 0.22)
+        ctx.lineTo(0.56, 0.22)
         ctx.stroke()
     }
 
@@ -159,6 +180,7 @@ Canvas {
         ctx.fillStyle = glyph.color
         switch (glyph.kind) {
         case "person": glyph._person(ctx); break
+        case "phone": glyph._phone(ctx); break
         case "file": glyph._file(ctx); break
         case "text": glyph._text(ctx); break
         case "add": glyph._add(ctx); break
