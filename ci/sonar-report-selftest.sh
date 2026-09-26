@@ -45,6 +45,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 STATUS = os.environ["STUB_TASK_STATUS"]
 AUTH = os.environ["STUB_AUTH_REQUIRED"] == "1"
+# Everything but the compute task refused, token or not: the task is read
+# with rights a project token has, the rest needs Browse.
+REFUSE = os.environ.get("STUB_REFUSE") == "1"
 SEEN = os.environ["STUB_SEEN"]
 
 GATE = {
@@ -116,6 +119,11 @@ class Handler(BaseHTTPRequestHandler):
 
         if self.path.startswith("/api/ce/task"):
             self.send(200, {"task": {"status": STATUS, "analysisId": "AN1"}})
+        elif REFUSE:
+            if self.headers.get("Authorization"):
+                self.send(404, {"errors": [{"msg": "Component key not found"}]})
+            else:
+                self.send(403, {"errors": [{"msg": "Insufficient privileges"}]})
         elif self.path.startswith("/api/qualitygates/project_status"):
             self.send(200, GATE)
         elif self.path.startswith("/api/measures/component"):
@@ -316,6 +324,29 @@ else
     status=1
 fi
 reject "and prints no gate" "Quality gate" "$work/out"
+
+# The task readable and nothing else: a heading and a link, which the
+# first report from main was, reads as a clean bill of health. It has to
+# say what is missing, give both refusals in the server's words, and fail.
+STUB_REFUSE=1 start_stub SUCCESS 0 || exit 1
+write_task "branch=main"
+SONAR_TOKEN=squ_stub GITHUB_STEP_SUMMARY="$work/summary-refused" \
+    "$script" "$work/report-task.txt" >"$work/out" 2>"$work/err"
+rc=$?
+
+cases=$((cases + 1))
+if [[ "$rc" -ne 0 ]]; then
+    echo "selftest: ok   a report with nothing readable in it fails"
+else
+    echo "selftest: FAIL a report with nothing readable in it should not exit 0" >&2
+    status=1
+fi
+expect "the report says what is missing" "3 of 3 sections could not be read" "$work/out"
+expect "and so does the step summary" "3 of 3 sections could not be read" "$work/summary-refused"
+expect "the token's refusal is given" \
+    "with the token: HTTP 404 Component key not found" "$work/err"
+expect "and the anonymous one" \
+    "anonymously:    HTTP 403 Insufficient privileges" "$work/err"
 
 # ------------------------------------------------------ the step summary
 #

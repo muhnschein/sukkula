@@ -308,7 +308,9 @@ a job of its own after the package passed the validator.
 
 SonarQube Cloud reads the tree on every push to `main` and every pull
 request from this repository (`.github/workflows/build.yml`, configured by
-`sonar-project.properties`). It is a **report, not a gate**: `ci.yml`
+`sonar-project.properties`), except Dependabot's: those run without the
+repository's secrets, so their changes are analysed when they reach
+`main`. It is a **report, not a gate**: `ci.yml`
 decides what is allowed in, and nothing Sonar says can turn a red build
 green or a green build red. That is why it is a workflow of its own.
 
@@ -335,8 +337,10 @@ afterwards, so the run that produced an analysis finishes knowing nothing
 about its result. `scripts/sonar-report.sh` asks the server from the
 runner that just fed it and prints the quality gate, the measures and the
 open issues into the job log and the step summary, where they can be read
-without a sonarcloud.io login. The step is `continue-on-error`: a Sonar
-outage costs a warning, not a build.
+without a sonarcloud.io login. A section the server refuses is named in
+the report, with both refusals (token and anonymous) in the job log, and
+fails the step. The step is `continue-on-error`: a Sonar outage costs a
+warning, not a build.
 
 ## Cutting a release
 
