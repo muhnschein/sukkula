@@ -77,42 +77,56 @@ fn side(relay: &TestRelay) -> Side {
     }
 }
 
+/// Longest any one wait of these tests takes before it fails: longer than
+/// every timeout of `tuning`, so a wait fails only when nothing came.
+const PATIENCE: Duration = Duration::from_secs(60);
+
 impl Side {
-    /// The code a send of ours shows, once it does.
-    async fn code(&self, transfer: TransferId) -> String {
+    /// The first event `f` picks; a failure naming `what` and every event
+    /// there was, if none comes within [`PATIENCE`].
+    async fn event<T>(&self, what: &str, f: impl Fn(&Event) -> Option<T>) -> T {
+        let until = tokio::time::Instant::now() + PATIENCE;
         loop {
-            let found = self.events.lock().unwrap().iter().find_map(|e| match e {
-                Event::CrocCode { transfer: t, code } if *t == transfer => Some(code.clone()),
-                _ => None,
-            });
-            if let Some(c) = found {
-                return c;
+            if let Some(t) = self.events.lock().unwrap().iter().find_map(&f) {
+                return t;
             }
+            assert!(
+                tokio::time::Instant::now() < until,
+                "no {what} in {:#?}",
+                self.events.lock().unwrap()
+            );
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
+    }
+
+    /// The code a send of ours shows, once it does.
+    async fn code(&self, transfer: TransferId) -> String {
+        self.event("code", |e| match e {
+            Event::CrocCode { transfer: t, code } if *t == transfer => Some(code.clone()),
+            _ => None,
+        })
+        .await
     }
 
     /// How transfer `id` ended, and the names it saved.
     async fn outcome(&self, id: TransferId) -> (Outcome, Vec<String>) {
-        loop {
-            let found = self.events.lock().unwrap().iter().find_map(|e| match e {
-                Event::TransferFinished {
-                    transfer,
-                    outcome,
-                    saved,
-                } if *transfer == id => Some((outcome.clone(), saved.clone())),
-                _ => None,
-            });
-            if let Some(o) = found {
-                return o;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+        self.event("outcome", |e| match e {
+            Event::TransferFinished {
+                transfer,
+                outcome,
+                saved,
+            } if *transfer == id => Some((outcome.clone(), saved.clone())),
+            _ => None,
+        })
+        .await
     }
 
     /// Answers the next offer.
     async fn answer(&mut self, accept: bool) {
-        let id = self.offers.recv().await.unwrap();
+        let id = tokio::time::timeout(PATIENCE, self.offers.recv())
+            .await
+            .unwrap_or_else(|_| panic!("no offer in {:#?}", self.events.lock().unwrap()))
+            .unwrap();
         let d = if accept {
             Decision::Accept
         } else {

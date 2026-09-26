@@ -361,10 +361,11 @@ third was handled before a run could find it: serde's array form of a
 struct (`["pake","",null,null]` is a message), which
 `sukkula_fuzz::as_struct` reads as the object it stands for.
 
-`croc_pake` is slow for the reason `wormhole_code` is: every message that
-parses is answered on both curves, and SIEC255, croc's own, is ours and
-unoptimised, which under ASan costs tens of milliseconds a message. A
-peer or relay sends one such message per connection, so this is a cost of
-fuzzing, not an exposure; `pake.rs`'s unit tests hold the refusals at full
-speed.
+`croc_pake` was slow: every message that parses is answered on both
+curves, and SIEC255, croc's own, is ours, and did an inversion at every
+step of a multiplication. The same cost held up the engine's own tests on
+CI's two-core runners until they hit their time limit. SIEC's
+multiplication now works in Jacobian coordinates with one inversion at
+the end, and a SIEC handshake costs about what a P-256 one does: 30 s of
+`croc_pake` since ran at 191 executions a second, from 36.
 
