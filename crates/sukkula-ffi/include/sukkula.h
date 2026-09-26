@@ -47,7 +47,7 @@ typedef void (*sukkula_event_cb)(const char *event_json, void *userdata);
  * "no reply will come"; later versions may add codes. Enumerators rather
  * than macros: constants of type int in C and in C++ alike, which a
  * debugger can name and the preprocessor cannot redefine. */
-enum {
+enum { /* NOSONAR: not an enum class; this header is C as well as C++ */
     SUKKULA_OK = 0,            /* taken; its "reply" event follows */
     SUKKULA_ERR_NULL = -1,     /* engine or command_json was NULL, or the engine was stopped */
     SUKKULA_ERR_UTF8 = -2,     /* command_json is not UTF-8 */
