@@ -44,14 +44,20 @@ typedef struct SukkulaEngine SukkulaEngine;
 typedef void (*sukkula_event_cb)(const char *event_json, void *userdata);
 
 /* Return values of sukkula_command(). Treat any value but SUKKULA_OK as
- * "no reply will come"; later versions may add codes. */
-#define SUKKULA_OK            0  /* taken; its "reply" event follows */
-#define SUKKULA_ERR_NULL     -1  /* engine or command_json was NULL, or the engine was stopped */
-#define SUKKULA_ERR_UTF8     -2  /* command_json is not UTF-8 */
-#define SUKKULA_ERR_TOO_LONG -3  /* command_json is over 64 KiB; nothing was parsed */
-#define SUKKULA_ERR_PANIC    -4  /* the engine failed internally; see the log (stderr) */
-#define SUKKULA_ERR_BUSY     -5  /* 64 commands await their reply; nothing was parsed, try again after one */
-/* CONTRACT: SUKKULA_ERR_BUSY is new (additive; covered by the rule above). */
+ * "no reply will come"; later versions may add codes. Enumerators rather
+ * than macros: constants of type int in C and in C++ alike, which a
+ * debugger can name and the preprocessor cannot redefine. */
+enum {
+    SUKKULA_OK = 0,            /* taken; its "reply" event follows */
+    SUKKULA_ERR_NULL = -1,     /* engine or command_json was NULL, or the engine was stopped */
+    SUKKULA_ERR_UTF8 = -2,     /* command_json is not UTF-8 */
+    SUKKULA_ERR_TOO_LONG = -3, /* command_json is over 64 KiB; nothing was parsed */
+    SUKKULA_ERR_PANIC = -4,    /* the engine failed internally; see the log (stderr) */
+    SUKKULA_ERR_BUSY = -5      /* 64 commands await their reply; nothing was parsed, try again after one */
+};
+/* CONTRACT: SUKKULA_ERR_BUSY is new (additive; covered by the rule above).
+ * The codes were #defines before, with the same names and values; nothing
+ * that compared or returned them changes. */
 
 /*
  * Starts an engine with a StartConfig (api.rs), e.g.

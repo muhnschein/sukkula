@@ -40,8 +40,8 @@ Q_DECL_EXPORT int main(int argc, char *argv[])
     // ~/.local/share/sukkula/sukkula, and AppDataLocation is built from
     // these two names. libsailfishapp sets them from the desktop file
     // too; saying so here keeps the path right however the app started.
-    app->setOrganizationName(QStringLiteral("sukkula"));
-    app->setApplicationName(QStringLiteral("sukkula"));
+    QCoreApplication::setOrganizationName(QStringLiteral("sukkula"));
+    QCoreApplication::setApplicationName(QStringLiteral("sukkula"));
 
     // harbour-sukkula-<lang>.qm, else harbour-sukkula.qm (the English
     // plural forms). Installed before any QML is compiled.
@@ -49,7 +49,7 @@ Q_DECL_EXPORT int main(int argc, char *argv[])
     if (translator.load(QLocale(), QStringLiteral("harbour-sukkula"), QStringLiteral("-"),
                         SailfishApp::pathTo(QStringLiteral("translations")).toLocalFile(),
                         QStringLiteral(".qm"))) {
-        app->installTranslator(&translator);
+        QCoreApplication::installTranslator(&translator);
     }
 
     // Declared before the view, so destroyed after it: QML never holds a
@@ -62,7 +62,7 @@ Q_DECL_EXPORT int main(int argc, char *argv[])
     view->setSource(SailfishApp::pathTo(QStringLiteral("qml/harbour-sukkula.qml")));
     view->show();
 
-    const int status = app->exec();
+    const int status = QGuiApplication::exec();
     // Again, for an exit that did not pass aboutToQuit; stop() is
     // idempotent. After it no engine thread runs.
     bridge.stop();

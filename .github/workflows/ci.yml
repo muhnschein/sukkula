@@ -330,8 +330,22 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: ./ci/apt-install.sh rpm desktop-file-utils shellcheck qttools5-dev-tools
-      # Pinned: a linter that moves under the gate moves the gate.
-      - run: pip install --user actionlint-py==1.7.12.25
+      # Pinned: a linter that moves under the gate moves the gate. From the
+      # release itself, checked against the digest its checksums file gives:
+      # the PyPI wrapper (actionlint-py) is a source package whose setup.py
+      # fetches the same binary at install time, unchecked.
+      - name: Install actionlint
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          tarball="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$tarball" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/$tarball"
+          echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP/bin" actionlint
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       # Strict: a checker that is not installed fails here, so the job
       # cannot quietly stop checking when the lines above change.
       - run: ./ci/packaging-lint.sh

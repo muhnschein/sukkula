@@ -59,9 +59,9 @@ static int is_main_program(void)
 
 int sukkula_tls_reserved(void)
 {
+#if defined(__aarch64__)
     if (!is_main_program())
         return 1;
-#if defined(__aarch64__)
     char *tp;
     __asm__("mrs %0, tpidr_el0" : "=r"(tp));
     return reserve == tp + 16;

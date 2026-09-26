@@ -14,12 +14,21 @@ use sukkula_ffi::{
 const HEADER: &str = include_str!("../include/sukkula.h");
 const DOC: &str = include_str!("../../../docs/FFI.md");
 
-/// Every `#define SUKKULA_... <int>` in the header.
+/// Every `SUKKULA_... = <int>` enumerator in the header, and every
+/// `#define SUKKULA_... <int>` too: a code added the old way still has to
+/// match.
 fn codes() -> BTreeMap<String, i32> {
     HEADER
         .lines()
-        .filter_map(|l| l.strip_prefix("#define SUKKULA_"))
+        .map(str::trim_start)
+        .filter_map(|l| {
+            l.strip_prefix("#define SUKKULA_").or_else(|| {
+                l.strip_prefix("SUKKULA_")
+                    .filter(|rest| rest.contains(" = "))
+            })
+        })
         .filter_map(|rest| {
+            let rest = rest.split("/*").next()?.replace(['=', ','], " ");
             let mut words = rest.split_whitespace();
             let name = words.next()?;
             let value = words.next()?.parse().ok()?;
