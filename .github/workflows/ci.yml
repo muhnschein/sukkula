@@ -246,9 +246,10 @@ jobs:
 
   # Sukkula against croc itself, v10.7.0's Go binary, in both directions
   # and as the relay (spec §7, the adapters layer). Offline once built:
-  # the binary is its own relay on loopback. Built from source by version,
-  # every module checked against Go's checksum database, so the test moves
-  # only when the version here does. croc 10.7.0 needs Go 1.25.
+  # the binary is its own relay on loopback. Built from the tag's commit,
+  # checked by hash, with -mod=readonly: every module is the one croc's
+  # go.sum names, checked against Go's checksum database, so the test moves
+  # only when the commit here does. croc 10.7.0 needs Go 1.25.
   croc-interop:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -262,9 +263,15 @@ jobs:
         with:
           key: croc-interop
       - name: croc, pinned
+        env:
+          CROC_TAG: v10.7.0
+          CROC_COMMIT: 2d9db41befec73287d727506409d87493f513a00
         run: |
-          GOBIN="$RUNNER_TEMP/croc-bin" GOSUMDB=sum.golang.org GOTOOLCHAIN=local \
-            go install github.com/schollz/croc/v10@v10.7.0
+          git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$CROC_TAG" https://github.com/schollz/croc "$RUNNER_TEMP/croc-src"
+          test "$(git -C "$RUNNER_TEMP/croc-src" rev-parse HEAD)" = "$CROC_COMMIT"
+          cd "$RUNNER_TEMP/croc-src"
+          GOFLAGS=-mod=readonly GOSUMDB=sum.golang.org GOTOOLCHAIN=local \
+            go build -o "$RUNNER_TEMP/croc-bin/croc" .
           "$RUNNER_TEMP/croc-bin/croc" --version
       # --include-ignored, and the count checked, as for the wormhole
       # client: a run that selected none of the tests would prove nothing.

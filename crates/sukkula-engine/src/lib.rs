@@ -21,6 +21,8 @@
 
 pub mod adapter;
 pub mod api;
+#[cfg(any(feature = "wormhole", feature = "croc"))]
+mod by_code;
 pub mod ctx;
 mod hub;
 pub mod logging;

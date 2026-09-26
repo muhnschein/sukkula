@@ -1,6 +1,6 @@
 //! A counted slot: take one if fewer than a maximum are taken, give it back
-//! later. Used for the hub's in-flight commands and wormhole's connecting
-//! receives.
+//! later. Used for the hub's in-flight commands and the receives by code
+//! waiting for their answer (`by_code.rs`).
 //!
 //! A compare-and-swap loop rather than `AtomicUsize::fetch_update`, which
 //! newer toolchains deprecate under another name: the fuzz build runs on

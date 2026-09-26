@@ -20,7 +20,7 @@ use tokio::sync::mpsc;
 use super::relay::testing::{self, TestRelay};
 use super::{Tuning, adapter_with};
 use crate::adapter::{Adapter, Outgoing, OutgoingFile};
-use crate::api::{ErrorCode, Event, Outcome, SendTarget, TransferId};
+use crate::api::{ErrorCode, ErrorInfo, Event, Outcome, SendTarget, TransferId};
 use crate::ctx::Ctx;
 
 type Events = Arc<Mutex<Vec<Event>>>;
@@ -137,6 +137,24 @@ impl Side {
     }
 }
 
+/// `items` sent from `sender`, its code typed at `receiver`, whose user
+/// answers `accept`: the send's id, and how the receive went.
+async fn exchange(
+    sender: &Side,
+    receiver: &mut Side,
+    items: Vec<Outgoing>,
+    accept: bool,
+) -> (TransferId, Result<TransferId, ErrorInfo>) {
+    let id = sender.adapter.send(SendTarget::Croc, items).await.unwrap();
+    let code = sender.code(id).await;
+    let receiving = tokio::spawn({
+        let adapter = receiver.adapter.clone();
+        async move { adapter.receive_code(code).await }
+    });
+    receiver.answer(accept).await;
+    (id, receiving.await.unwrap())
+}
+
 #[allow(clippy::disallowed_methods)] // A test's own scratch files.
 fn write(path: &Path, bytes: &[u8]) {
     std::fs::write(path, bytes).unwrap();
@@ -159,14 +177,8 @@ async fn files_go_through_the_relay() {
         sender.file("empty.txt", b""),
         sender.file("small.txt", b"hello"),
     ];
-    let id = sender.adapter.send(SendTarget::Croc, items).await.unwrap();
-    let code = sender.code(id).await;
-    let receiving = tokio::spawn({
-        let adapter = receiver.adapter.clone();
-        async move { adapter.receive_code(code).await }
-    });
-    receiver.answer(true).await;
-    let rid = receiving.await.unwrap().unwrap();
+    let (id, received) = exchange(&sender, &mut receiver, items, true).await;
+    let rid = received.unwrap();
     let (outcome, saved) = receiver.outcome(rid).await;
     assert_eq!(outcome, Outcome::Done);
     assert_eq!(saved, vec!["big.bin", "empty.txt", "small.txt"]);
@@ -214,18 +226,9 @@ async fn a_text_arrives_as_a_text() {
     let sender = side(&relay);
     let mut receiver = side(&relay);
     let text = "Hello from croc <b>not bold</b>\nsecond line";
-    let id = sender
-        .adapter
-        .send(SendTarget::Croc, vec![Outgoing::Text(text.into())])
-        .await
-        .unwrap();
-    let code = sender.code(id).await;
-    let receiving = tokio::spawn({
-        let adapter = receiver.adapter.clone();
-        async move { adapter.receive_code(code).await }
-    });
-    receiver.answer(true).await;
-    let rid = receiving.await.unwrap().unwrap();
+    let items = vec![Outgoing::Text(text.into())];
+    let (id, received) = exchange(&sender, &mut receiver, items, true).await;
+    let rid = received.unwrap();
     let (outcome, saved) = receiver.outcome(rid).await;
     assert_eq!(outcome, Outcome::Done);
     assert!(saved.is_empty(), "a text is not saved as a file");
@@ -251,18 +254,9 @@ async fn declining_is_said_to_the_sender() {
     let relay = testing::start("pass123", 4).await;
     let sender = side(&relay);
     let mut receiver = side(&relay);
-    let id = sender
-        .adapter
-        .send(SendTarget::Croc, vec![sender.file("a.txt", b"abc")])
-        .await
-        .unwrap();
-    let code = sender.code(id).await;
-    let receiving = tokio::spawn({
-        let adapter = receiver.adapter.clone();
-        async move { adapter.receive_code(code).await }
-    });
-    receiver.answer(false).await;
-    let err = receiving.await.unwrap().unwrap_err();
+    let items = vec![sender.file("a.txt", b"abc")];
+    let (id, received) = exchange(&sender, &mut receiver, items, false).await;
+    let err = received.unwrap_err();
     assert_eq!(err.code, ErrorCode::Refused);
     match sender.outcome(id).await.0 {
         Outcome::Failed { error } => assert_eq!(error.code, ErrorCode::Refused),
@@ -313,18 +307,9 @@ async fn a_cancelled_receive_leaves_nothing() {
     let mut receiver = side(&relay);
     // Big enough to still be running when cancelled.
     let big = pattern(8 * 1024 * 1024, 7);
-    let id = sender
-        .adapter
-        .send(SendTarget::Croc, vec![sender.file("big.bin", &big)])
-        .await
-        .unwrap();
-    let code = sender.code(id).await;
-    let receiving = tokio::spawn({
-        let adapter = receiver.adapter.clone();
-        async move { adapter.receive_code(code).await }
-    });
-    receiver.answer(true).await;
-    let rid = receiving.await.unwrap().unwrap();
+    let items = vec![sender.file("big.bin", &big)];
+    let (id, received) = exchange(&sender, &mut receiver, items, true).await;
+    let rid = received.unwrap();
     assert!(receiver.ctx.transfers().cancel(rid));
     assert_eq!(receiver.outcome(rid).await.0, Outcome::Cancelled);
     assert!(!matches!(sender.outcome(id).await.0, Outcome::Done));

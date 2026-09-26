@@ -34,6 +34,7 @@ use super::{
 };
 use crate::adapter::{Outgoing, OutgoingFile};
 use crate::api::{Direction, ErrorCode, ErrorInfo, Event, SendTarget, TransferId};
+use crate::by_code::{bad_file, open_checked};
 use crate::ctx::TransferHandle;
 
 /// What is being sent: files, or one text sent as croc sends one.
@@ -255,10 +256,6 @@ fn declined() -> ErrorInfo {
     ErrorInfo::new(ErrorCode::Refused, "the receiver declined")
 }
 
-fn bad_file() -> ErrorInfo {
-    ErrorInfo::new(ErrorCode::BadFile, "the file cannot be read")
-}
-
 async fn open_all(items: Vec<Outgoing>, limit: Duration) -> Result<Payload, ErrorInfo> {
     let mut sources = Vec::new();
     let mut names = std::collections::HashSet::new();
@@ -307,35 +304,6 @@ fn unique(taken: &mut std::collections::HashSet<String>, name: &str) -> String {
         }
         n = n.saturating_add(1);
     }
-}
-
-/// Opens the file to send, once, and checks the handle rather than the
-/// path, as the wormhole sender does (`wormhole/send.rs`).
-#[allow(clippy::disallowed_methods)] // S3 bans opening for writing; this is O_RDONLY.
-async fn open_checked(file: &OutgoingFile, limit: Duration) -> Result<std::fs::File, ErrorInfo> {
-    use rustix::fs::{Mode, OFlags};
-    let path = file.path.clone();
-    let expected = file.size;
-    let opening = tokio::task::spawn_blocking(move || {
-        let flags = OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC | OFlags::NOCTTY;
-        let fd = rustix::fs::open(&path, flags, Mode::empty()).map_err(|_| bad_file())?;
-        let f = std::fs::File::from(fd);
-        let meta = f.metadata().map_err(|_| bad_file())?;
-        if !meta.is_file() {
-            return Err(ErrorInfo::new(ErrorCode::BadFile, "not a regular file"));
-        }
-        if meta.len() != expected {
-            return Err(ErrorInfo::new(
-                ErrorCode::BadFile,
-                "the file changed since it was chosen",
-            ));
-        }
-        Ok(f)
-    });
-    tokio::time::timeout(limit, opening)
-        .await
-        .map_err(|_| bad_file())?
-        .map_err(|_| bad_file())?
 }
 
 /// Every file's XXH64, read through the handle.

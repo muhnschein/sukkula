@@ -27,8 +27,7 @@ use std::sync::Arc;
 use std::task::Poll;
 
 use sukkula_core::Protocol;
-use sukkula_core::consent::Refusal;
-use sukkula_core::offer::{Offer, OfferError as CoreOfferError, RawFile, RawOffer};
+use sukkula_core::offer::{Offer, RawFile, RawOffer};
 
 use super::code::{self, Code};
 use super::conn::{Conn, PING};
@@ -42,7 +41,8 @@ use super::send::{join_rooms, next_message, send_message};
 use super::xxh64::Xxh64;
 use super::{CLEANUP_WAIT, Inner, PEER_LABEL, cancellable, deadline, protocol, random};
 use crate::api::{ErrorCode, ErrorInfo, Event, TransferId};
-use crate::ctx::{Accepted, Declined, ReceivingFile, TransferHandle, cancelled};
+use crate::by_code::declined_error;
+use crate::ctx::{Accepted, ReceivingFile, TransferHandle};
 
 /// What Go's receivers say for every refusal.
 const REFUSING: &str = "refusing files";
@@ -70,7 +70,7 @@ pub(super) async fn start(inner: Arc<Inner>, raw_code: String) -> Result<Transfe
     let relay = Relay::from_settings(&inner.ctx.settings().croc)?;
     let shutdown = inner.ctx.shutdown_token().clone();
     let (accepted, session) = {
-        let _slot = inner.connecting_slot().ok_or_else(|| {
+        let _slot = inner.connecting.slot().ok_or_else(|| {
             ErrorInfo::new(ErrorCode::TooLarge, "too many receives are connecting")
         })?;
         cancellable(&shutdown, until_accepted(&inner, &code, &relay)).await?
@@ -274,27 +274,6 @@ async fn wait_for_sender(control: &mut Conn, limit: std::time::Duration) -> Resu
             Some(f) if f == PING => quiet = PINGS_STOPPED,
             Some(_) => return Err(protocol("the croc sender spoke first")),
         }
-    }
-}
-
-fn declined_error(d: &Declined) -> ErrorInfo {
-    match d {
-        Declined::Invalid(
-            CoreOfferError::FileTooLarge(_)
-            | CoreOfferError::OfferTooLarge
-            | CoreOfferError::TextTooLarge,
-        ) => ErrorInfo::new(ErrorCode::TooLarge, "the offer is over the limits"),
-        Declined::Invalid(_) => ErrorInfo::new(ErrorCode::Refused, "the offer was malformed"),
-        Declined::Refused(Refusal::Declined) => ErrorInfo::new(ErrorCode::Refused, "declined"),
-        Declined::Refused(Refusal::TimedOut) => {
-            ErrorInfo::new(ErrorCode::Refused, "the offer was not answered in time")
-        }
-        Declined::Refused(Refusal::Busy) => {
-            ErrorInfo::new(ErrorCode::Refused, "too many offers are waiting")
-        }
-        Declined::Refused(Refusal::Shutdown) => cancelled(),
-        Declined::NoSpace => ErrorInfo::new(ErrorCode::Storage, "not enough free space"),
-        Declined::Busy => ErrorInfo::new(ErrorCode::TooLarge, "too many transfers running"),
     }
 }
 

@@ -3,13 +3,12 @@
 //! the other peer, on loopback.
 //!
 //! Ignored by a plain `cargo test`, which has no croc. CI's `croc-interop`
-//! job builds the pinned version with Go's checksum database and runs
-//! these with `--include-ignored` (`make croc-interop` does the same
-//! locally). By hand:
+//! job builds the pinned commit with `-mod=readonly`, every module the one
+//! croc's `go.sum` names, and runs these with `--include-ignored`; `make
+//! croc-interop` does the same locally. With a croc binary at hand:
 //!
 //! ```sh
-//! GOBIN=/tmp/croc-bin go install github.com/schollz/croc/v10@v10.7.0
-//! SUKKULA_CROC=/tmp/croc-bin/croc \
+//! SUKKULA_CROC=/path/to/croc \
 //!   cargo test -p sukkula-engine --test croc_interop -- --ignored
 //! ```
 //!
@@ -30,6 +29,7 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -50,15 +50,26 @@ fn croc_bin() -> String {
     std::env::var("SUKKULA_CROC").expect("set SUKKULA_CROC to croc's executable")
 }
 
-/// A free port on loopback, for the Go relay.
+/// `n` ports for a relay. Asking the system for free ones and letting them
+/// go raced: until croc had bound them, another test's relay could be
+/// given the same ones, or an outgoing connection one as its own. So they
+/// come from below Linux's ephemeral range (32768 up), where no outgoing
+/// connection is given a port; from a counter, so no two tests here share
+/// one; from a block of the process's own, by its pid, for another test
+/// binary running at once; and each is checked free.
 fn free_ports(n: usize) -> Vec<u16> {
-    let listeners: Vec<_> = (0..n)
-        .map(|_| std::net::TcpListener::bind("127.0.0.1:0").unwrap())
-        .collect();
-    listeners
-        .iter()
-        .map(|l| l.local_addr().unwrap().port())
-        .collect()
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    let base = 20_000 + (std::process::id() % 100) * 100;
+    let mut out = Vec::new();
+    while out.len() < n {
+        let k = NEXT.fetch_add(1, Ordering::Relaxed);
+        assert!(k < 100, "out of test ports");
+        let port = u16::try_from(base + k).unwrap();
+        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            out.push(port);
+        }
+    }
+    out
 }
 
 /// Runs croc with `args` and `env`, in `dir`.
@@ -116,15 +127,20 @@ async fn go_relay(password: &str) -> GoRelay {
             &list,
         ],
     );
-    // Up once its control port answers.
-    for _ in 0..100 {
-        if tokio::net::TcpStream::connect(("127.0.0.1", ports[0]))
-            .await
-            .is_ok()
-        {
-            break;
+    // Up once every port answers: its data rooms are joined on the others.
+    for port in &ports {
+        let mut up = false;
+        for _ in 0..300 {
+            if tokio::net::TcpStream::connect(("127.0.0.1", *port))
+                .await
+                .is_ok()
+            {
+                up = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(up, "the croc relay did not come up on port {port}");
     }
     GoRelay {
         child,
@@ -192,18 +208,20 @@ impl Side {
         }
     }
 
-    async fn event<T>(&self, f: impl Fn(&Event) -> Option<T>) -> T {
+    /// The first event `f` picks, within 30 s; else a panic naming `what`
+    /// and every event there was.
+    async fn event<T>(&self, what: &str, f: impl Fn(&Event) -> Option<T>) -> T {
         for _ in 0..600 {
             if let Some(t) = self.events.lock().unwrap().iter().find_map(&f) {
                 return t;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        panic!("no such event");
+        panic!("no {what} in {:#?}", self.events.lock().unwrap());
     }
 
     async fn code(&self, id: TransferId) -> String {
-        self.event(|e| match e {
+        self.event("code", |e| match e {
             Event::CrocCode { transfer, code } if *transfer == id => Some(code.clone()),
             _ => None,
         })
@@ -211,7 +229,7 @@ impl Side {
     }
 
     async fn outcome(&self, id: TransferId) -> (Outcome, Vec<String>) {
-        self.event(|e| match e {
+        self.event("outcome", |e| match e {
             Event::TransferFinished {
                 transfer,
                 outcome,
@@ -371,7 +389,7 @@ async fn a_text_from_croc_reaches_sukkula() {
     let id = rx.await.unwrap().unwrap();
     assert_eq!(b.outcome(id).await.0, Outcome::Done);
     let text = b
-        .event(|e| match e {
+        .event("text", |e| match e {
             Event::TextReceived { text, .. } => Some(text.clone()),
             _ => None,
         })

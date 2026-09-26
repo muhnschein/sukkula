@@ -184,13 +184,18 @@ wormhole-interop:
 			--test wormhole_interop -- --include-ignored
 
 ## croc-interop: Sukkula against croc v10.7.0's Go binary, as the other peer
-## and as the relay, both ways. Network (Go's module proxy, checked against
-## its checksum database), and Go 1.25 or later (GO=...).
+## and as the relay, both ways. Network (GitHub, and Go's module proxy
+## checked against its checksum database), and Go 1.25 or later (GO=...).
+## The same commit and build as ci.yml's croc-interop job.
 GO ?= go
+CROC_TAG := v10.7.0
+CROC_COMMIT := 2d9db41befec73287d727506409d87493f513a00
 croc-interop:
 	@t=$${CARGO_TARGET_DIR:-target}; case $$t in /*) ;; *) t="$(CURDIR)/$$t" ;; esac; \
-		b="$$t/croc-interop-bin"; rm -rf "$$b"; \
-		GOBIN="$$b" GOSUMDB=sum.golang.org $(GO) install github.com/schollz/croc/v10@v10.7.0 && \
+		src="$$t/croc-interop-src"; b="$$t/croc-interop-bin"; rm -rf "$$src" "$$b"; \
+		git -c advice.detachedHead=false clone --quiet --depth 1 --branch $(CROC_TAG) https://github.com/schollz/croc "$$src" && \
+		test "$$(git -C "$$src" rev-parse HEAD)" = $(CROC_COMMIT) && \
+		(cd "$$src" && GOFLAGS=-mod=readonly GOSUMDB=sum.golang.org $(GO) build -o "$$b/croc" .) && \
 		SUKKULA_CROC="$$b/croc" $(CARGO) test -p sukkula-engine \
 			--no-default-features --features croc --locked \
 			--test croc_interop -- --include-ignored

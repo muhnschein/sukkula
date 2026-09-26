@@ -70,14 +70,13 @@ mod words;
 mod xxh64;
 
 use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
 
 use sukkula_core::Protocol;
-use sukkula_core::limits::{HANDSHAKE_TIMEOUT, NETWORK_IDLE_TIMEOUT};
 
 use crate::adapter::{Adapter, BoxFuture, Outgoing};
 use crate::api::{ErrorCode, ErrorInfo, SendTarget, TransferId};
+use crate::by_code::{self, ByCode, Inner};
 use crate::ctx::Ctx;
 
 /// What the UI shows as the other side: croc has no names.
@@ -86,56 +85,10 @@ pub const PEER_LABEL: &str = "croc";
 /// Most data rooms a send uses. croc's relay offers four.
 const MAX_SEND_ROOMS: usize = 4;
 
-/// Receives that may be between a typed code and an answered offer at
-/// once, as for Magic Wormhole.
-pub const MAX_CONNECTING_RECEIVES: usize = 4;
-
-/// How long the receiver may take to type our code.
-pub const PEER_WAIT: Duration = Duration::from_secs(10 * 60);
-
-/// How long the receiver may take to accept.
-pub const ANSWER_WAIT: Duration = Duration::from_secs(5 * 60);
+pub use crate::by_code::{ANSWER_WAIT, MAX_CONNECTING_RECEIVES, PEER_WAIT, Tuning};
 
 /// Bound on the goodbye.
 const CLEANUP_WAIT: Duration = Duration::from_secs(2);
-
-/// The adapter's timeouts. [`Tuning::default`] is the spec's; tests
-/// shorten them. They can only be shortened: [`adapter_with`] clamps every
-/// one to its default.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Tuning {
-    /// Each step of reaching the relay and the peer ([`HANDSHAKE_TIMEOUT`]).
-    pub handshake: Duration,
-    /// Any read or write making no progress ([`NETWORK_IDLE_TIMEOUT`]).
-    pub idle: Duration,
-    /// The receiver typing our code ([`PEER_WAIT`]).
-    pub peer_wait: Duration,
-    /// The receiver accepting ([`ANSWER_WAIT`]).
-    pub answer_wait: Duration,
-}
-
-impl Default for Tuning {
-    fn default() -> Self {
-        Tuning {
-            handshake: HANDSHAKE_TIMEOUT,
-            idle: NETWORK_IDLE_TIMEOUT,
-            peer_wait: PEER_WAIT,
-            answer_wait: ANSWER_WAIT,
-        }
-    }
-}
-
-impl Tuning {
-    fn clamped(self) -> Tuning {
-        let d = Tuning::default();
-        Tuning {
-            handshake: self.handshake.min(d.handshake),
-            idle: self.idle.min(d.idle),
-            peer_wait: self.peer_wait.min(d.peer_wait),
-            answer_wait: self.answer_wait.min(d.answer_wait),
-        }
-    }
-}
 
 /// The adapter.
 #[must_use]
@@ -146,71 +99,27 @@ pub fn adapter(ctx: Arc<Ctx>) -> Arc<dyn Adapter> {
 /// The adapter with shorter timeouts.
 #[must_use]
 pub fn adapter_with(ctx: Arc<Ctx>, tuning: Tuning) -> Arc<dyn Adapter> {
-    Arc::new(CrocAdapter {
-        inner: Arc::new(Inner {
-            ctx,
-            tuning: tuning.clamped(),
-            connecting: AtomicUsize::new(0),
-        }),
-    })
+    by_code::adapter::<Croc>(ctx, tuning)
 }
 
-struct Inner {
-    ctx: Arc<Ctx>,
-    tuning: Tuning,
-    /// Receives before their offer is answered.
-    connecting: AtomicUsize,
-}
+struct Croc;
 
-impl Inner {
-    /// A slot for one receive before its answer, if one is free.
-    fn connecting_slot(&self) -> Option<Slot<'_>> {
-        crate::slots::take(&self.connecting, MAX_CONNECTING_RECEIVES)
-            .then_some(Slot(&self.connecting))
-    }
-}
-
-/// Gives its slot back when dropped.
-struct Slot<'a>(&'a AtomicUsize);
-
-impl Drop for Slot<'_> {
-    fn drop(&mut self) {
-        crate::slots::give_back(self.0);
-    }
-}
-
-struct CrocAdapter {
-    inner: Arc<Inner>,
-}
-
-impl Adapter for CrocAdapter {
-    fn protocol(&self) -> Protocol {
-        Protocol::Croc
-    }
-
-    /// Receiving is by code only: nothing listens.
-    fn receives(&self) -> bool {
-        false
-    }
-
-    fn start_receiving(&self) -> BoxFuture<'_, Result<(), ErrorInfo>> {
-        Box::pin(async { Ok(()) })
-    }
-
-    fn stop_receiving(&self) -> BoxFuture<'_, ()> {
-        Box::pin(async {})
-    }
+impl ByCode for Croc {
+    const PROTOCOL: Protocol = Protocol::Croc;
 
     fn send(
-        &self,
+        inner: &Arc<Inner>,
         target: SendTarget,
         items: Vec<Outgoing>,
-    ) -> BoxFuture<'_, Result<TransferId, ErrorInfo>> {
-        Box::pin(async move { send::start(&self.inner, target, items) })
+    ) -> Result<TransferId, ErrorInfo> {
+        send::start(inner, target, items)
     }
 
-    fn receive_code(&self, code: String) -> BoxFuture<'_, Result<TransferId, ErrorInfo>> {
-        Box::pin(receive::start(self.inner.clone(), code))
+    fn receive(
+        inner: Arc<Inner>,
+        code: String,
+    ) -> BoxFuture<'static, Result<TransferId, ErrorInfo>> {
+        Box::pin(receive::start(inner, code))
     }
 }
 
@@ -263,24 +172,3 @@ pub(crate) fn unhex(s: &str) -> Vec<u8> {
 
 #[cfg(test)]
 mod loopback;
-
-#[cfg(test)]
-#[allow(clippy::arithmetic_side_effects, clippy::field_reassign_with_default)] // Test scenes.
-mod tests {
-    use super::*;
-
-    #[test]
-    fn tuning_can_only_be_shortened() {
-        let long = Tuning {
-            handshake: Duration::from_secs(3600),
-            idle: Duration::from_secs(1),
-            peer_wait: Duration::from_secs(3600 * 24),
-            answer_wait: Duration::ZERO,
-        };
-        let c = long.clamped();
-        assert_eq!(c.handshake, HANDSHAKE_TIMEOUT);
-        assert_eq!(c.idle, Duration::from_secs(1));
-        assert_eq!(c.peer_wait, PEER_WAIT);
-        assert_eq!(c.answer_wait, Duration::ZERO);
-    }
-}
