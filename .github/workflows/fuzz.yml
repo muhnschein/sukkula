@@ -63,7 +63,7 @@ jobs:
           # with the nightly; without a key of its own the entry would be
           # keyed as though it had not.
           key: fuzz-${{ env.SUKKULA_NIGHTLY }}
-      - uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2.87.10
+      - uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
         with:
           tool: cargo-fuzz@0.13.2
       # What each night discovers, carried to the next. The committed seeds
