@@ -16,8 +16,8 @@ import Sailfish.Share 1.0
  * Loaded by the window through a Loader, so that a fault in this one
  * platform module costs sharing rather than the window.
  *
- * What arrives is only a list of paths and texts for the "Send via…"
- * page: nothing is sent until the user picks a target there.
+ * What arrives is only a list of paths and texts for the centre of the
+ * main page's send radar: nothing is sent until the user taps a peer.
  */
 Item {
     id: target

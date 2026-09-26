@@ -38,7 +38,7 @@ QtObject {
     /// The protocols this build contains, e.g. ["local_send", "wormhole"].
     property var protocols: []
 
-    /// The Receive switch (F-C1), and each protocol's state.
+    /// Receive mode (F-C1), and each protocol's state.
     property bool receiving: false
     /// [{protocol, state, errorCode, errorDetail}] from "receiving".
     property var protocolStatuses: []
@@ -187,11 +187,11 @@ QtObject {
         return engine.command({ type: "get_settings" })
     }
     /// Asks for discovery (F-LS1, F-QS1); every call is given back by one
-    /// stopDiscovery(). Counted, because two pages can want it at once: a
-    /// share that arrives while a Send page is open replaces that page, and
-    /// the old page is destroyed only after the new one has asked. Without
-    /// the count the old page's stop came last, and the new page showed
-    /// "Looking for devices" over empty lists with discovery off.
+    /// stopDiscovery(). Counted, because two holders can overlap: one that
+    /// replaces another asks before the old one is destroyed, and without
+    /// the count the old one's stop came last and left the new one looking
+    /// at empty lists with discovery off. The main page holds it while in
+    /// Send mode.
     /// start_discovery goes out every time: for what already runs it is a
     /// no-op, and it starts a protocol switched on since.
     function startDiscovery() {

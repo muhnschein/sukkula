@@ -8,8 +8,8 @@ import "helpers/Events.js" as Ev
  * context as main.cpp provides it: the engine started once, the consent
  * dialog brought up over whatever is showing and one offer at a time
  * (F-C2, F-C3), the stack's transitions waited out, the Share menu's items
- * reaching "Send via…" (F-C6), KeepAlive held during transfers only (§2),
- * and notifications that name no one.
+ * reaching the centre of the send radar, in Send mode (F-C6), KeepAlive
+ * held during transfers only (§2), and notifications that name no one.
  */
 Script {
     id: test
@@ -139,7 +139,13 @@ Script {
             test.compare(note.summary, "Receiving failed")
             test.compare(note.body, "Network error or timeout.")
             test.win.applicationActive = true
-            // The Share menu (F-C6).
+            // The Share menu (F-C6), while receiving and with a page over
+            // the main one.
+            bridge.emitEvent(Ev.receiving(true))
+            test.stack.push(Qt.resolvedUrl("../../qml/pages/AboutPage.qml"), { engine: test.find("mainPage").engine })
+            return 50
+        },
+        function () {
             var provider = test.find("shareFiles")
             test.verify(provider !== null && provider.registerName === true, "a provider that owns the D-Bus name")
             test.compare(provider.method, "files")
@@ -154,12 +160,15 @@ Script {
         },
         function () {
             test.compare(test.win.activateCount, 1, "the window comes forward")
-            test.compare(test.top(), "sendPage")
-            test.compare(test.stack.depth, 2, "above the main page")
+            test.compare(test.top(), "mainPage", "the main page, whatever was over it")
+            test.compare(test.stack.depth, 1)
             var page = test.stack.currentPage
-            test.compare(page.files.length, 2)
-            test.compare(page.files[1].path, "/home/defaultuser/Downloads/y z.png")
-            test.compare(page.texts, ["shared EVIL text"])
+            test.compare(page.payload.files.length, 2, "at the radar's centre")
+            test.compare(page.payload.files[1].path, "/home/defaultuser/Downloads/y z.png")
+            test.compare(page.payload.texts, ["shared EVIL text"])
+            var cmds = bridge.parsedCommands()
+            test.compare(cmds[cmds.length - 1].cmd, { type: "set_receiving", on: false }, "and Send mode")
+            bridge.emitEvent(Ev.receiving(false))
             // A share while a dialog is up waits for the dialog.
             bridge.emitEvent(Ev.offer(5, {}))
             return 300
@@ -175,9 +184,10 @@ Script {
             return 500
         },
         function () {
-            test.compare(test.top(), "sendPage", "then the share")
-            test.compare(test.stack.depth, 2, "replacing the earlier send page, above the main page")
-            test.compare(test.stack.currentPage.texts, ["second share"])
+            test.compare(test.top(), "mainPage", "then the share")
+            test.compare(test.stack.depth, 1)
+            test.compare(test.stack.currentPage.payload.texts, ["second share"], "in place of the first")
+            test.compare(test.stack.currentPage.payload.files.length, 0)
             // Nothing was sent by sharing alone.
             var cmds = bridge.parsedCommands()
             for (var i = 0; i < cmds.length; i++) {

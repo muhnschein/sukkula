@@ -1,4 +1,4 @@
-# Sukkula — Specification v0.3
+# Sukkula — Specification v0.4
 
 Sep 24, 2026 · @Philipp
 
@@ -8,6 +8,10 @@ the implementation departs from v0.1 the change is marked **(v0.2)**.
 v0.3 (Sep 25, 2026) ships the engine as a private shared library instead of
 linking it into the binary, after the first phone test (`docs/FFI.md`,
 Linking). The changes are marked **(v0.3)**.
+
+v0.4 (Sep 26, 2026) makes Send and Receive the two modes of one main page,
+with every way of sending on one send screen. The changes are marked
+**(v0.4)**.
 
 ## 1. Purpose, scope and name
 
@@ -73,12 +77,12 @@ Each requirement has an ID; every ID gets at least one automated test or a named
 
 **Common (F-C)**
 
-- **F-C1** One Receive switch turns all enabled receivers on or off together; each protocol can be disabled in Settings.
+- **F-C1** One Receive switch turns all enabled receivers on or off together; each protocol can be disabled in Settings. **(v0.4: the switch is the Send \| Receive mode at the foot of the main page. Receive switches every enabled receiver on; Send switches them off and runs discovery instead. The mode shown is the engine's state, so the cover's action changes it too.)**
 - **F-C2** Every incoming offer shows a consent dialog: sanitised sender name, protocol, file names, sizes and total. There is no auto-accept, not even for known devices.
 - **F-C3** Unanswered offers are declined after 60 s. At most 2 offers wait at once; further ones are declined without UI.
 - **F-C4** Received text is shown as plain text with a Copy button. URLs are never opened automatically.
 - **F-C5** Progress, success and failure are shown per transfer; any transfer can be cancelled.
-- **F-C6** Sukkula appears in the system Share menu (ShareProvider) for files and text, and opens a "Send via…" page.
+- **F-C6** Sukkula appears in the system Share menu (ShareProvider) for files and text, and opens a "Send via…" page. **(v0.4: there is no separate page. Send mode shows every way of sending on one screen: this phone at the centre of a radar, holding what is to be sent; the LocalSend and Quick Share peers discovery finds and the paired Bluetooth devices on its rings, each with a protocol badge; above them a cloud with Magic Wormhole's tile, and a tile kept for croc. A share opens Send mode with its items at the centre; tapping a peer sends, with the file picker first if nothing is chosen. A running send draws a line from the centre to its peer -- through the cloud for Magic Wormhole -- and both fill as it goes.)**
 - **F-C7** The device name shown to peers defaults to the device model and can be edited.
 
 **LocalSend (F-LS)**, via the upstream `localsend` crate, protocol v2:

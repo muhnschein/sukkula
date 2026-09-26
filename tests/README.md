@@ -69,13 +69,13 @@ tst_consent.qml` runs single QML tests without the other stages.
    | --- | --- |
    | `tst_engine.qml` | Engine.qml against api.rs: command envelopes and ids, callbacks, bridge return codes, every event type, caps and bounds, garbage events |
    | `tst_consent.qml` | the consent dialog: sanitised values verbatim as plain text, PIN, "and N more", total, countdown; Accept, Decline, leaving, timeout and engine-closed paths (F-C2, F-C3, F-QS3, S5) |
-   | `tst_main.qml` | main page, text page, cover: the Receive switch, protocol states, transfers, cancel, texts with Copy (F-C1, F-C4, F-C5) |
-   | `tst_send.qml` | "Send via…" with every protocol, the file picker, the wormhole code page and QR, protocols switched off in Settings -- Magic Wormhole and "Receive with a code" too (F-C1, F-C6, F-MW1, F-BT1) |
+   | `tst_main.qml` | main page, text page, cover: Send \| Receive as the engine's state, discovery in Send mode only, protocol states, transfers, cancel, texts with Copy (F-C1, F-C4, F-C5) |
+   | `tst_send.qml` | the send radar with every protocol: peers in stable places, the file picker first, "What to send", a send's line, progress, cancel and end, refusals, the wormhole tile's code and code page with QR, "+N" and the device list, protocols switched off in Settings -- Magic Wormhole and "Receive with a code" too (F-C1, F-C6, F-MW1, F-BT1) |
    | `tst_settings.qml` | settings validation, saving on leaving and not when covered, the Magic Wormhole switch, About, receive by code (F-C1, F-C7, F-LS4, F-QS2, F-QS4, F-MW2, F-MW4, S9) |
    | `tst_app.qml` | the whole window: start-up, consent queueing over any page and around transitions, the Share menu, KeepAlive, notifications (§2, F-C6) |
-   | `tst_stack.qml` | the whole window while pages cover each other: a consent dialog over Settings saves nothing, a share replacing a Send page keeps discovery and its peers, send and code replies never pop a consent dialog, a closed offer's dialog never stays under the next one and is not answered (F-C2, F-C3, F-C6, F-LS1, F-QS1, S5) |
+   | `tst_stack.qml` | the whole window while pages cover each other: a consent dialog over Settings saves nothing, a share over another page keeps discovery and its peers, Receive mode gives them back, send and code replies never pop a consent dialog, a closed offer's dialog never stays under the next one and is not answered (F-C2, F-C3, F-C6, F-LS1, F-QS1, S5) |
 4. **`tests/qml/selftest.py`** first requires every check to pass on an
-   untouched copy of the tree, then plants 26 faults one at a time -- a
+   untouched copy of the tree, then plants 30 faults one at a time -- a
    label without `PlainText`, the sender in a Silica header, a misspelt
    `Text.Plaintext`, rich text, a clickable link, an Accept that does not
    accept, a countdown that never declines, KeepAlive held forever, a peer
@@ -127,5 +127,7 @@ Silica's own labels render as the stubs assume, the file picker lists
 consent dialog comes up over other pages. The stub's page stack also
 assumes what Silica's does: a page it pops is destroyed, and the page
 below turns Active once a transition is over. Settings are saved on that
-destruction, the next consent dialog waits for it, and a Send page leaves
-only when Active again; M-6 and M-17 check them on the phone.
+destruction, the next consent dialog waits for it, and a share pops back
+to the main page; M-6 and M-17 check them on the phone. The send radar's
+drawings (Canvas, rotated and scaled rectangles) are only laid out here,
+never looked at: M-18 is where they are seen.

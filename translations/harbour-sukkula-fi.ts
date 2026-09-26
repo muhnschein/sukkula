@@ -224,29 +224,14 @@
         <translation>Vastaanota koodilla</translation>
     </message>
     <message>
-        <source>Send…</source>
-        <extracomment>Pulley menu: choose files or a text and a way to send them.</extracomment>
-        <translation>Lähetä…</translation>
-    </message>
-    <message>
         <source>Sukkula could not start: %1</source>
         <extracomment>The engine failed to start; %1 says why.</extracomment>
         <translation>Sukkula ei käynnistynyt: %1</translation>
     </message>
     <message>
-        <source>Receive</source>
-        <extracomment>The main switch: listen for offers from nearby devices.</extracomment>
-        <translation>Vastaanota</translation>
-    </message>
-    <message>
         <source>Nearby devices can offer you files</source>
-        <extracomment>Under the Receive switch while it is on.</extracomment>
+        <extracomment>Receive mode, at the top: what receiving means.</extracomment>
         <translation>Lähellä olevat laitteet voivat tarjota sinulle tiedostoja</translation>
-    </message>
-    <message>
-        <source>Nobody nearby can see this phone</source>
-        <extracomment>Under the Receive switch while it is off.</extracomment>
-        <translation>Kukaan lähellä ei näe tätä puhelinta</translation>
     </message>
     <message>
         <source>Shown to others as %1</source>
@@ -275,98 +260,163 @@
     </message>
     <message>
         <source>Waiting for offers. Nothing is saved until you accept it.</source>
-        <extracomment>Empty main page while receiving is on.</extracomment>
+        <extracomment>Receive mode with nothing received yet.</extracomment>
         <translation>Odotetaan tarjouksia. Mitään ei tallenneta ennen kuin hyväksyt.</translation>
     </message>
     <message>
-        <source>Switch on Receive to get files, or pull down to send.</source>
-        <extracomment>Empty main page while receiving is off.</extracomment>
-        <translation>Kytke vastaanotto päälle saadaksesi tiedostoja tai vedä alas lähettääksesi.</translation>
+        <source>Cancel sending</source>
+        <extracomment>Pulley menu in Send mode: stop the send that is running.</extracomment>
+        <translation>Peru lähetys</translation>
+    </message>
+    <message>
+        <source>Choose what to send</source>
+        <extracomment>Pulley menu in Send mode: choose the files or text to send.</extracomment>
+        <translation>Valitse lähetettävä</translation>
     </message>
 </context>
 <context>
-    <name>SendPage</name>
+    <name>ModeSwitch</name>
+    <message>
+        <source>Receive</source>
+        <extracomment>The mode switch at the foot of the main page: receive files.</extracomment>
+        <translation>Vastaanota</translation>
+    </message>
+    <message>
+        <source>Send</source>
+        <extracomment>The mode switch at the foot of the main page: send files.</extracomment>
+        <translation>Lähetä</translation>
+    </message>
+</context>
+<context>
+    <name>PayloadPage</name>
+    <message>
+        <source>Clear</source>
+        <extracomment>Pulley menu on the &quot;What to send&quot; page: take everything off it.</extracomment>
+        <translation>Tyhjennä</translation>
+    </message>
     <message>
         <source>Add file</source>
-        <extracomment>Pulley menu on the send page: choose a file with the file picker.
+        <extracomment>Pulley menu on the &quot;What to send&quot; page: choose a file with the file picker.
 ----------
 Opens the file picker.</extracomment>
         <translation>Lisää tiedosto</translation>
     </message>
     <message>
-        <source>Send</source>
-        <extracomment>Page title: choose what to send and how.</extracomment>
-        <translation>Lähetä</translation>
+        <source>What to send</source>
+        <extracomment>Page title: choose the files and text to send.</extracomment>
+        <translation>Mitä lähetetään</translation>
     </message>
     <message>
-        <source>What</source>
-        <extracomment>Section heading: the files and text to send.</extracomment>
-        <translation>Mitä</translation>
+        <source>Outside Downloads: Sukkula may not be allowed to read it.</source>
+        <extracomment>&quot;What to send&quot; page: a file outside ~/Downloads, which the sandbox may not let Sukkula read.</extracomment>
+        <translation>Downloads-kansion ulkopuolella: Sukkula ei ehkä saa lukea sitä.</translation>
     </message>
     <message>
         <source>Text to send (optional)</source>
-        <extracomment>Placeholder of the text box on the send page.</extracomment>
+        <extracomment>Placeholder of the text box on the &quot;What to send&quot; page.</extracomment>
         <translation>Lähetettävä teksti (valinnainen)</translation>
     </message>
     <message>
         <source>Text</source>
-        <extracomment>Label of the text box on the send page.</extracomment>
+        <extracomment>Label of the text box on the &quot;What to send&quot; page.</extracomment>
         <translation>Teksti</translation>
     </message>
     <message>
-        <source>How</source>
-        <extracomment>Section heading: the way to send.</extracomment>
-        <translation>Miten</translation>
+        <source>Then go back and tap who to send it to.</source>
+        <extracomment>&quot;What to send&quot; page: how to go on once something is chosen.</extracomment>
+        <translation>Palaa sitten takaisin ja napauta vastaanottajaa.</translation>
+    </message>
+</context>
+<context>
+    <name>PeerListPage</name>
+    <message>
+        <source>Devices nearby</source>
+        <extracomment>Page title: every device the send screen found.</extracomment>
+        <translation>Lähellä olevat laitteet</translation>
     </message>
     <message>
-        <source>Every way of sending is switched off in Settings.</source>
-        <extracomment>Send page when every protocol is off.</extracomment>
-        <translation>Kaikki lähetystavat on kytketty pois asetuksista.</translation>
+        <source>%1 · %2</source>
+        <extracomment>A peer in the device list: its protocol (%1), then its model or address (%2).</extracomment>
+        <translation>%1 · %2</translation>
     </message>
-    <message>
-        <source>Send via</source>
-        <extracomment>Choice of protocol on the send page.</extracomment>
-        <translation>Lähetystapa</translation>
-    </message>
-    <message>
-        <source>Looking for devices on this Wi-Fi…</source>
-        <extracomment>Send page: discovery is running.</extracomment>
-        <translation>Etsitään laitteita tästä Wi-Fi-verkosta…</translation>
-    </message>
-    <message>
-        <source>Sukkula makes a code. Read it out to the receiver, who types it into any Magic Wormhole app.</source>
-        <extracomment>Send page, Magic Wormhole chosen.</extracomment>
-        <translation>Sukkula luo koodin. Kerro se vastaanottajalle, joka kirjoittaa sen mihin tahansa Magic Wormhole -sovellukseen.</translation>
-    </message>
+</context>
+<context>
+    <name>SendView</name>
     <message>
         <source>Magic Wormhole sends one file or one text at a time.</source>
-        <extracomment>Send page, Magic Wormhole chosen with more than one item.</extracomment>
+        <extracomment>Send screen: Magic Wormhole tapped with more than one item chosen.</extracomment>
         <translation>Magic Wormhole lähettää yhden tiedoston tai tekstin kerrallaan.</translation>
     </message>
     <message>
-        <source>Make a code</source>
-        <extracomment>Starts a Magic Wormhole send and shows its code.</extracomment>
-        <translation>Luo koodi</translation>
-    </message>
-    <message>
-        <source>No paired devices. Pair one in the phone&apos;s Bluetooth settings first.</source>
-        <extracomment>Send page, Bluetooth chosen, nothing paired.</extracomment>
-        <translation>Ei pariliitettyjä laitteita. Muodosta pariliitos ensin puhelimen Bluetooth-asetuksissa.</translation>
-    </message>
-    <message>
         <source>Bluetooth sends files only.</source>
-        <extracomment>Send page, Bluetooth chosen with no files, or with a text.</extracomment>
+        <extracomment>Send screen: a Bluetooth device tapped with a text chosen.</extracomment>
         <translation>Bluetooth lähettää vain tiedostoja.</translation>
     </message>
     <message>
-        <source>Add a file or type a text first.</source>
-        <extracomment>Send page with nothing chosen yet.</extracomment>
-        <translation>Lisää ensin tiedosto tai kirjoita teksti.</translation>
+        <source>Connecting…</source>
+        <extracomment>Send screen: a send was asked for, the engine has not answered yet.</extracomment>
+        <translation>Yhdistetään…</translation>
     </message>
     <message>
-        <source>Outside Downloads: Sukkula may not be allowed to read it.</source>
-        <extracomment>Send page: a file outside ~/Downloads, which the sandbox may not let Sukkula read.</extracomment>
-        <translation>Downloads-kansion ulkopuolella: Sukkula ei ehkä saa lukea sitä.</translation>
+        <source>%1 of %2</source>
+        <extracomment>Progress of a send: %1 bytes so far, %2 bytes in all, both formatted.</extracomment>
+        <translation>%1 / %2</translation>
+    </message>
+    <message>
+        <source>Waiting for an answer…</source>
+        <extracomment>Send screen: the peer has been asked and has not answered yet.</extracomment>
+        <translation>Odotetaan vastausta…</translation>
+    </message>
+    <message>
+        <source>Sent</source>
+        <extracomment>A send arrived.</extracomment>
+        <translation>Lähetetty</translation>
+    </message>
+    <message>
+        <source>Cancelled</source>
+        <extracomment>A send was stopped by one of the two sides.</extracomment>
+        <translation>Peruttu</translation>
+    </message>
+    <message>
+        <source>Failed: %1</source>
+        <extracomment>A send failed; %1 says why.</extracomment>
+        <translation>Epäonnistui: %1</translation>
+    </message>
+    <message>
+        <source>Tap to choose what to send</source>
+        <extracomment>Send screen, under the centre of the radar with nothing chosen yet.</extracomment>
+        <translation>Napauta valitaksesi lähetettävän</translation>
+    </message>
+    <message numerus="yes">
+        <source>%n text(s)</source>
+        <extracomment>Send screen, under the centre of the radar: only texts are chosen.</extracomment>
+        <translation>
+            <numerusform>%n teksti</numerusform>
+            <numerusform>%n tekstiä</numerusform>
+        </translation>
+    </message>
+    <message numerus="yes">
+        <source>%n item(s)</source>
+        <extracomment>Send screen, under the centre of the radar: files, or files and texts.</extracomment>
+        <translation>
+            <numerusform>%n kohde</numerusform>
+            <numerusform>%n kohdetta</numerusform>
+        </translation>
+    </message>
+    <message>
+        <source>Every way of sending is switched off in Settings.</source>
+        <extracomment>Send screen when every protocol is off.</extracomment>
+        <translation>Kaikki lähetystavat on kytketty pois asetuksista.</translation>
+    </message>
+    <message>
+        <source>Looking for devices nearby…</source>
+        <extracomment>Send screen: discovery is running and has found nobody yet.</extracomment>
+        <translation>Etsitään lähellä olevia laitteita…</translation>
+    </message>
+    <message>
+        <source>No devices nearby.</source>
+        <extracomment>Send screen: nobody found and discovery is not running.</extracomment>
+        <translation>Ei laitteita lähellä.</translation>
     </message>
 </context>
 <context>
@@ -507,11 +557,6 @@ Opens the file picker.</extracomment>
         <translation>Vain vikojen etsintään. Pidä muuten pois päältä.</translation>
     </message>
     <message>
-        <source>While the Send page looks for devices, a Bluetooth signal prompts Android phones nearby to show up.</source>
-        <extracomment>Settings: what the Bluetooth nudge does. It works only while the Send page looks for devices; it does not make this phone visible.</extracomment>
-        <translation>Kun Lähetä-sivu etsii laitteita, Bluetooth-signaali saa lähellä olevat Android-puhelimet tulemaan näkyviin.</translation>
-    </message>
-    <message>
         <source>Use Magic Wormhole</source>
         <extracomment>Settings: switch a protocol on or off.</extracomment>
         <translation>Käytä Magic Wormholea</translation>
@@ -520,6 +565,11 @@ Opens the file picker.</extracomment>
         <source>Send and receive with a code, through a server on the internet.</source>
         <extracomment>Settings: what the Magic Wormhole switch covers (F-C1): sending to a code and receiving with one.</extracomment>
         <translation>Lähetä ja vastaanota koodilla internetissä olevan palvelimen kautta.</translation>
+    </message>
+    <message>
+        <source>While Send mode looks for devices, a Bluetooth signal prompts Android phones nearby to show up.</source>
+        <extracomment>Settings: what the Bluetooth nudge does. It works only while Send mode looks for devices; it does not make this phone visible.</extracomment>
+        <translation>Kun Lähetä-tila etsii laitteita, Bluetooth-signaali saa lähellä olevat Android-puhelimet tulemaan näkyviin.</translation>
     </message>
 </context>
 <context>
@@ -668,6 +718,14 @@ Opens the file picker.</extracomment>
         <source>Receive</source>
         <extracomment>Starts receiving with the typed code.</extracomment>
         <translation>Vastaanota</translation>
+    </message>
+</context>
+<context>
+    <name>WormholeTile</name>
+    <message>
+        <source>Tap for the QR code</source>
+        <extracomment>Under a wormhole code on the send screen: tapping shows it big, with a QR code.</extracomment>
+        <translation>Napauta nähdäksesi QR-koodin</translation>
     </message>
 </context>
 <context>
