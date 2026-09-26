@@ -61,7 +61,11 @@ done
 status=0
 cases=0
 
-run_check() { "$1/ci/harbour-check.sh" 2>&1; }
+run_check() {
+    local tree=$1
+    "$tree/ci/harbour-check.sh" 2>&1
+    return $?
+}
 
 # The unbroken tree has to pass, or every case below proves nothing.
 cases=$((cases + 1))
@@ -330,7 +334,7 @@ break_and_expect 2.1 "a JavaScript private field starting with #" \
 break_and_expect 2.1 "code after a block comment closes, on its last line" \
     'printf "/* a\n * b\n */ pub const D: &str = \"/home/nemo/y\";\n" >> crates/sukkula-core/src/lib.rs'
 break_and_expect 2.1 "a home directory after a // inside a string" \
-    'printf "pub const U: &str = \"http://x\"; pub const D: &str = \"/home/nemo/z\";\n" >> crates/sukkula-core/src/lib.rs'
+    'printf "pub const U: &str = \"https://x\"; pub const D: &str = \"/home/nemo/z\";\n" >> crates/sukkula-core/src/lib.rs'
 break_and_expect 2.1 "a data file include_str! can read" \
     'printf "{\"dir\": \"/home/defaultuser/Downloads\"}\n" > crates/sukkula-core/src/defaults.json'
 
@@ -509,11 +513,12 @@ fi
 # path with a new error about it is news.
 # waiver_tree <name> <line>: a copy of the pristine tree with one waiver.
 waiver_tree() {
-    local tree="$work/$1"
+    local tree="$work/$1" line=$2
     rm -rf "$tree"
     cp -a "$pristine" "$tree"
-    printf '%s\n' "$2" >> "$tree/ci/harbour/waivers.conf"
+    printf '%s\n' "$line" >> "$tree/ci/harbour/waivers.conf"
     echo "$tree"
+    return 0
 }
 waived_tree=$(waiver_tree waived 'rpm  ERROR  /usr/share/harbour-sukkula/x  Installation not allowed*  # test')
 validate_rpm pass "a finding an rpm waiver names: severity, subject and message" \

@@ -73,37 +73,41 @@ engines=stub
 # export, PIE, full RELRO, stripped, and only allowed libraries recorded;
 # and the RPATH sailfishapp.prf sets, as DT_RPATH (src/hardening.pri).
 elf_checks() { # binary label rpath [reserve]
+    binary=$1
+    label=$2
+    rpath=$3
+    reserve=${4:-}
     before=$status
     # The C runtime's and the linker's own symbols, which -rdynamic (the
     # SDK's sailfishapp feature passes it) exports from every binary, are
     # not ours; anything else besides main() -- a Bridge method, a
     # sukkula_* function, a Rust symbol -- is a leak.
-    syms=$(readelf --dyn-syms -W "$1" | awk '$5 == "GLOBAL" && $7 != "UND" { print $8 }' | sed 's/@.*//' |
+    syms=$(readelf --dyn-syms -W "$binary" | awk '$5 == "GLOBAL" && $7 != "UND" { print $8 }' | sed 's/@.*//' |
         grep -v -x -E '_IO_stdin_used|__bss_start|__data_start|data_start|_edata|_end|_start|_init|_fini|__dso_handle' |
         sort -u)
-    [ "$syms" = main ] || fail "$2 exports more than main(): $(printf '%s' "$syms" | tr '\n' ' ')"
-    readelf -d "$1" | grep -q 'BIND_NOW' || fail "$2: no BIND_NOW (-z now)"
-    readelf -lW "$1" | grep -q 'GNU_RELRO' || fail "$2: no GNU_RELRO segment"
-    readelf -hW "$1" | grep -q 'DYN' || fail "$2: not a position-independent executable"
-    if readelf -d "$1" | grep -q '(RUNPATH)'; then
-        fail "$2: carries a RUNPATH, which Jolla's validator does not read (-Wl,--disable-new-dtags)"
+    [ "$syms" = main ] || fail "$label exports more than main(): $(printf '%s' "$syms" | tr '\n' ' ')"
+    readelf -d "$binary" | grep -q 'BIND_NOW' || fail "$label: no BIND_NOW (-z now)"
+    readelf -lW "$binary" | grep -q 'GNU_RELRO' || fail "$label: no GNU_RELRO segment"
+    readelf -hW "$binary" | grep -q 'DYN' || fail "$label: not a position-independent executable"
+    if readelf -d "$binary" | grep -q '(RUNPATH)'; then
+        fail "$label: carries a RUNPATH, which Jolla's validator does not read (-Wl,--disable-new-dtags)"
     fi
-    got_rpath=$(readelf -d "$1" | sed -n 's/.*(RPATH).*\[\(.*\)\]/\1/p')
-    [ "$got_rpath" = "$3" ] || fail "$2: its RPATH is '$got_rpath', not $3"
-    if readelf -SW "$1" | grep -q ' \.symtab '; then
-        fail "$2: not stripped"
+    got_rpath=$(readelf -d "$binary" | sed -n 's/.*(RPATH).*\[\(.*\)\]/\1/p')
+    [ "$got_rpath" = "$rpath" ] || fail "$label: its RPATH is '$got_rpath', not $rpath"
+    if readelf -SW "$binary" | grep -q ' \.symtab '; then
+        fail "$label: not stripped"
     fi
     # With the engine a library of its own, the executable's only
     # thread-local is src/tls_reserve.c's array: 4096 zero bytes
     # (ci/check-elf.sh holds the phone's binary to the rest of the rule).
     # The host app links the engine's archive in, so only the project's own
     # build is asked (a fourth argument).
-    if [ "${4:-}" = reserve ]; then
-        tls=$(readelf -lW "$1" | awk '$1 == "TLS" { print $5, $6 }')
+    if [ "$reserve" = reserve ]; then
+        tls=$(readelf -lW "$binary" | awk '$1 == "TLS" { print $5, $6 }')
         [ "$tls" = "0x000000 0x001000" ] ||
-            fail "$2: its thread-locals are not src/tls_reserve.c's array alone (FileSiz MemSiz: '$tls')"
+            fail "$label: its thread-locals are not src/tls_reserve.c's array alone (FileSiz MemSiz: '$tls')"
     fi
-    needed=$(readelf -d "$1" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' | sort)
+    needed=$(readelf -d "$binary" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' | sort)
     for lib in $needed; do
         case $lib in
             libQt5Core.so.5|libQt5Gui.so.5|libQt5Qml.so.5|libQt5Quick.so.5|libQt5DBus.so.5) ;;
@@ -115,11 +119,11 @@ elf_checks() { # binary label rpath [reserve]
             # thread-locals): ld-linux-aarch64.so.1 is on Harbour's list,
             # and this is the host's twin of it.
             ld-linux-aarch64.so.1|ld-linux-x86-64.so.2) ;;
-            *) fail "$2 links $lib, which is not on Harbour's list" ;;
+            *) fail "$label links $lib, which is not on Harbour's list" ;;
         esac
     done
     if [ "$status" -eq "$before" ]; then
-        say "binary checks ($2): ok (needs: $(printf '%s' "$needed" | tr '\n' ' '))"
+        say "binary checks ($label): ok (needs: $(printf '%s' "$needed" | tr '\n' ' '))"
     fi
 }
 

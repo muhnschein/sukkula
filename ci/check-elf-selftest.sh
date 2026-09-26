@@ -111,6 +111,7 @@ build() {
     shift 2
     "$cc" -O2 -o "$work/$name" "$work/$src" "$@" 2>/dev/null &&
         "$strip" --strip-all "$work/$name"
+    return $?
 }
 full="--main-export --only-main --stripped --libc-start-main 2.34 --glibc-ceiling 2.39"
 # The same for the engine's library (--library), set as $full for its cases.
@@ -161,6 +162,7 @@ link() {
     shift
     "$cc" -O2 -o "$work/$name" "$@" "${good[@]}" 2>/dev/null &&
         "$strip" --strip-all "$work/$name"
+    return $?
 }
 link tls-reserved "$work/tls_reserve.o" "$work/shell-tls.o"
 link tls-zeroed "$work/tls_reserve.o" "$work/shell-tls.o" "$work/zeroed-tls.o"
@@ -175,6 +177,7 @@ lib() {
     "$cc" -O2 -fPIC -shared -o "$work/$name" "$work/engine.c" -Wl,-soname,"$soname" \
         -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack "$@" 2>/dev/null &&
         "$strip" --strip-all "$work/$name"
+    return $?
 }
 mkdir -p "$work/lib"
 lib lib/libsukkula_ffi.so libsukkula_ffi.so -Wl,--version-script="$work/engine.map"
@@ -187,6 +190,7 @@ shell() {
     local name=$1
     shift
     link "$name" "$work/tls_reserve.o" "$work/uses-engine.c" -I"$work" -L"$work/lib" -lsukkula_ffi "$@"
+    return $?
 }
 shell shell-rpath -Wl,--disable-new-dtags -Wl,-rpath,/usr/share/harbour-sukkula/lib
 shell shell-runpath -Wl,--enable-new-dtags -Wl,-rpath,/usr/share/harbour-sukkula/lib

@@ -87,7 +87,11 @@ FOREIGN='security-framework security-framework-sys schannel core-foundation'
 
 # Crate names in the lockfile, and each package's own dependency list.
 names=$(sed -n 's/^name = "\(.*\)"$/\1/p' "$lock" | sort -u)
-in_lock() { grep -qx -- "$1" <<< "$names"; }
+in_lock() {
+    local crate=$1
+    grep -qx -- "$crate" <<< "$names"
+    return $?
+}
 
 # The allow-list: name, scope, reason.
 declare -A allow_scope=()
@@ -185,8 +189,16 @@ if [[ "$lock_only" = 0 ]]; then
     [[ -s "$tree" ]] || { bad "the shipped graph is empty"; exit 1; }
 
     shipped=$(sed 's/ .*//' "$tree" | sort -u)
-    in_ship() { grep -qx -- "$1" <<< "$shipped"; }
-    features_of() { grep -E "^$1 " "$tree" | head -1 | sed 's/^[^|]*|//' | tr ',' '\n'; }
+    in_ship() {
+        local crate=$1
+        grep -qx -- "$crate" <<< "$shipped"
+        return $?
+    }
+    features_of() {
+        local crate=$1
+        grep -E "^$crate " "$tree" | head -1 | sed 's/^[^|]*|//' | tr ',' '\n'
+        return 0
+    }
 
     for crate in $TLS $DBUS $RUNTIMES $FOREIGN; do
         in_ship "$crate" && bad "'$crate' is in the phone build (sukkula-ffi, aarch64)"

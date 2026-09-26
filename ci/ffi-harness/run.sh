@@ -44,8 +44,10 @@ trap 'rm -rf "$work"' EXIT INT TERM
 # lacks its runtime (Ubuntu splits it into libclang-rt-*-dev), gcc's comes
 # with libasan/libubsan.
 sanitizers_link() {
+    # POSIX sh has no `local`; nothing else in the file uses this name.
+    compiler=$1
     printf 'int main(void) { return 0; }\n' >"$work/probe.c"
-    "$1" -fsanitize=address,undefined "$work/probe.c" -o "$work/probe" \
+    "$compiler" -fsanitize=address,undefined "$work/probe.c" -o "$work/probe" \
         >/dev/null 2>&1 && "$work/probe"
 }
 if [ -n "${CC:-}" ]; then

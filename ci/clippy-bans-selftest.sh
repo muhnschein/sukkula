@@ -169,12 +169,11 @@ EOF
 
 out="$work/clippy.log"
 if ! (cd "$crate" && CARGO_TARGET_DIR="$root/target/clippy-bans-selftest" \
-        cargo clippy --offline --quiet --message-format=short 2> "$out"); then
-    if grep -q '^error' "$out" && ! grep -q 'disallowed' "$out"; then
-        echo "clippy-bans: FAIL the probe crate does not build:" >&2
-        cat "$out" >&2
-        exit 1
-    fi
+        cargo clippy --offline --quiet --message-format=short 2> "$out") &&
+    grep -q '^error' "$out" && ! grep -q 'disallowed' "$out"; then
+    echo "clippy-bans: FAIL the probe crate does not build:" >&2
+    cat "$out" >&2
+    exit 1
 fi
 
 status=0
