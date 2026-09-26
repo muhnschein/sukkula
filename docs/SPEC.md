@@ -165,7 +165,7 @@ Sukkula itself is GPL-3.0-or-later. EUPL-1.2 allows distribution under GPL-3.0 t
 
 ## 7. Testing and quality
 
-A change merges only when CI passes: `cargo fmt --check`, `clippy -D warnings`, tests, `cargo deny`, a 60-second fuzz smoke run, the ARM cross-build, and the **Harbour gate** **(v0.2)**: `ci/harbour-check.sh` asks every question of Jolla's validator that a source tree can answer, on every pull request, and the RPM workflow runs Jolla's own `rpmvalidation.sh` (`sfdk check -s harbour`) on the built package. `docs/HARBOUR.md` has both.
+A change merges only when CI passes: `cargo fmt --check`, `clippy -D warnings`, tests, `cargo deny`, the fuzz targets' seeds, dictionaries and build, the ARM cross-build, and the **Harbour gate** **(v0.2)**: `ci/harbour-check.sh` asks every question of Jolla's validator that a source tree can answer, on every pull request. Two checks run once a change has reached `main` rather than before it merges: every fuzz target is fuzzed every night, and the RPM workflow runs Jolla's own `rpmvalidation.sh` (`sfdk check -s harbour`) on the package built from every push -- and, before the merge, on the pull requests that change the packaging. `docs/HARBOUR.md` has both Harbour checks; `fuzz/README.md` the fuzzing.
 
 | Layer | What | Tool |
 | --- | --- | --- |

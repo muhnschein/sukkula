@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# The short fuzz run spec §7 puts on every change: each cargo-fuzz target in
-# fuzz/, for 60 seconds by default, from its committed seeds.
+# The fuzz run spec §7 asks for: each cargo-fuzz target in fuzz/, for 60
+# seconds by default, from its committed seeds and fuzz/corpus/. fuzz.yml
+# runs it every night against main, for 300 seconds a target.
 #
 #     scripts/fuzz-smoke.sh [seconds-per-target] [target...]
 #                                              every target, or the ones named
@@ -9,7 +10,7 @@
 #                                              inputs and the verdicts, offline
 #
 # Targets are asked of `cargo fuzz list`, not listed here, so a target
-# added to fuzz/Cargo.toml is fuzzed from the pull request that adds it.
+# added to fuzz/Cargo.toml is fuzzed from the first night after it merges.
 # Zero targets is a failure: a smoke run that fuzzed nothing passed nothing.
 # So is a target without committed seeds or a dictionary, and a dictionary
 # libFuzzer cannot parse: ci/check-dicts.sh runs first, and says which.

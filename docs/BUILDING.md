@@ -2,8 +2,9 @@
 
 How to build and check Sukkula on a host, how the engine is cross-compiled
 for the phone, and how the device RPM is made. The CI side of each step is
-`.github/workflows/ci.yml` (the per-pull-request gate) and `rpm.yml` (the
-package); Harbour's rules are `docs/HARBOUR.md`.
+`.github/workflows/ci.yml` (the per-pull-request gate), `rpm.yml` (the
+package, on every push to `main`) and `fuzz.yml` (the fuzzers, every night
+against `main`); Harbour's rules are `docs/HARBOUR.md`.
 
 ## The shape of the build (spec §3)
 
@@ -48,9 +49,9 @@ and no lockfile-format constraint for the SDK's cargo, because nothing
 here is built by it.
 
 **A pinned nightly, `nightly-2026-09-15`**, for the fuzzers only
-(`SUKKULA_NIGHTLY` in `ci.yml` and the Makefile, `FUZZ_TOOLCHAIN` for
+(`SUKKULA_NIGHTLY` in `fuzz.yml` and the Makefile, `FUZZ_TOOLCHAIN` for
 `scripts/fuzz-smoke.sh`). Pinned so a nightly regression is a deliberate
-bump rather than a red pull request.
+bump rather than a red night.
 
 Host packages (Ubuntu 24.04):
 
@@ -88,7 +89,7 @@ nothing.
 | `deny` | `deny` | licences, advisories, duplicate versions, banned crates and features, sources (`deny.toml`) |
 | `deps lockfile` | `deps` | the dependency budget (`ci/check-deps.sh`, with its selftest) and the lockfile rules (`ci/check-lockfile.sh`) |
 | `rqs-lib-tests` | `test` | the vendored Quick Share library's own tests, run from a temporary copy so `third_party/` stays byte-identical to upstream plus patches (`ci/rqs-lib-tests.sh`) |
-| `fuzz-lint fuzz-smoke` | `fuzz-smoke` | every target's seeds and dictionary (`ci/check-dicts.sh`, and its self-test), clippy and the harness tests of the fuzz crate, then every cargo-fuzz target, 60 s each, from its committed seeds, at its own `-max_len` (`fuzz/README.md`) |
+| `fuzz-lint` | `fuzz-lint` | every target's seeds and dictionary (`ci/check-dicts.sh`, and its self-test), the smoke's lengths and boundary inputs (its self-test), clippy and the harness tests of the fuzz crate (`fuzz/README.md`) |
 | `ffi-asan` | `ffi-asan` | the C harness over the C ABI under AddressSanitizer (`ci/ffi-harness/run.sh`) |
 | `cross` | `cross` | the aarch64 engine, with a probe linked against it (below) |
 | `qml` | `qml` | qmllint over `qml/` and `qml-stubs/`; the UI's QML tests, offscreen |
@@ -97,7 +98,8 @@ nothing.
 | `vendor` | `vendor` | `third_party/rqs_lib` is upstream plus its patches (with the checker's selftest) |
 | `wormhole-interop` | `wormhole-interop` | Sukkula against the Python magic-wormhole client, both ways (below, "Interop with the reference clients") |
 | `harbour` | `harbour` | the source-level Harbour gate, then its selftest (`docs/HARBOUR.md`) |
-| `rpm` | `rpm.yml` | the device RPM, its binary rules and Jolla's validator |
+| `rpm` | `rpm.yml` | the device RPM, its binary rules and Jolla's validator; not per pull request (below) |
+| `fuzz-smoke` | `fuzz.yml` | every cargo-fuzz target from its committed seeds and the corpus of the nights before, at its own `-max_len`: 300 s each, nightly against `main`, not per pull request (`FUZZ_SECONDS`, 60 by default here) |
 
 The first run fetches the pinned toolchains through rustup, which is
 network; nothing after that is, until `deny`, `vendor` or
@@ -294,9 +296,11 @@ third-party apt lists before `apt-get update` so one of them serving a bad
 index cannot fail every job (`ci/apt-install-selftest.sh` proves it keeps
 Ubuntu's archive).
 
-`rpm.yml` runs on `v*` and `build-*` tags, from the Actions tab, and on
-pull requests that touch the package (`docs/HARBOUR.md` says which paths
-and why). Each build is stamped `Release: 1.<run number>` -- digits and
+`rpm.yml` runs on every push to `main`, on `v*` and `build-*` tags, from
+the Actions tab (on any branch: dispatch it to validate a change before it
+merges), and on the pull requests that change the packaging itself -- not
+on those that only change the program, which it judges once they have
+merged (`docs/HARBOUR.md` says which paths and why). Each build is stamped `Release: 1.<run number>` -- digits and
 periods only, as Harbour requires -- so each one installs over the last;
 a release keeps the spec's `Release: 1`, has to match the spec's
 `Version:`, is cut from `main` (a dispatch has to run on `main`, and a

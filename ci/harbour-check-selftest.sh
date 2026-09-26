@@ -334,17 +334,22 @@ break_and_expect 2.1 "a home directory after a // inside a string" \
 break_and_expect 2.1 "a data file include_str! can read" \
     'printf "{\"dir\": \"/home/defaultuser/Downloads\"}\n" > crates/sukkula-core/src/defaults.json'
 
-# P.6: Jolla's validator runs on every pull request that changes the package.
-break_and_expect P.6 "rpm.yml no longer built for a change to the Rust crates" \
-    'sed -i "\|^      - \"crates/\*\*\"\$|d" $W'
-break_and_expect P.6 "rpm.yml no longer built for a change to the C++ shell" \
-    'sed -i "\|^      - \"src/\*\*\"\$|d" $W'
-break_and_expect P.6 "rpm.yml no longer built for a change to the QML" \
-    'sed -i "\|^      - \"qml/\*\*\"\$|d" $W'
+# P.6: Jolla's validator runs on main, and on every pull request that
+# changes the packaging.
+break_and_expect P.6 "rpm.yml no longer built on main" \
+    'sed -i "/^    branches: \[main\]\$/d" $W'
+break_and_expect P.6 "rpm.yml built on another branch instead of main" \
+    'sed -i "s/^    branches: \[main\]\$/    branches: [develop]/" $W'
+break_and_expect P.6 "rpm.yml no longer built for a change to the spec" \
+    'sed -i "\|^      - \"rpm/\*\*\"\$|d" $W'
+break_and_expect P.6 "rpm.yml no longer built for a change to the lockfile" \
+    'sed -i "\|^      - \"Cargo.lock\"\$|d" $W'
 break_and_expect P.6 "rpm.yml with no pull_request trigger at all" \
     'sed -i "s/^  pull_request:\$/  pull_request_review:/" $W'
 still_passes "rpm.yml built for every pull request, with no paths filter" \
-    'sed -i "/^  pull_request:\$/,/^\$/{/^    paths:\$/d; /^      /d}" $W && grep -q "^  pull_request:\$" $W && ! grep -q "crates/\*\*" $W'
+    'sed -i "/^  pull_request:\$/,/^\$/{/^    paths:\$/d; /^      /d}" $W && grep -q "^  pull_request:\$" $W && ! grep -q "rpm/\*\*" $W'
+still_passes "rpm.yml on main written as a block list" \
+    'sed -i "s/^    branches: \[main\]\$/    branches:\n      - main/" $W && grep -q "^      - main\$" $W'
 
 # And what the check must leave alone.
 still_passes "a doc comment that mentions /home/defaultuser" \

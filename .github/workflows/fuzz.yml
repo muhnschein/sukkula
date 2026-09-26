@@ -1,0 +1,92 @@
+# The fuzzers, every night against main, as clove runs its own.
+#
+# They used to be ci.yml's `fuzz-smoke` job, on every pull request: sixteen
+# targets at 60 s each, which held every change for half an hour and fuzzed
+# each target for a minute. Here they run for longer, once a day, on what
+# has merged. What a pull request can break without fuzzing -- a target that
+# no longer compiles, a seed or dictionary gone missing, the smoke's own
+# lengths -- is still checked on every one, by ci.yml's `fuzz-lint`.
+#
+# A red night is a finding: the reproducer is uploaded as `fuzz-artifacts`,
+# and `cargo fuzz run <target> <file>` replays it (fuzz/README.md). To fuzz
+# a branch before it merges, dispatch this on it from the Actions tab.
+#
+# `make fuzz-smoke FUZZ_SECONDS=<n>` runs the same, on a laptop.
+name: fuzz
+
+on:
+  schedule:
+    # 03:17 UTC, off the hour: runs scheduled on the hour queue longest.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: Seconds per target
+        type: string
+        default: "300"
+
+# One run per ref at a time; a dispatch while the night's run is going
+# waits rather than cancelling it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  # The nightly the fuzzers build with. Pinned, so a nightly regression is
+  # a deliberate bump rather than a red night; scripts/fuzz-smoke.sh and the
+  # Makefile default to the same one.
+  SUKKULA_NIGHTLY: nightly-2026-09-15
+
+jobs:
+  # Every target from `cargo fuzz list`, so a new one is fuzzed from the
+  # first night after it merges. scripts/fuzz-smoke.sh carries the pitfalls
+  # (the toolchain file, the musl cargo-fuzz). Sixteen targets at 300 s
+  # each, plus the ASan build: about an hour and a half.
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # libdbus-1-dev: the Quick Share targets build the engine's
+      # quickshare feature, whose BLE nudge links the system libdbus-1.
+      - run: ./ci/apt-install.sh libdbus-1-dev pkg-config
+      - run: rustup toolchain install "$SUKKULA_NIGHTLY" --profile minimal
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: fuzz
+          # rust-cache keys on the default toolchain, and this job builds
+          # with the nightly; without a key of its own the entry would be
+          # keyed as though it had not.
+          key: fuzz-${{ env.SUKKULA_NIGHTLY }}
+      - uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2.87.10
+        with:
+          tool: cargo-fuzz@0.13.2
+      # What each night discovers, carried to the next. The committed seeds
+      # start every run warm; without this each night would spend its
+      # budget rediscovering what the last one had already reached. Saved
+      # under the run's id, so every night is a new entry and the newest is
+      # the one restored.
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: fuzz/corpus
+          key: fuzz-corpus-${{ github.run_id }}
+          restore-keys: |
+            fuzz-corpus-
+      - name: Fuzz every target
+        env:
+          FUZZ_TOOLCHAIN: ${{ env.SUKKULA_NIGHTLY }}
+          SECONDS_PER_TARGET: ${{ inputs.seconds || '300' }}
+        run: ./scripts/fuzz-smoke.sh "$SECONDS_PER_TARGET"
+      # The reproducer is the finding; without it a red night is a rumour.
+      - if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/
+          if-no-files-found: ignore
+          retention-days: 30

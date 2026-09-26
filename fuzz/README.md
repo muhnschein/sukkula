@@ -1,19 +1,20 @@
 # Fuzzing Sukkula's parsers and sanitisers
 
 Spec §7 asks for every S-rule as a property test and for cargo-fuzz over the
-parsers, with the corpus in the repository and a 60-second fuzz smoke in CI.
+parsers, with the corpus in the repository and a fuzz run in CI: nightly,
+against `main`.
 Three layers, each catching what the others cannot:
 
 | Layer | Where | Toolchain | When |
 | --- | --- | --- | --- |
 | **Properties** | `crates/sukkula-core/tests/properties.rs` | pinned stable | every `cargo test` |
 | **Sweep** | `crates/sukkula-core/tests/hostile.rs` | pinned stable | every `cargo test` |
-| **Fuzz** | this directory | nightly + cargo-fuzz | 60 s per target in CI, longer by hand |
+| **Fuzz** | this directory | nightly + cargo-fuzz | 300 s per target every night on `main`; linted and compiled on every pull request |
 
 The sweep is a deterministic mutation pass, like clove's
 `crates/clove-core/tests/hostile.rs`: no nightly, no flakes, seconds. The
-fuzz targets are coverage-guided and go further, but need nightly, so they
-run as their own CI job.
+fuzz targets are coverage-guided and go further, but need nightly and
+time, so they run on a schedule of their own.
 
 All three check the same **oracle**, `crates/sukkula-core/tests/common/oracle.rs`,
 compiled into this crate through `#[path]` (`src/lib.rs`). It restates S1
@@ -136,32 +137,45 @@ at run time rather than committed, so they follow the constant too.
 nightly or cargo-fuzz -- every capped target is a real target (a rename
 cannot drop one back to 4096), its length reaches past its cap and is the
 one the run passes, and its boundary inputs are exactly the cap and one
-byte more -- and the fuzz-smoke job and `make fuzz-lint` run it first.
+byte more -- and ci.yml's `fuzz-lint` job and `make fuzz-lint` run it on
+every pull request.
 
 One cap is beyond any practical fuzz length: the mailbox guard's 4 MiB per
 connection (`wormhole_mailbox`), which `wormhole/mailbox.rs`'s
 `the_budget_is_per_connection` holds on every `cargo test`.
 
-## CI: the 60-second smoke per target
+## CI: lint on every pull request, fuzz every night
 
-The `fuzz-smoke` job of `.github/workflows/ci.yml` (and `make fuzz-smoke`,
-which runs the same) does two things on every pull request. First it lints
-the crate on the pinned toolchain, which also keeps every target compiling:
+Fuzzing every target on every pull request held each one for half an hour,
+and fuzzed each target for a minute. So it is split, as clove does it.
+
+The `fuzz-lint` job of `.github/workflows/ci.yml` (and `make fuzz-lint`,
+which runs the same) runs on every pull request and fuzzes nothing. It
+checks the seeds and dictionaries and the smoke's own lengths (below and
+above), then lints the crate on the pinned toolchain, which also keeps every
+target compiling -- a changed signature in the engine would otherwise rot a
+target until the night tripped over it -- and runs the harness's tests:
 
 ```sh
 cargo clippy --manifest-path fuzz/Cargo.toml --all-targets --locked -- -D warnings
+cargo test --manifest-path fuzz/Cargo.toml --lib --locked
 ```
 
-Then `scripts/fuzz-smoke.sh 60` runs the smoke (spec §7): it asks `cargo
+`.github/workflows/fuzz.yml` does the fuzzing, every night at 03:17 UTC
+against `main`, and from the Actions tab on any branch (to fuzz a change
+before it merges). It runs `scripts/fuzz-smoke.sh 300`, which asks `cargo
 fuzz list` for the targets -- so a target added to `Cargo.toml` is fuzzed
-from the pull request that adds it, and zero targets is a failure -- builds
-them all once, and runs each for 60 s from `fuzz/corpus/<t>` and
+from the first night after it merges, and zero targets is a failure --
+builds them all once, and runs each for 300 s from `fuzz/corpus/<t>` and
 `fuzz/seeds/<t>` with `fuzz/dicts/<t>.dict`, its `-max_len` (above), a 10 s
 per-input timeout and a 2 GiB RSS cap. It sets `RUSTUP_TOOLCHAIN` and
-`--target` itself, for the pitfalls below. `scripts/fuzz-smoke.sh 60
-command_json` runs one target the same way, to reproduce a red job.
+`--target` itself, for the pitfalls below. `fuzz/corpus/` is carried from
+one night to the next in the Actions cache, so each night starts where the
+last one got to rather than from the seeds. `make fuzz-smoke
+FUZZ_SECONDS=300` runs the same on a laptop, and `scripts/fuzz-smoke.sh 60
+command_json` runs one target, to reproduce a red night.
 
-Before any of that, `ci/check-dicts.sh` (the job runs its `--self-test`
+`ci/check-dicts.sh` (both jobs run it; `fuzz-lint` runs its `--self-test`
 first; clove's check of the same name is the model) requires of every
 target in `Cargo.toml` a non-empty `fuzz/seeds/<t>/` and a
 `fuzz/dicts/<t>.dict` that libFuzzer's own dictionary grammar accepts, and
@@ -173,10 +187,11 @@ check, the second fails it with libFuzzer's own message, and a run that
 fails without writing a reproducer to `fuzz/artifacts/<t>/` is reported as
 a broken run, not a finding.
 
-Sixteen targets at 60 s each is sixteen minutes, plus one ASan build of the
+Sixteen targets at 300 s each is eighty minutes, plus one ASan build of the
 protocol libraries of about ten; a matrix over the targets would run them in
-parallel instead. On failure the job uploads `fuzz/artifacts/`: that
-directory holds the input that failed.
+parallel instead. On failure the job uploads `fuzz/artifacts/` as
+`fuzz-artifacts`: that directory holds the input that failed, and `cargo fuzz
+run <target> <file>` replays it.
 
 Pitfalls, all met on vuo's `fuzz-smoke` job first:
 
