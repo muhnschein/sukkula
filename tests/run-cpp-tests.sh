@@ -167,10 +167,12 @@ for e in $engines; do
         *"HOST-TEXT: Vastaanota"*) ;;
         *) fail "host app ($e engine): the Finnish catalogue did not load through main.cpp" ;;
     esac
-    case $out in
-        *"HOST-TEXT: Muille näkyy nimellä "*) ;;
-        *) fail "host app ($e engine): the engine's settings never reached the main page" ;;
-    esac
+    # The receive radar shows the name the engine reports under this
+    # phone: the stub's own, or the real engine's for a host without
+    # /etc/hw-release.
+    if [ "$e" = rust ]; then name=Sailfish; else name="Stub Phone"; fi
+    printf '%s\n' "$out" | grep -qxF "HOST-TEXT: $name" ||
+        fail "host app ($e engine): the engine's settings never reached the main page"
     if [ "$e" = rust ]; then
         [ -d "$home/.local/share/sukkula/sukkula" ] || fail "the real engine made no data dir under sukkula/sukkula"
         [ -d "$home/Downloads/Sukkula" ] || fail "the real engine made no ~/Downloads/Sukkula"

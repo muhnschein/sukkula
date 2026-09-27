@@ -20,6 +20,7 @@ use super::wire::{self, Answer, PeerMsg};
 use super::{CLEANUP_WAIT, CODE_WORDS, Inner, PEER_LABEL, RECORD_BYTES, code, mailbox};
 use crate::adapter::{Outgoing, OutgoingFile};
 use crate::api::{Direction, ErrorCode, ErrorInfo, Event, SendTarget, TransferId};
+use crate::by_code::{self, bad_file};
 use crate::ctx::TransferHandle;
 
 /// Checks the request, registers the transfer and starts it. Returns as
@@ -161,41 +162,11 @@ fn declined() -> ErrorInfo {
     ErrorInfo::new(ErrorCode::Refused, "the receiver declined")
 }
 
-fn bad_file() -> ErrorInfo {
-    ErrorInfo::new(ErrorCode::BadFile, "the file cannot be read")
-}
-
-/// Opens the file to send, once, and checks the handle rather than the
-/// path: a regular file of exactly the size the hub measured. The open is
-/// read-only and non-blocking, so a FIFO put in the file's place after the
-/// hub looked cannot hang it (and is then refused by the check). Nothing
-/// after this looks at the path again.
-#[allow(clippy::disallowed_methods)] // S3 bans opening for writing; this is O_RDONLY.
+/// Opens the file to send, once, and checks the handle (`by_code.rs`).
 async fn open_checked(file: &OutgoingFile, limit: Duration) -> Result<tokio::fs::File, ErrorInfo> {
-    use rustix::fs::{Mode, OFlags};
-    let path = file.path.clone();
-    let expected = file.size;
-    let opening = tokio::task::spawn_blocking(move || {
-        let flags = OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC | OFlags::NOCTTY;
-        let fd = rustix::fs::open(&path, flags, Mode::empty()).map_err(|_| bad_file())?;
-        let f = std::fs::File::from(fd);
-        let meta = f.metadata().map_err(|_| bad_file())?;
-        if !meta.is_file() {
-            return Err(ErrorInfo::new(ErrorCode::BadFile, "not a regular file"));
-        }
-        if meta.len() != expected {
-            return Err(ErrorInfo::new(
-                ErrorCode::BadFile,
-                "the file changed since it was chosen",
-            ));
-        }
-        Ok(f)
-    });
-    let f = tokio::time::timeout(limit, opening)
-        .await
-        .map_err(|_| bad_file())?
-        .map_err(|_| bad_file())??;
-    Ok(tokio::fs::File::from_std(f))
+    Ok(tokio::fs::File::from_std(
+        by_code::open_checked(file, limit).await?,
+    ))
 }
 
 async fn send_text(

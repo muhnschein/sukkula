@@ -38,8 +38,8 @@ waivers="$rules/waivers.conf"
 ARCH=aarch64
 ICON_SIZES="86x86 108x108 128x128 172x172"
 
-# Spec §2: these three and nothing else.
-POLICY_PERMISSIONS="Bluetooth Downloads Internet"
+# Spec §2: these and nothing else, sorted.
+POLICY_PERMISSIONS="Bluetooth Documents Downloads Internet Music Pictures RemovableMedia Videos"
 # The sandbox names the app's data path is built from. Fixed: the LocalSend
 # certificate and the settings live under them (spec F-LS2), so renaming
 # either silently gives every user a new identity.
@@ -892,7 +892,7 @@ else
         done <<< "$sailjail"
         note "[1.4.x] [X-Sailjail] keys, OrganizationName, ApplicationName and Permissions checked"
 
-        # P.2: exactly spec §2's three. Each one missing is a feature that
+        # P.2: exactly spec §2's list. Each one missing is a feature that
         # does not work in the sandbox; each one extra is reach nobody
         # reviewed.
         have=$(tr ';' '\n' <<< "$permissions" | grep -v '^[[:space:]]*$' | sort -u | tr '\n' ' ' | sed 's/ $//')
@@ -901,7 +901,7 @@ else
         else
             for p in $have; do
                 [[ " $POLICY_PERMISSIONS " == *" $p "* ]] ||
-                    fail P.2 "$p" "spec §2 grants Internet;Bluetooth;Downloads and nothing else"
+                    fail P.2 "$p" "spec §2 grants $POLICY_PERMISSIONS and nothing else"
             done
             for p in $POLICY_PERMISSIONS; do
                 [[ " $have " == *" $p "* ]] ||

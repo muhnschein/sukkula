@@ -30,8 +30,10 @@
 //! # Lifecycle
 //!
 //! Receiving runs the HTTPS server; discovery runs announcements, the HTTP
-//! register fallback and the peer table; the multicast socket runs while
-//! either does. Every task is tracked, and every one selects on a token
+//! register fallback and the peer table, and the server too, serving only
+//! `register` and `info` while Receive is off: LocalSend answers an
+//! announcement by registering with the server it names, and in no other
+//! way. The multicast socket runs while either does. Every task is tracked, and every one selects on a token
 //! that the engine's shutdown cancels. Stopping receiving with a transfer
 //! running lets that transfer finish (the adapter contract) but serves
 //! only its sender; the listener closes when it ends.
@@ -705,7 +707,8 @@ impl Adapter for LocalSend {
                 if let Some(old) = state.server.take() {
                     old.wait().await;
                 }
-                state.server = Some(Server::start(self.shared.clone(), identity.clone()).await?);
+                state.server =
+                    Some(Server::start(self.shared.clone(), identity.clone(), true).await?);
             }
             self.shared.receiving.store(true, Ordering::Release);
             self.update_multicast(&mut state, &identity).await;
@@ -738,6 +741,20 @@ impl Adapter for LocalSend {
             let identity = self.identity().await?;
             let mut state = self.state.lock().await;
             self.shared.discovering.store(true, Ordering::Release);
+            // LocalSend answers our announcements by registering with the
+            // server they name, and only that way: without one listening,
+            // nobody we announce to is heard from (F-LS1).
+            if !state.server.as_ref().is_some_and(|s| !s.stopped()) {
+                if let Some(old) = state.server.take() {
+                    old.wait().await;
+                }
+                match Server::start(self.shared.clone(), identity.clone(), false).await {
+                    Ok(server) => state.server = Some(server),
+                    // Taken by another LocalSend: discovery goes on with
+                    // what multicast and the register fallback find.
+                    Err(_) => tracing::debug!("LocalSend port busy; discovering without a server"),
+                }
+            }
             self.update_multicast(&mut state, &identity).await;
             if state.discovery.is_none() {
                 let cancel = self.shared.ctx.shutdown_token().child_token();
@@ -759,6 +776,14 @@ impl Adapter for LocalSend {
             if let Some((cancel, task)) = state.discovery.take() {
                 cancel.cancel();
                 let _ = task.await;
+            }
+            // The server discovery kept listening, unless Receive wants it.
+            if !self.shared.receiving()
+                && let Some(server) = state.server.as_ref()
+                && server.drain()
+                && let Some(server) = state.server.take()
+            {
+                server.wait().await;
             }
             self.shared.clear_peers();
             if let Some(identity) = self.identity.get().cloned() {

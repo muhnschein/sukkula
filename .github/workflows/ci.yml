@@ -1,9 +1,10 @@
 # The gate (spec §7). A change merges only when every job here is green.
 #
-# `make check` runs the same commands, job for job, minus the three that
+# `make check` runs the same commands, job for job, minus the four that
 # need the network rather than the tree: deny (the advisory database),
-# vendor (the upstream fetch) and wormhole-interop (the Python client from
-# PyPI); the Makefile says which. The device RPM, and Jolla's
+# vendor (the upstream fetch), wormhole-interop (the Python client from
+# PyPI) and croc-interop (croc from Go's module proxy); the Makefile says
+# which. The device RPM, and Jolla's
 # own validator on it, are rpm.yml's: they need the Sailfish SDK.
 name: ci
 
@@ -94,7 +95,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        feature: [localsend, quickshare, wormhole, bluetooth, none]
+        feature: [localsend, quickshare, wormhole, croc, bluetooth, none]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: ./ci/apt-install.sh dbus libdbus-1-dev pkg-config
@@ -243,6 +244,54 @@ jobs:
           grep -qE '^test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored' "$RUNNER_TEMP/interop.log" || {
             echo "::error::no interop test ran"; exit 1; }
 
+  # Sukkula against croc itself, v11.5.4's and v10.7.0's Go binaries, in
+  # both directions and as the relay (spec §7, the adapters layer).
+  # Offline once built: the binary is its own relay on loopback. Each built
+  # from its tag's commit, checked by hash, with -mod=readonly: every
+  # module is the one croc's go.sum names, checked against Go's checksum
+  # database, so the test moves only when a commit here does.
+  croc-interop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          # croc 11's go.mod asks for 1.27; croc 10 builds with it too.
+          go-version: "1.27"
+          cache: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: croc-interop
+      # Each tag checked against the commit it was reviewed at: a tag can
+      # be moved.
+      - name: croc 11 and croc 10, pinned
+        run: |
+          build() {
+            src="$RUNNER_TEMP/croc-src-$1"
+            git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$2" https://github.com/schollz/croc "$src"
+            test "$(git -C "$src" rev-parse HEAD)" = "$3"
+            (cd "$src" && GOFLAGS=-mod=readonly GOSUMDB=sum.golang.org GOTOOLCHAIN=local \
+              go build -o "$RUNNER_TEMP/croc-$1/croc" .)
+            "$RUNNER_TEMP/croc-$1/croc" --version
+          }
+          build 11 v11.5.4 15a4577e56bf6bbad116576e448bd33120bd90c1
+          build 10 v10.7.0 2d9db41befec73287d727506409d87493f513a00
+      # --include-ignored, and the count checked, as for the wormhole
+      # client: a run that selected none of the tests would prove nothing.
+      # Once with croc 11 as the relay and the peer, croc 10 peers on its
+      # relay too; once with croc 10 throughout.
+      - name: Sukkula and croc, both ways
+        run: |
+          set -o pipefail
+          for v in 11 10; do
+            SUKKULA_CROC="$RUNNER_TEMP/croc-$v/croc" SUKKULA_CROC10="$RUNNER_TEMP/croc-10/croc" \
+              cargo test -p sukkula-engine --no-default-features --features croc --locked \
+              --test croc_interop -- --include-ignored 2>&1 | tee "$RUNNER_TEMP/interop-$v.log"
+            grep -qE '^test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored' "$RUNNER_TEMP/interop-$v.log" || {
+              echo "::error::no interop test ran against croc $v"; exit 1; }
+          done
+
   # The engine cross-compiled for aarch64 on every pull request: no x86-only
   # code, no host-only C dependency, linked into its library with the four
   # entry points its only exports, and a probe linked against that, all
@@ -376,7 +425,7 @@ jobs:
   # it rather than at intake. Mandatory (spec §7). `sfdk check -s harbour`
   # on the real RPM is the authority and runs in rpm.yml; this asks the same
   # questions of the sources, plus Sukkula's own stricter policy
-  # (aarch64 and 5.2+ only, exactly Internet;Bluetooth;Downloads).
+  # (aarch64 and 5.2+ only, and exactly spec §2's Sailjail permissions).
   # docs/HARBOUR.md.
   harbour:
     runs-on: ubuntu-latest

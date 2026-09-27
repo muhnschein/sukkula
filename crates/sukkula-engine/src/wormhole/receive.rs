@@ -33,8 +33,8 @@ use super::transit::{self, Role};
 use super::wire::{self, OfferMsg, PeerMsg, TheirTransit};
 use super::{CLEANUP_WAIT, Inner, MAX_EMPTY_RECORDS, code, mailbox};
 use crate::api::{ErrorCode, ErrorInfo, Event, TransferId};
+use crate::by_code::declined_error;
 use crate::ctx::{Accepted, Declined, TransferHandle, cancelled};
-use sukkula_core::consent::Refusal;
 
 /// The v1 decline, as the reference clients word it.
 const REJECTED: &str = "transfer rejected";
@@ -46,7 +46,7 @@ pub(super) async fn start(inner: Arc<Inner>, raw_code: String) -> Result<Transfe
     let servers = Servers::from_settings(&inner.ctx.settings().wormhole)?;
     let shutdown = inner.ctx.shutdown_token().clone();
     let (accepted, session, their) = {
-        let _slot = inner.connecting_slot().ok_or_else(|| {
+        let _slot = inner.connecting.slot().ok_or_else(|| {
             ErrorInfo::new(ErrorCode::TooLarge, "too many receives are connecting")
         })?;
         let before = CatchUnwind::new(until_accepted(&inner, code, &servers));
@@ -183,25 +183,6 @@ async fn read_offer(
             PeerMsg::Answer(_) => return Err(protocol("the sender answered an offer nobody made")),
             PeerMsg::Other => {}
         }
-    }
-}
-
-fn declined_error(d: &Declined) -> ErrorInfo {
-    match d {
-        Declined::Invalid(
-            OfferError::FileTooLarge(_) | OfferError::OfferTooLarge | OfferError::TextTooLarge,
-        ) => ErrorInfo::new(ErrorCode::TooLarge, "the offer is over the limits"),
-        Declined::Invalid(_) => ErrorInfo::new(ErrorCode::Refused, "the offer was malformed"),
-        Declined::Refused(Refusal::Declined) => ErrorInfo::new(ErrorCode::Refused, "declined"),
-        Declined::Refused(Refusal::TimedOut) => {
-            ErrorInfo::new(ErrorCode::Refused, "the offer was not answered in time")
-        }
-        Declined::Refused(Refusal::Busy) => {
-            ErrorInfo::new(ErrorCode::Refused, "too many offers are waiting")
-        }
-        Declined::Refused(Refusal::Shutdown) => cancelled(),
-        Declined::NoSpace => ErrorInfo::new(ErrorCode::Storage, "not enough free space"),
-        Declined::Busy => ErrorInfo::new(ErrorCode::TooLarge, "too many transfers running"),
     }
 }
 

@@ -6,6 +6,7 @@ singleton Theme 1.0 Theme.qml
 singleton Clipboard 1.0 Clipboard.qml
 singleton Format 1.0 Format.qml
 singleton StandardPaths 1.0 StandardPaths.qml
+singleton Screen 1.0 Screen.qml
 PageStatus 1.0 PageStatus.qml
 Orientation 1.0 Orientation.qml
 PageStackAction 1.0 PageStackAction.qml
@@ -20,6 +21,7 @@ DialogHeader 1.0 DialogHeader.qml
 PageHeader 1.0 PageHeader.qml
 SectionHeader 1.0 SectionHeader.qml
 SilicaFlickable 1.0 SilicaFlickable.qml
+PagedView 1.0 PagedView.qml
 PullDownMenu 1.0 PullDownMenu.qml
 MenuItem 1.0 MenuItem.qml
 ContextMenu 1.0 ContextMenu.qml

@@ -4,11 +4,12 @@ import Sailfish.Silica 1.0
 import "../components"
 
 /*
- * A Magic Wormhole send (F-MW1): the code to read out, big, and the same
- * code as a QR code, then the transfer's progress.
+ * A Magic Wormhole or croc send (F-MW1, F-CR1): the code to read out, big,
+ * for Magic Wormhole the same code as a QR code, then the transfer's
+ * progress. croc has no URI a QR code could carry.
  *
- * The code comes from the engine, but its number part is the mailbox
- * server's, so it is shown as plain text like everything else.
+ * The code comes from the engine, but a wormhole code's number part is the
+ * mailbox server's, so it is shown as plain text like everything else.
  */
 Page {
     id: page
@@ -16,6 +17,8 @@ Page {
 
     property QtObject engine
     property var transferId: -1
+    /// "wormhole" or "croc".
+    property string protocol: "wormhole"
 
     property string code: ""
     property var qr: null
@@ -24,7 +27,7 @@ Page {
     readonly property bool active: page.transfer !== null && page.transfer.state === "active"
 
     function refresh() {
-        var c = page.engine.wormholeCode(page.transferId)
+        var c = page.engine.sendCode(page.transferId)
         if (c) {
             page.code = c.code
             page.qr = c.qr
@@ -62,7 +65,7 @@ Page {
     Connections {
         target: page.engine
         // Qt 5.6 handler syntax.
-        onWormholeCodeArrived: {
+        onCodeArrived: {
             if (transferId === page.transferId) {
                 page.refresh()
             }
@@ -93,7 +96,7 @@ Page {
             spacing: Theme.paddingLarge
 
             PageHeader {
-                title: "Magic Wormhole"
+                title: page.engine.protocolName(page.protocol)
             }
 
             BusyIndicator {

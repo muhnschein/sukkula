@@ -21,9 +21,9 @@ libfuzzer-sys = "0.4"
 arbitrary = { version = "1", features = ["derive"] }
 serde_json = "1"
 sukkula-core = { path = "../crates/sukkula-core" }
-# The three network protocols, for their parsers' targets. Not Bluetooth:
+# The four network protocols, for their parsers' targets. Not Bluetooth:
 # its parsers read D-Bus replies, which its own sweeps cover.
-sukkula-engine = { path = "../crates/sukkula-engine", default-features = false, features = ["localsend", "quickshare", "wormhole"] }
+sukkula-engine = { path = "../crates/sukkula-engine", default-features = false, features = ["localsend", "quickshare", "wormhole", "croc"] }
 # The Quick Share targets play the sender: they drive rqs_lib's
 # InboundRequest -- the same path dependency the engine uses, so one crate
 # -- and seal the frames they write the way it expects: prost for its
@@ -41,6 +41,9 @@ tokio = { version = "1", default-features = false }
 # wormhole_mailbox restates magic-wormhole's server-message types, to hold
 # the guard to what the library would make of a message.
 serde = { version = "1", features = ["derive"] }
+# The croc targets read base64 the way the engine's own messages carry
+# bytes: the version the engine uses.
+base64 = "0.22"
 
 [[bin]]
 name = "name_sanitize"
@@ -150,6 +153,41 @@ bench = false
 [[bin]]
 name = "quickshare_mdns"
 path = "fuzz_targets/quickshare_mdns.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "croc_code"
+path = "fuzz_targets/croc_code.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "croc_pake"
+path = "fuzz_targets/croc_pake.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "croc_banner"
+path = "fuzz_targets/croc_banner.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "croc_control"
+path = "fuzz_targets/croc_control.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "croc_file_list"
+path = "fuzz_targets/croc_file_list.rs"
 test = false
 doc = false
 bench = false

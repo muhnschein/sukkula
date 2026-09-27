@@ -28,6 +28,41 @@ pub fn assert_clean(what: &str, input: &str, violation: Option<String>) {
     }
 }
 
+/// `data` as a `serde_json::Value`, for restating JSON the engine took;
+/// `None` for the JSON the engine may take and `Value` may not: inside
+/// something skipped (an unknown key, a raw value kept and never read)
+/// serde_json checks neither a lone surrogate escape (Go reads it as
+/// U+FFFD) nor a number's range (`1e999`), and `Value` refuses both. Any
+/// other failure is the engine taking what is not JSON, and panics as
+/// `what`.
+#[must_use]
+pub fn value_of(data: &[u8], what: &str) -> Option<serde_json::Value> {
+    match serde_json::from_slice(data) {
+        Ok(v) => Some(v),
+        Err(e)
+            if ["surrogate", "code point", "number out of range"]
+                .iter()
+                .any(|k| e.to_string().contains(k)) =>
+        {
+            None
+        }
+        Err(e) => panic!("{what} from no JSON: {e}"),
+    }
+}
+
+/// `v` as serde's derive reads a struct: an object, or its fields as an
+/// array in declaration order, `fields`. A restatement that reads keys
+/// has to see both as the same object, or it reports the harness.
+#[must_use]
+pub fn as_struct(v: serde_json::Value, fields: &[&str]) -> serde_json::Value {
+    match v {
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Object(fields.iter().map(|f| (*f).to_owned()).zip(items).collect())
+        }
+        v => v,
+    }
+}
+
 /// What every offer the consent dialog is shown keeps, whichever protocol
 /// it came over: S1 on every name, S2 on the sender, model and message,
 /// S4/S6 on every size and the count, a clean MIME type and PIN. The same

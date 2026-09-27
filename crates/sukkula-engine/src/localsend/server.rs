@@ -133,6 +133,8 @@ struct Inner {
     acceptor: TlsAcceptor,
     /// Whether new offers are taken: the Receive switch. Off with a session
     /// still running means draining: only that session's sender is served.
+    /// Off while discovery runs means listening for registrations only
+    /// ([`Inner::registering`]).
     accepting: AtomicBool,
     /// Cancelled when receiving stops; connections other than the running
     /// session's then end.
@@ -212,7 +214,8 @@ struct Caller {
 type Reply = Response<Full<Bytes>>;
 
 impl Server {
-    /// Binds `port` on IPv4 and starts accepting.
+    /// Binds `port` on IPv4 and starts serving: offers too when
+    /// `accepting` (receiving), registrations alone otherwise (discovering).
     ///
     /// # Errors
     ///
@@ -220,6 +223,7 @@ impl Server {
     pub(super) async fn start(
         shared: Arc<Shared>,
         identity: Arc<Identity>,
+        accepting: bool,
     ) -> Result<Server, ErrorInfo> {
         let config = tls::server_config(&identity)?;
         let unavailable =
@@ -228,7 +232,7 @@ impl Server {
             .map_err(unavailable)?;
         let port = listener.local_addr().map_err(unavailable)?.port();
         shared.set_port(port);
-        let inner = Arc::new(Inner::new(shared.clone(), identity, config));
+        let inner = Arc::new(Inner::new(shared.clone(), identity, config, accepting));
         let task = shared.tasks.spawn(accept_loop(inner.clone(), listener));
         Ok(Server { inner, task })
     }
@@ -252,7 +256,9 @@ impl Server {
     /// Stops taking offers: a pending offer is declined, every connection
     /// but the running session's ends. Returns true when nothing is left
     /// running and the server has stopped; otherwise it stops by itself when
-    /// the session ends.
+    /// the session ends -- unless discovery is running, which keeps it
+    /// listening for registrations until [`drain`](Self::drain) is called
+    /// again with discovery stopped.
     pub(super) fn drain(&self) -> bool {
         self.inner.drain()
     }
@@ -268,13 +274,14 @@ impl Inner {
         shared: Arc<Shared>,
         identity: Arc<Identity>,
         config: Arc<rustls::ServerConfig>,
+        accepting: bool,
     ) -> Inner {
         let stop = shared.ctx.shutdown_token().child_token();
         Inner {
             shared,
             identity,
             acceptor: TlsAcceptor::from(config),
-            accepting: AtomicBool::new(true),
+            accepting: AtomicBool::new(accepting),
             drain: Mutex::new(CancellationToken::new()),
             closing: stop.child_token(),
             stop,
@@ -322,11 +329,27 @@ impl Inner {
                 Slot::Active(_) => false,
             }
         };
-        lock(&self.drain).cancel();
-        if idle {
+        // The connections open now end (but the session's); the ones
+        // discovery still lets in get a token of their own.
+        std::mem::replace(&mut *lock(&self.drain), CancellationToken::new()).cancel();
+        let stop = idle && !self.shared.discovering();
+        if stop {
             self.closing.cancel();
         }
-        idle
+        stop
+    }
+
+    /// Whether `register` and `info` are served: while receiving, and while
+    /// discovery runs, since LocalSend answers our announcements by
+    /// registering with the server they name (F-LS1).
+    fn registering(&self) -> bool {
+        self.accepting.load(Ordering::Acquire) || self.shared.discovering()
+    }
+
+    /// Whether the listener closes when the slot frees: neither offers nor
+    /// registrations are wanted.
+    fn unwanted(&self) -> bool {
+        !self.registering()
     }
 }
 
@@ -373,7 +396,7 @@ async fn accept_loop(inner: Arc<Inner>, listener: TcpListener) {
         if !inner.shared.ctx.permits(ip) {
             continue;
         }
-        if !inner.accepting.load(Ordering::Acquire) && !inner.is_session_sender(ip) {
+        if !inner.registering() && !inner.is_session_sender(ip) {
             continue;
         }
         if !lock(&inner.connect_limiter).allow(ip, Instant::now()) {
@@ -630,7 +653,7 @@ async fn route(inner: &Arc<Inner>, caller: &Caller, req: Request<Incoming>) -> R
 }
 
 fn info(inner: &Inner, caller: &Caller) -> Reply {
-    if !inner.accepting.load(Ordering::Acquire) {
+    if !inner.registering() {
         return status(StatusCode::FORBIDDEN, "Not receiving");
     }
     if !inner.shared.ctx.allow_discovery(caller.ip) {
@@ -640,7 +663,7 @@ fn info(inner: &Inner, caller: &Caller) -> Reply {
 }
 
 async fn register(inner: &Inner, caller: &Caller, req: Request<Incoming>) -> Reply {
-    if !inner.accepting.load(Ordering::Acquire) {
+    if !inner.registering() {
         return status(StatusCode::FORBIDDEN, "Not receiving");
     }
     if !inner.shared.ctx.allow_discovery(caller.ip) {
@@ -1150,7 +1173,7 @@ impl Inner {
         let mut slot = lock(&self.slot);
         if matches!(&*slot, Slot::Active(a) if a.session_id == session_id) {
             *slot = Slot::Free;
-            if !self.accepting.load(Ordering::Acquire) {
+            if self.unwanted() {
                 self.closing.cancel();
             }
         }
@@ -1210,7 +1233,7 @@ impl Drop for PendingGuard<'_> {
         let mut slot = lock(&self.inner.slot);
         if matches!(&*slot, Slot::Pending { id, .. } if *id == self.id) {
             *slot = Slot::Free;
-            if !self.inner.accepting.load(Ordering::Acquire) {
+            if self.inner.unwanted() {
                 self.inner.closing.cancel();
             }
         }
@@ -1417,7 +1440,7 @@ mod tests {
         let (_dir, shared) = crate::localsend::tests::shared_for_tests(true);
         let identity = Arc::new(super::super::identity::tests::pair(0));
         let config = tls::server_config(&identity).unwrap();
-        let inner = Arc::new(Inner::new(shared, identity, config));
+        let inner = Arc::new(Inner::new(shared, identity, config, true));
         let (uploads, _rx) = mpsc::channel(1);
         *lock(&inner.slot) = Slot::Active(Active {
             session_id: "s".into(),

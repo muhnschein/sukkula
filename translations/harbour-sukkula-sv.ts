@@ -9,11 +9,6 @@
         <translation>Om Sukkula</translation>
     </message>
     <message>
-        <source>Sends and receives files and texts over LocalSend, Quick Share, Magic Wormhole and Bluetooth.</source>
-        <extracomment>About page: what the app does.</extracomment>
-        <translation>Skickar och tar emot filer och texter via LocalSend, Quick Share, Magic Wormhole och Bluetooth.</translation>
-    </message>
-    <message>
         <source>Version %1</source>
         <extracomment>About page: %1 is the version number.</extracomment>
         <translation>Version %1</translation>
@@ -32,6 +27,19 @@
         <source>Sukkula is Finnish for “shuttle”: it carries things back and forth.</source>
         <extracomment>About page: the name.</extracomment>
         <translation>Sukkula är finska för ”skyttel”: den bär saker fram och tillbaka.</translation>
+    </message>
+    <message>
+        <source>Sends and receives files and texts over LocalSend, Quick Share, Magic Wormhole, croc and Bluetooth.</source>
+        <extracomment>About page: what the app does.</extracomment>
+        <translation>Skickar och tar emot filer och texter via LocalSend, Quick Share, Magic Wormhole, croc och Bluetooth.</translation>
+    </message>
+</context>
+<context>
+    <name>CodeTile</name>
+    <message>
+        <source>Tap for the QR code</source>
+        <extracomment>Under a code on the send screen: tapping shows it big, with a QR code.</extracomment>
+        <translation>Tryck för QR-koden</translation>
     </message>
 </context>
 <context>
@@ -144,7 +152,7 @@
     </message>
     <message>
         <source>Send only</source>
-        <extracomment>The protocol can only send from this phone (Bluetooth, Wormhole).</extracomment>
+        <extracomment>The protocol can only send from this phone, or receive by a typed code (Bluetooth, Magic Wormhole, croc).</extracomment>
         <translation>Endast skicka</translation>
     </message>
     <message>
@@ -192,26 +200,16 @@
         <translation>Något gick fel.</translation>
     </message>
     <message>
-        <source>A file could not be read. Sukkula can read files in Downloads only.</source>
-        <translation>En fil kunde inte läsas. Sukkula kan bara läsa filer i Downloads.</translation>
+        <source>A file could not be read. Sukkula can send files from Downloads, Documents, Music, Pictures, Videos and memory cards only.</source>
+        <translation>En fil kunde inte läsas. Sukkula kan bara skicka filer från Hämtningar, Dokument, Musik, Bilder och Videor och från minneskort.</translation>
     </message>
 </context>
 <context>
-    <name>MainPage</name>
+    <name>HistoryPage</name>
     <message>
         <source>Copied</source>
         <extracomment>Shown after a received text was copied to the clipboard.</extracomment>
         <translation>Kopierat</translation>
-    </message>
-    <message>
-        <source>About Sukkula</source>
-        <extracomment>Pulley menu: the page with the version and licence.</extracomment>
-        <translation>Om Sukkula</translation>
-    </message>
-    <message>
-        <source>Settings</source>
-        <extracomment>Pulley menu.</extracomment>
-        <translation>Inställningar</translation>
     </message>
     <message>
         <source>Clear list</source>
@@ -219,29 +217,9 @@
         <translation>Rensa listan</translation>
     </message>
     <message>
-        <source>Receive with a code</source>
-        <extracomment>Pulley menu: receive over Magic Wormhole by typing the sender&apos;s code.</extracomment>
-        <translation>Ta emot med kod</translation>
-    </message>
-    <message>
-        <source>Sukkula could not start: %1</source>
-        <extracomment>The engine failed to start; %1 says why.</extracomment>
-        <translation>Sukkula kunde inte starta: %1</translation>
-    </message>
-    <message>
-        <source>Nearby devices can offer you files</source>
-        <extracomment>Receive mode, at the top: what receiving means.</extracomment>
-        <translation>Enheter i närheten kan erbjuda dig filer</translation>
-    </message>
-    <message>
-        <source>Shown to others as %1</source>
-        <extracomment>The name other devices see; %1 is that name.</extracomment>
-        <translation>Visas för andra som %1</translation>
-    </message>
-    <message>
-        <source>%1: %2</source>
-        <extracomment>A protocol and its state, e.g. &quot;LocalSend: Ready&quot;.</extracomment>
-        <translation>%1: %2</translation>
+        <source>History</source>
+        <extracomment>Page title: what was sent and received.</extracomment>
+        <translation>Historik</translation>
     </message>
     <message>
         <source>Transfers</source>
@@ -259,67 +237,41 @@
         <translation>Kopiera</translation>
     </message>
     <message>
-        <source>Waiting for offers. Nothing is saved until you accept it.</source>
-        <extracomment>Receive mode with nothing received yet.</extracomment>
-        <translation>Väntar på erbjudanden. Inget sparas förrän du godkänner det.</translation>
+        <source>Nothing sent or received yet.</source>
+        <extracomment>History page with nothing sent or received yet.</extracomment>
+        <translation>Inget har skickats eller tagits emot än.</translation>
+    </message>
+</context>
+<context>
+    <name>MainPage</name>
+    <message>
+        <source>Settings</source>
+        <extracomment>Pulley menu.</extracomment>
+        <translation>Inställningar</translation>
+    </message>
+    <message>
+        <source>Sukkula could not start: %1</source>
+        <extracomment>The engine failed to start; %1 says why.</extracomment>
+        <translation>Sukkula kunde inte starta: %1</translation>
     </message>
     <message>
         <source>Cancel sending</source>
         <extracomment>Pulley menu in Send mode: stop the send that is running.</extracomment>
         <translation>Avbryt sändningen</translation>
     </message>
-</context>
-<context>
-    <name>ModeSwitch</name>
     <message>
-        <source>Receive</source>
-        <extracomment>The mode switch at the foot of the main page: receive files.</extracomment>
-        <translation>Ta emot</translation>
+        <source>History</source>
+        <extracomment>Pulley menu: the page with what was sent and received.</extracomment>
+        <translation>Historik</translation>
     </message>
     <message>
         <source>Send</source>
-        <extracomment>The mode switch at the foot of the main page: send files.</extracomment>
+        <extracomment>The main page&apos;s tabs.</extracomment>
         <translation>Skicka</translation>
     </message>
-</context>
-<context>
-    <name>PayloadPage</name>
     <message>
-        <source>Clear</source>
-        <extracomment>Pulley menu on the &quot;What to send&quot; page: take everything off it.</extracomment>
-        <translation>Rensa</translation>
-    </message>
-    <message>
-        <source>Add file</source>
-        <extracomment>Pulley menu on the &quot;What to send&quot; page: choose a file with the file picker.
-----------
-Opens the file picker.</extracomment>
-        <translation>Lägg till fil</translation>
-    </message>
-    <message>
-        <source>What to send</source>
-        <extracomment>Page title: choose the files and text to send.</extracomment>
-        <translation>Vad ska skickas</translation>
-    </message>
-    <message>
-        <source>Outside Downloads: Sukkula may not be allowed to read it.</source>
-        <extracomment>&quot;What to send&quot; page: a file outside ~/Downloads, which the sandbox may not let Sukkula read.</extracomment>
-        <translation>Utanför Downloads: Sukkula kanske inte får läsa den.</translation>
-    </message>
-    <message>
-        <source>Text to send (optional)</source>
-        <extracomment>Placeholder of the text box on the &quot;What to send&quot; page.</extracomment>
-        <translation>Text att skicka (valfritt)</translation>
-    </message>
-    <message>
-        <source>Text</source>
-        <extracomment>Label of the text box on the &quot;What to send&quot; page.</extracomment>
-        <translation>Text</translation>
-    </message>
-    <message>
-        <source>Then go back and tap who to send it to.</source>
-        <extracomment>&quot;What to send&quot; page: how to go on once something is chosen.</extracomment>
-        <translation>Gå sedan tillbaka och tryck på vem det ska skickas till.</translation>
+        <source>Receive</source>
+        <translation>Ta emot</translation>
     </message>
 </context>
 <context>
@@ -333,6 +285,76 @@ Opens the file picker.</extracomment>
         <source>%1 · %2</source>
         <extracomment>A peer in the device list: its protocol (%1), then its model or address (%2).</extracomment>
         <translation>%1 · %2</translation>
+    </message>
+</context>
+<context>
+    <name>ReceiveView</name>
+    <message>
+        <source>Receive with a code</source>
+        <extracomment>Receive screen, under the cloud: tapping it shows Magic Wormhole and croc.</extracomment>
+        <translation>Ta emot med kod</translation>
+    </message>
+    <message>
+        <source>Type the code</source>
+        <extracomment>Receive screen: under Magic Wormhole&apos;s name on its tile.
+----------
+Receive screen: under croc&apos;s name on its tile.</extracomment>
+        <translation>Skriv koden</translation>
+    </message>
+    <message>
+        <source>%1 of %2</source>
+        <extracomment>Progress of a transfer: %1 bytes so far, %2 bytes in all, both formatted.</extracomment>
+        <translation>%1 av %2</translation>
+    </message>
+    <message>
+        <source>Saved in Downloads/Sukkula</source>
+        <extracomment>Receive screen: files arrived.</extracomment>
+        <translation>Sparat i Downloads/Sukkula</translation>
+    </message>
+    <message>
+        <source>Received. It is in History.</source>
+        <extracomment>Receive screen: a text arrived; it is on the History page.</extracomment>
+        <translation>Mottaget. Det finns i historiken.</translation>
+    </message>
+    <message>
+        <source>Cancelled</source>
+        <extracomment>A transfer was stopped by one of the two sides.</extracomment>
+        <translation>Avbrutet</translation>
+    </message>
+    <message>
+        <source>Failed: %1</source>
+        <extracomment>A transfer failed; %1 says why.</extracomment>
+        <translation>Misslyckades: %1</translation>
+    </message>
+    <message>
+        <source>Switching on…</source>
+        <extracomment>Receive screen: Receive mode was asked for and is not on yet.</extracomment>
+        <translation>Slås på…</translation>
+    </message>
+    <message>
+        <source>Waiting for offers. Nothing is saved until you accept it.</source>
+        <extracomment>Receive screen with nothing coming yet.</extracomment>
+        <translation>Väntar på erbjudanden. Inget sparas förrän du godkänner det.</translation>
+    </message>
+    <message>
+        <source>Nobody nearby can see this phone.</source>
+        <extracomment>Receive screen: no protocol could start.</extracomment>
+        <translation>Ingen i närheten kan se den här telefonen.</translation>
+    </message>
+    <message>
+        <source>Starting…</source>
+        <extracomment>Receive screen: the protocols are starting.</extracomment>
+        <translation>Startar…</translation>
+    </message>
+    <message>
+        <source>Visible over %1</source>
+        <extracomment>Receive screen: the protocols this phone can be found over; %1 lists them.</extracomment>
+        <translation>Synlig via %1</translation>
+    </message>
+    <message>
+        <source>%1 could not start: %2</source>
+        <extracomment>A protocol could not start; %1 is its name, %2 why.</extracomment>
+        <translation>%1 kunde inte starta: %2</translation>
     </message>
 </context>
 <context>
@@ -413,12 +435,34 @@ Opens the file picker.</extracomment>
         <extracomment>Send screen: nobody found and discovery is not running.</extracomment>
         <translation>Inga enheter i närheten.</translation>
     </message>
+    <message>
+        <source>croc sends files, or one text on its own.</source>
+        <extracomment>Send screen: croc tapped with a text and something else chosen.</extracomment>
+        <translation>croc skickar filer, eller en text för sig.</translation>
+    </message>
+    <message>
+        <source>That is as many files as one send can take.</source>
+        <extracomment>Send screen: the most files one send can carry are chosen already.</extracomment>
+        <translation>Fler filer ryms inte i en sändning.</translation>
+    </message>
+    <message>
+        <source>More options</source>
+        <extracomment>Send screen, under the cloud: tapping it shows Magic Wormhole and croc.</extracomment>
+        <translation>Fler alternativ</translation>
+    </message>
+    <message>
+        <source>Send with a code</source>
+        <extracomment>Send screen: under Magic Wormhole&apos;s name on its tile.
+----------
+Send screen: under croc&apos;s name on its tile.</extracomment>
+        <translation>Skicka med kod</translation>
+    </message>
 </context>
 <context>
     <name>SettingsPage</name>
     <message>
         <source>About Sukkula</source>
-        <extracomment>Pulley menu: the page with the version and licence.</extracomment>
+        <extracomment>Settings, at the foot: the page with the version and licence.</extracomment>
         <translation>Om Sukkula</translation>
     </message>
     <message>
@@ -566,6 +610,41 @@ Opens the file picker.</extracomment>
         <extracomment>Settings: what the Bluetooth nudge does. It works only while Send mode looks for devices; it does not make this phone visible.</extracomment>
         <translation>Medan Skicka-läget letar efter enheter får en Bluetooth-signal Android-telefoner i närheten att visa sig.</translation>
     </message>
+    <message>
+        <source>Use croc</source>
+        <extracomment>Settings: switch a protocol on or off.</extracomment>
+        <translation>Använd croc</translation>
+    </message>
+    <message>
+        <source>Send and receive with a code, through a croc relay on the internet.</source>
+        <extracomment>Settings: what the croc switch covers (F-C1): sending to a code and receiving with one.</extracomment>
+        <translation>Skicka och ta emot med en kod, via ett croc-relä på internet.</translation>
+    </message>
+    <message>
+        <source>Relay</source>
+        <extracomment>Settings: the croc relay (F-CR3).</extracomment>
+        <translation>Relä</translation>
+    </message>
+    <message>
+        <source>Must look like host or host:port</source>
+        <extracomment>Settings: the croc relay is not usable.</extracomment>
+        <translation>Måste se ut som värd eller värd:port</translation>
+    </message>
+    <message>
+        <source>Relay password</source>
+        <extracomment>Settings: the croc relay&apos;s password (F-CR3).</extracomment>
+        <translation>Reläets lösenord</translation>
+    </message>
+    <message>
+        <source>Up to 64 plain letters, digits and signs</source>
+        <extracomment>Settings: the croc relay password is not usable.</extracomment>
+        <translation>Högst 64 enkla bokstäver, siffror och tecken</translation>
+    </message>
+    <message>
+        <source>Default password</source>
+        <extracomment>Settings: an empty croc relay password means croc&apos;s own.</extracomment>
+        <translation>Standardlösenord</translation>
+    </message>
 </context>
 <context>
     <name>ShareTarget</name>
@@ -696,7 +775,7 @@ Opens the file picker.</extracomment>
     <name>WormholeReceivePage</name>
     <message>
         <source>Receive with a code</source>
-        <extracomment>Page title: receive over Magic Wormhole.</extracomment>
+        <extracomment>Page title: receive over Magic Wormhole or croc.</extracomment>
         <translation>Ta emot med kod</translation>
     </message>
     <message>
@@ -706,7 +785,7 @@ Opens the file picker.</extracomment>
     </message>
     <message>
         <source>Code</source>
-        <extracomment>The text field for a Magic Wormhole code.</extracomment>
+        <extracomment>The text field for a Magic Wormhole or croc code.</extracomment>
         <translation>Kod</translation>
     </message>
     <message>
@@ -714,13 +793,10 @@ Opens the file picker.</extracomment>
         <extracomment>Starts receiving with the typed code.</extracomment>
         <translation>Ta emot</translation>
     </message>
-</context>
-<context>
-    <name>WormholeTile</name>
     <message>
-        <source>Tap for the QR code</source>
-        <extracomment>Under a wormhole code on the send screen: tapping shows it big, with a QR code.</extracomment>
-        <translation>Tryck för QR-koden</translation>
+        <source>Type the code the sender&apos;s croc shows, such as gala-tulip-acorn. You will see what is offered before anything is saved.</source>
+        <extracomment>How to receive with croc.</extracomment>
+        <translation>Skriv koden som avsändarens croc visar, till exempel gala-tulip-acorn. Du ser vad som erbjuds innan något sparas.</translation>
     </message>
 </context>
 <context>

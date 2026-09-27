@@ -3,17 +3,24 @@ import QtQuick 2.6
 import Sailfish.Silica 1.0
 
 /*
- * Magic Wormhole on the send radar (F-MW1): a tile to start a send with,
- * which then shows the code to read out until the receiver comes.
+ * A protocol that goes through a server on the internet, as a tile over
+ * the radar's cloud: Magic Wormhole (F-MW1, F-MW2) or croc. Sending, it
+ * starts a send and then shows the code to read out until the receiver
+ * comes; receiving, it opens the page to type a code on.
  *
- * The code's number part is the mailbox server's, so it is shown as plain
- * text like everything else.
+ * The code's number part is the server's, so it is shown as plain text
+ * like everything else.
  */
 Item {
     id: tile
 
-    /// "" before a send; "starting" until the code comes; then the code.
+    /// The protocol's name; not translated.
+    property string title: ""
+    /// Under the title while there is no code.
+    property string hint: ""
+    /// "" before a send; then the code.
     property string code: ""
+    /// Waiting for the code.
     property bool starting: false
 
     signal clicked()
@@ -40,14 +47,26 @@ Item {
         spacing: Theme.paddingSmall / 2
 
         Label {
-            objectName: "wormholeTileTitle"
+            objectName: "tileTitle"
             width: parent.width
-            text: "Magic Wormhole"
+            text: tile.title
             textFormat: Text.PlainText
             horizontalAlignment: Text.AlignHCenter
             wrapMode: Text.Wrap
             font.pixelSize: tile.hasCode || tile.starting ? Theme.fontSizeTiny : Theme.fontSizeSmall
             color: tile.hasCode || tile.starting ? Theme.secondaryHighlightColor : tile.ink
+        }
+
+        Label {
+            objectName: "tileHint"
+            width: parent.width
+            visible: !tile.hasCode && !tile.starting && text.length > 0
+            text: tile.hint
+            textFormat: Text.PlainText
+            horizontalAlignment: Text.AlignHCenter
+            wrapMode: Text.Wrap
+            font.pixelSize: Theme.fontSizeTiny
+            color: Theme.secondaryColor
         }
 
         BusyIndicator {
@@ -58,7 +77,7 @@ Item {
         }
 
         Label {
-            objectName: "wormholeTileCode"
+            objectName: "tileCode"
             width: parent.width
             visible: tile.hasCode
             text: tile.code
@@ -72,7 +91,7 @@ Item {
         Label {
             width: parent.width
             visible: tile.hasCode
-            //: Under a wormhole code on the send screen: tapping shows it big, with a QR code.
+            //: Under a code on the send screen: tapping shows it big, with a QR code.
             text: qsTr("Tap for the QR code")
             textFormat: Text.PlainText
             horizontalAlignment: Text.AlignHCenter

@@ -3,12 +3,12 @@ import QtQuick 2.6
 
 /*
  * What is about to be sent: the files and texts at the centre of the send
- * radar (F-C6). Filled from the Share menu or the file picker, and by the
- * text typed on the "What to send" page.
+ * radar (F-C6). Files come from the file picker or the Share menu, texts
+ * from the Share menu.
  *
- * A shared text is kept apart from the typed one: it can be anything,
- * markup included, and is only ever shown in the app's own plain-text
- * labels, never put into a Silica text box (S2).
+ * A shared text can be anything, markup included, and is only ever shown
+ * in the app's own plain-text labels, never put into a Silica text box
+ * (S2).
  */
 QtObject {
     id: payload
@@ -17,8 +17,6 @@ QtObject {
     property var files: []
     /// Texts from the Share menu.
     property var texts: []
-    /// The text typed on the "What to send" page.
-    property string typed: ""
     /// Goes up with every change: what a send took can be told from what
     /// was chosen since.
     property int revision: 0
@@ -26,12 +24,10 @@ QtObject {
     // Most files one offer may carry (S6), which the engine checks again.
     readonly property int maxFiles: 500
     readonly property int itemCount: payload.files.length + payload.texts.length
-                                     + (payload.typed.length > 0 ? 1 : 0)
-    readonly property bool hasText: payload.texts.length > 0 || payload.typed.length > 0
+    readonly property bool hasText: payload.texts.length > 0
 
     onFilesChanged: payload.revision++
     onTextsChanged: payload.revision++
-    onTypedChanged: payload.revision++
 
     function basename(path) {
         var parts = String(path).split("/")
@@ -69,7 +65,6 @@ QtObject {
     function clear() {
         payload.files = []
         payload.texts = []
-        payload.typed = ""
     }
 
     /// Replaces everything with what the Share menu handed over:
@@ -101,9 +96,6 @@ QtObject {
         }
         for (var t = 0; t < payload.texts.length; t++) {
             out.push({ kind: "text", text: payload.texts[t] })
-        }
-        if (payload.typed.length > 0) {
-            out.push({ kind: "text", text: payload.typed })
         }
         return out
     }

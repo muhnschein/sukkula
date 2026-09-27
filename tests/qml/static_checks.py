@@ -12,7 +12,7 @@
       Qt.callLater, required properties);
   F-C6: the desktop file's share methods, the ShareProviders and their
       descriptions agree;
-  §2: [X-Sailjail] is exactly Internet;Bluetooth;Downloads with the names
+  §2: [X-Sailjail] is exactly spec §2's permissions with the names
       main.cpp uses;
   M5: every string is in every catalogue, translated, with the same
       placeholders.
@@ -128,6 +128,9 @@ def blocks(code, type_name):
         yield m.start(), "".join(own)
 
 
+# Spec §2, in the order the desktop file lists them.
+PERMISSIONS = "Internet;Bluetooth;Downloads;Documents;Music;Pictures;Videos;RemovableMedia"
+
 ALLOWED_IMPORTS = {
     "QtQuick": {"2.0", "2.1", "2.2", "2.3", "2.4", "2.5", "2.6"},
     "Sailfish.Silica": {"1.0"},
@@ -139,7 +142,7 @@ ALLOWED_IMPORTS = {
 # Named in one file each, so a fault in the module costs that file only.
 ONLY_IN = {
     "Sailfish.Share": {"qml/share/ShareTarget.qml"},
-    "Sailfish.Pickers": {"qml/pages/FilePicker.qml"},
+    "Sailfish.Pickers": {"qml/pages/FilePicker.qml", "qml/pages/SingleFilePicker.qml"},
     "Nemo.KeepAlive": {"qml/harbour-sukkula.qml"},
     "Nemo.Notifications": {"qml/harbour-sukkula.qml"},
 }
@@ -243,8 +246,8 @@ def check_desktop_and_share():
             fail(desktop_path, f"{key}= must be {want}")
 
     jail = groups.get("X-Sailjail", {})
-    if jail.get("Permissions") != "Internet;Bluetooth;Downloads":
-        fail(desktop_path, "[X-Sailjail] Permissions must be exactly Internet;Bluetooth;Downloads (spec §2)")
+    if jail.get("Permissions") != PERMISSIONS:
+        fail(desktop_path, f"[X-Sailjail] Permissions must be exactly {PERMISSIONS} (spec §2)")
     extra = set(jail) - {"Permissions", "OrganizationName", "ApplicationName", "ExecDBus"}
     if extra:
         fail(desktop_path, f"[X-Sailjail] keys Harbour does not allow: {sorted(extra)}")

@@ -33,27 +33,27 @@ Description[sv]=Skicka text i närheten
 Capabilities=text/*;text/x-url;text/uri-list
 SupportsMultipleFiles=no
 
-# Sailjail (spec §2): exactly Internet;Bluetooth;Downloads.
+# Sailjail (spec §2): exactly Internet;Bluetooth;Downloads;Documents;Music;
+# Pictures;Videos;RemovableMedia.
 #
 # Internet: LocalSend and Quick Share on the LAN, Magic Wormhole's mailbox
-# and relay. Bluetooth: BlueZ on the system bus and obexd on the session
-# bus, for Bluetooth sending and the Quick Share BLE nudge. Downloads:
-# received files go to ~/Downloads/Sukkula, staged in its .partial/ (S3).
+# and relay, croc's relay. Bluetooth: BlueZ on the system bus and obexd on
+# the session bus, for Bluetooth sending and the Quick Share BLE nudge.
+# Downloads: received files go to ~/Downloads/Sukkula, staged in its
+# .partial/ (S3), and files there can be sent. Documents, Music, Pictures,
+# Videos and RemovableMedia: files to send, picked in the file browser or
+# handed over through the Share menu (Gallery's photos are in ~/Pictures),
+# from those folders and from memory cards. Nothing is written there.
 #
 # The data directory is ~/.local/share/sukkula/sukkula, from the two names
 # below; src/main.cpp sets the same names so AppDataLocation agrees.
-#
-# Files to send can only be ones the sandbox lets Sukkula read: anything
-# under ~/Downloads through the picker, and what other apps hand over
-# through the Share menu. Documents, Pictures and the rest would need
-# further permissions, which the spec does not grant.
 #
 # ExecDBus: the share sheet reaches the running app's ShareProvider on the
 # D-Bus name sukkula.sukkula (OrganizationName.ApplicationName, the one
 # name Sailjail lets the app own), and starts the app with this line when
 # it is not running.
 [X-Sailjail]
-Permissions=Internet;Bluetooth;Downloads
+Permissions=Internet;Bluetooth;Downloads;Documents;Music;Pictures;Videos;RemovableMedia
 OrganizationName=sukkula
 ApplicationName=sukkula
 ExecDBus=harbour-sukkula

@@ -1,0 +1,18 @@
+# croc's PAKE messages: its keys (with their subscripts), roles, numbers.
+# Generated spelling: non-ASCII and controls as \xHH of their UTF-8.
+"\"Role\""
+"\"U\xe1\xb5\xa4\""
+"\"U\xe1\xb5\xa5\""
+"\"V\xe1\xb5\xa4\""
+"\"V\xe1\xb5\xa5\""
+"\"X\xe1\xb5\xa4\""
+"\"X\xe1\xb5\xa5\""
+"\"Y\xe1\xb5\xa4\""
+"\"Y\xe1\xb5\xa5\""
+":0"
+":1"
+":2"
+"0"
+"1"
+"115792089210356248762697446949407573530086143415290314195533631308867097853951"
+"28948022309329048855892746252171976963363056481941560715954676764349967630337"

@@ -1,8 +1,8 @@
 # Security
 
 Sukkula accepts files from strangers. Anyone on the same Wi-Fi, anyone
-within Bluetooth range, and anyone holding a wormhole code can send it
-bytes, and every byte, name, size and alias they send is treated as
+within Bluetooth range, anyone holding a wormhole or croc code, and the
+croc relay in between can send it bytes, and every byte, name, size and alias they send is treated as
 hostile (spec §5). This file says what Sukkula promises about that, what
 enforces each promise, and how to report a way around one.
 
@@ -76,6 +76,32 @@ consent.**
   mailbox connection that was minting hashcash when its transfer was
   cancelled, or the engine stopped, finishes the mint (20 bits at most) on
   its own thread before that thread ends; nothing waits for it.
+- **A croc relay sees the start and can spoil the rest.** croc's relay
+  is someone else's server: the PAKE with it runs under a password croc
+  publishes, so it -- or anyone on the path to it, the default relays
+  being plain TCP -- sees each side's address, the room (a hash of the
+  code's first word) and the timing. The peers' own PAKE, under the rest
+  of the code, keys everything after, so the relay cannot read or forge
+  the file list or a chunk; but croc numbers nothing, so it can drop,
+  delay, replay or reflect sealed messages. Sukkula takes each chunk once,
+  in order, and a file only whole and with its XXH64, and fails the
+  transfer otherwise; what a relay can do is stop it. A relay of one's own
+  can be set in Settings (F-CR3).
+- **A croc code is about 27 bits.** Ours are croc 11's shape: three words
+  from the EFF's short list of 1,296. The first only chooses the room;
+  the other two, about 21 bits, are the PAKE's password. Ours start with
+  one of the list's 432 four-letter words, so that croc 10 reads the same
+  room and password in them, and are drawn until they pick the relay the
+  send waits on (a quarter of them do). Someone who guesses the room
+  while a send waits gets one PAKE attempt: croc 11's key confirmation
+  ends the send as a wrong code at a wrong guess (croc 10's receivers,
+  without it, at their first sealed message), so the odds stay about one
+  in 2^27 per send, and a right one still meets the sender's user, who
+  sees a stranger take the transfer. croc 10's own codes were stronger
+  (four digits and three words of 1,626); croc 11 chose shorter ones, and
+  so do we, to be typed into it. Codes typed by hand from other croc
+  clients may be weaker; Sukkula takes any croc code of 6 to 128
+  printable characters, as croc does.
 - **mDNS announcements are unauthenticated.** Any host on the link can
   announce a Quick Share device under any name, or send a goodbye for
   another device's announcement and take it off the send radar until it
@@ -85,17 +111,19 @@ consent.**
 - **libdbus accepts messages up to 128 MiB.** Lowering it needs unsafe
   FFI in the engine, which is forbidden. Replies from BlueZ and obexd are
   walked in place and only small copies are kept.
-- **Files outside `~/Downloads` may be unreadable.** The sandbox grants
-  only `Internet;Bluetooth;Downloads` (spec §2). The UI says so; this is a
-  policy choice, not a bug.
+- **Files outside the granted folders are unreadable.** The sandbox
+  grants `~/Downloads`, `~/Documents`, `~/Music`, `~/Pictures`, `~/Videos`
+  and memory cards (spec §2), and nothing else of the home directory. The
+  UI says so; this is a policy choice, not a bug.
 
 **Out of scope:**
 
 - Weaknesses in the protocols themselves (LocalSend, Quick Share, Magic
-  Wormhole, OBEX) or in their reference implementations. Report those
-  upstream; `docs/UPSTREAM-QUICKSHARE.md` and the module docs of
-  `crates/sukkula-engine/src/{localsend,wormhole}/mod.rs` list what we
-  found and worked around.
+  Wormhole, croc, OBEX) or in their reference implementations. Report
+  those upstream; `docs/UPSTREAM-QUICKSHARE.md` and the module docs of
+  `crates/sukkula-engine/src/{localsend,wormhole,croc}/mod.rs` list what
+  we found and worked around. croc's implementation is ours, though, so a
+  way around its caps or checks is ours to fix.
 - Attacks that need code already running as the phone's user.
 - What a file you chose to accept contains. Sukkula never opens a
   received file; what you open it with is that app's business.
@@ -141,7 +169,11 @@ These are enforced in the code and checked in CI, not merely intended.
   such querier, legacy unicast included -- and limits its unicast replies
   per address.
 - **LocalSend is HTTPS-only and pinned.** No plain-HTTP listener exists.
-  Sends are pinned, during the handshake, to the fingerprint the peer
+  The HTTPS server runs while receiving, and while the Send tab looks for
+  devices, since LocalSend answers an announcement only by registering
+  with the server it names; then it serves `register` and `info` alone,
+  every registration proven by its client certificate, and refuses offers
+  unread. Sends are pinned, during the handshake, to the fingerprint the peer
   announced. Uploads are accepted only from the address and certificate
   that made the accepted offer, with the per-file token. The register
   fallback of discovery (F-LS1) never scans the subnet: it registers only
@@ -156,6 +188,23 @@ These are enforced in the code and checked in CI, not merely intended.
   library future inside `catch_unwind` and a timeout, and the mailbox
   connection, where the library mints hashcash without yielding, on a
   thread of its own rather than an engine worker.
+- **croc is ours, and read under caps.** No Rust library speaks croc 11
+  or croc 10 with Go's peers, so Sukkula implements both
+  (`crates/sukkula-engine/src/croc/`): croc 11's key exchange, bound to
+  the room and each side's role and confirmed before anything is sealed,
+  and croc 10's, only as a sender to a receiver that asks for it and as
+  a receiver to a sender that answers with it. Every frame is capped
+  before it is read (1 MiB for a control message, 64 KiB for a chunk,
+  8 KiB for a PAKE message), every message before it is inflated, and the
+  relay's list of data ports at 16, of which 8 are used. The file list is
+  checked before the user sees it: XXH64 or no hash, at least one file,
+  a text only as one file of at most 64 KiB, and then S1-S6 as for any
+  offer. Nothing of ours goes to the peer before the user says yes but
+  the PAKE and croc's `externalip`, which carries nothing; croc 11's LAN
+  probe gets no answer, and our answer to croc 10's names no address. As
+  a sender, Sukkula serves only chunks of its own files, each once, to a
+  request it has checked, and never follows a peer to another address:
+  data goes through the relay.
 - **Bluetooth connects only to `unix:` buses.** libdbus starts a process
   for `unixexec:` and `autolaunch:` addresses, and falls back to
   `autolaunch:` when left to find the session bus itself. Every Bluetooth
@@ -187,8 +236,11 @@ These are enforced in the code and checked in CI, not merely intended.
   the four C functions, read the command string and call the callback,
   each with a `SAFETY:` comment; handles are registry ids, never
   dereferenced; no panic crosses the C boundary.
-- **Minimal sandbox.** Sailjail grants `Internet;Bluetooth;Downloads` and
-  nothing else, and the Harbour gate fails on any other permission.
+- **Minimal sandbox.** Sailjail grants `Internet;Bluetooth` and the
+  folders files are sent from and received into (`Downloads`, `Documents`,
+  `Music`, `Pictures`, `Videos`, `RemovableMedia`), and nothing else; the
+  Harbour gate fails on any other permission. Files are written only
+  under `~/Downloads/Sukkula/`.
 - **The log keeps quiet.** The engine logs to standard error (the
   journal), never to a file. Off by default, it says only what Sukkula's
   own crates report at warn and error; with debug logging on, Sukkula's
@@ -213,7 +265,7 @@ built RPM (`rpm.yml`). When a row changes, change the code or test it names.
 | S2: no control, bidi or invisible character reaches the screen; stacks and lengths capped | `text.rs` tests (full Cf and Default_Ignorable coverage, Unicode 16 mark table); `properties.rs` `display_keeps_its_promises`, `message_keeps_its_promises`; fuzz targets `text_display`, `text_message`; QML tests walking the item tree for `Text.PlainText`; `tests/qml/static_checks.py` |
 | S3: only the inbox writes; staged, capped, verified, never clobbering or following links | `clippy.toml` bans (std, tokio and rustix; lifted only in `sukkula_core::{inbox,store,dirfd}`, per function); `inbox.rs` and `store.rs` tests (symlinked targets and staging, EXDEV copy fallback on tmpfs, a file system without hard links, cancel and kill mid-copy, spoiled writes, `leftover_temporaries_are_swept_and_nothing_else`); `sukkula-core/tests/chaos.rs`, after clove's `ci/chaos.sh`: the test binary re-run as a writer and SIGKILLed 30 times per part (settings and key writes, receives placed by link, receives placed by the copy fallback across mounts), every kill checked to be what ended it and required to land mid-work, and after each the next open leaves only whole files; `properties.rs` `the_inbox_writes_what_was_declared_or_nothing`; every adapter's hostile suite asserts nothing outside the download directory and no partial file |
 | S4/S6: sizes and counts range-checked before allocation | `offer.rs` tests; `properties.rs` `validate_never_passes_a_bad_offer`, `negative_or_oversized_anywhere_is_refused`; fuzz target `offer_validate`; `localsend_hostile::impossible_sizes_and_counts_never_reach_the_user`, `oversized_json_is_refused_before_it_is_read`; `wormhole_hostile::negative_and_oversized_offers_never_reach_the_user`, `a_lying_record_length_is_refused_before_anything_is_allocated`; Quick Share's mDNS: rqs_lib's `tests/mdns.rs` `a_flood_from_one_host_is_bounded_and_keeps_nobody_else_out` (1500 devices announced at the longest TTL there is, and records for names nobody browses, leave four services listed and a handful of records and timers in the daemon), mdns-sd's `bounded_cache_tests` and `a_received_ttl_is_capped` |
-| S5: consent before any payload | `consent.rs` tests; `properties.rs` `consent_accounting_holds_under_any_schedule`; `localsend_hostile::uploads_without_consent_or_the_right_token_are_refused_unread`; `localsend_loopback::a_declined_offer_writes_nothing`; `wormhole::a_declined_offer_moves_no_data_and_leaves_no_file`; `ctx::tests::a_busy_engine_declines_without_asking` |
+| S5: consent before any payload | `consent.rs` tests; `properties.rs` `consent_accounting_holds_under_any_schedule`; `localsend_hostile::uploads_without_consent_or_the_right_token_are_refused_unread`; `localsend_loopback::a_declined_offer_writes_nothing`; `wormhole::a_declined_offer_moves_no_data_and_leaves_no_file`; croc's `loopback::declining_is_said_to_the_sender`, `a_wrong_code_is_said_and_nothing_is_offered`, and `croc_interop` against croc's Go binary; `ctx::tests::a_busy_engine_declines_without_asking` |
 | S5 in the UI: only the user's Accept says yes, and nothing answers for them | `tests/qml/tst_consent.qml` (Decline, leaving, the countdown and an engine-closed offer all end in no, the last one unanswered); `tst_stack.qml` (a reply to a send or a code never pops or replaces a consent dialog, one dialog in the stack at a time and never a closed one left under the next, a closed offer never answered, no settings save and receiver restart under a dialog); `tst_engine.qml` (`Engine.answer` sends nothing for an offer that is not waiting); each guarded by a planted fault in `tests/qml/selftest.py` |
 | Every read has a timeout; slow peers are cut off | `localsend_hostile::slow_handshakes_heads_and_bodies_are_cut_off`, `a_stalled_upload_times_out_and_is_cleaned_up`, `a_receiver_that_stops_reading_times_out`, `a_sender_that_stops_reading_is_cut_off` (32 connections held by peers that stop reading, cut off by the write deadline), `a_connection_kept_busy_is_retired`; `localsend::server::tests::a_write_that_makes_no_progress_fails`; `quickshare::stalled_senders_are_given_up_on`, `a_sender_that_only_keeps_talking_is_given_up_on` (after the yes, keep-alives and empty chunks are not progress); `wormhole_hostile::a_slow_loris_record_times_out`, `a_sender_that_stalls_after_the_yes_times_out`; `bluetooth::a_stalled_transfer_times_out`, `bluez_that_never_answers_times_out` |
 | S7: only private LAN peers, rate-limited | `reach.rs` tests; `properties.rs` `reach_agrees_with_the_ranges`, `the_limiter_is_bounded_and_exact_below_capacity`; `ctx::tests::offers_are_limited_per_peer_and_in_total`, `offers_the_user_asked_for_are_outside_the_global_limit`; `localsend_hostile::unpermitted_addresses_are_dropped_before_the_handshake`, `offers_are_rate_limited_per_address`, `one_address_cannot_fill_the_peer_list`; `localsend::discovery::tests::forged_announcements_cannot_hide_the_address_they_name`, `claims_naming_other_ports_cannot_use_up_localsends_own`, `a_forgery_answered_shows_the_device_it_named` (UDP announcements have a budget of their own and never spend the one TLS requests and Quick Share are held to); `localsend::peers::tests::one_address_cannot_fill_the_table`, `a_full_table_makes_room_from_the_address_holding_most`, `announced_leads_never_push_out_proven_ones`; `quickshare::peers_are_bounded_and_reported` (four peers per source, a full table makes room from the source listing the most, an id stays its source's), `quickshare_mdns::a_host_announcing_without_end_keeps_no_phone_off_the_send_page` (announcements counted by the packets' source, on a budget of Quick Share's own); rqs_lib's `tests/mdns.rs` (`ci/rqs-lib-tests.sh`) `the_responder_answers_only_the_policy_and_not_without_limit`, and its cache's `make_room` tests; mdns-sd's `local_link_tests` (`third_party/mdns-sd.patches/test.sh`) |
@@ -226,7 +278,7 @@ built RPM (`rpm.yml`). When a row changes, change the code or test it names.
 | The UI's interface is strict and bounded | `api.rs` `unknown_fields_and_versions_are_refused`, `variants_without_fields_refuse_fields` (every command and target, field-less ones included); `hub.rs` `a_flood_of_commands_is_refused_not_queued`, `the_queue_is_bounded_and_waits_for_room`, `every_command_has_its_time_limit`, `a_switch_that_waited_long_still_finishes_and_says_so` (a receive switch is never cut off half-way), `receive_wormhole_may_wait_for_the_user_as_long_as_the_offer_does`; `ctx::tests::empty_chunks_cost_nothing_and_each_value_is_reported_once` (a peer's empty chunks put nothing on the event path) |
 | S10: `unsafe` only in `sukkula-ffi`; lints | `#![forbid(unsafe_code)]` in core and engine; workspace lints in `Cargo.toml` (`-D warnings`, no `unwrap`/`expect`/`panic`/indexing/unchecked arithmetic); overflow checks in release |
 | The C boundary cannot be misused into memory unsafety | `crates/sukkula-ffi/tests/ffi.rs` (NULLs, stale handles, bad UTF-8, oversized commands, stop from the callback, hammering while stopping); `ci/ffi-harness/run.sh` under ASan, UBSan and LSan with no suppressions |
-| Parsers survive hostile input | Deterministic mutation sweeps on every push: `sukkula-core/tests/hostile.rs`, `localsend_hostile::a_mutation_sweep_of_offers_breaks_nothing`, the wormhole `sweep` module, the Bluetooth reply sweeps; cargo-fuzz targets with seeds and dictionaries (`ci/check-dicts.sh`, with its self-test, fails a target without either and a dictionary libFuzzer cannot parse) and compiled on every pull request, fuzzed 300 s each every night on `main` (`fuzz.yml`, the corpus carried from night to night) at each target's own `-max_len`, the 64 KiB-capped ones from inputs at the cap and one byte past it (`scripts/fuzz-smoke.sh`, with its self-test; `fuzz/README.md`), each asserting the S-rules on what it accepts rather than only survival: the core's `name_sanitize`, `text_display`, `text_message`, `offer_validate`, `settings_json`, `hex`, `command_json`, `start_config`, and every protocol parser that reads a peer's or a server's bytes, through the adapter's own code: `localsend_prepare_upload`, `localsend_discovery`, `wormhole_wire`, `wormhole_code`, `wormhole_mailbox`, `quickshare_handshake`, `quickshare_frame` (no payload byte before consent, S5), `quickshare_mdns` |
+| Parsers survive hostile input | Deterministic mutation sweeps on every push: `sukkula-core/tests/hostile.rs`, `localsend_hostile::a_mutation_sweep_of_offers_breaks_nothing`, the wormhole `sweep` module, the Bluetooth reply sweeps; cargo-fuzz targets with seeds and dictionaries (`ci/check-dicts.sh`, with its self-test, fails a target without either and a dictionary libFuzzer cannot parse) and compiled on every pull request, fuzzed 300 s each every night on `main` (`fuzz.yml`, the corpus carried from night to night) at each target's own `-max_len`, the 64 KiB-capped ones from inputs at the cap and one byte past it (`scripts/fuzz-smoke.sh`, with its self-test; `fuzz/README.md`), each asserting the S-rules on what it accepts rather than only survival: the core's `name_sanitize`, `text_display`, `text_message`, `offer_validate`, `settings_json`, `hex`, `command_json`, `start_config`, and every protocol parser that reads a peer's or a server's bytes, through the adapter's own code: `localsend_prepare_upload`, `localsend_discovery`, `wormhole_wire`, `wormhole_code`, `wormhole_mailbox`, `quickshare_handshake`, `quickshare_frame` (no payload byte before consent, S5), `quickshare_mdns`, `croc_code`, `croc_pake`, `croc_banner`, `croc_control`, `croc_file_list` |
 | Harbour, sandbox and linking | `ci/harbour-check.sh` (with a 133-case selftest) on every pull request; Jolla's `rpmvalidation.sh` on the built RPM (`ci/harbour-validate-rpm.sh`), on every push to `main` and on every pull request that changes the packaging (P.6); one waiver file with a namespace per check, every field matched (`ci/harbour-waivers.sh`); `ci/check-elf.sh` (stripped, only `main` exported (`--only-main`, on the packaged binary and on every pull request's probe link), RELRO/BIND_NOW/PIE, allowed libraries only; with its selftest); the SDK image pulled only by the digest `ci/sdk-image.digests` pins, and published only from `main` (`ci/packaging-lint.sh`) |
 | Dependencies | `cargo deny` (licences, advisories, sources, bans including a vendored libdbus); `ci/check-deps.sh` (no OpenSSL, no second TLS or D-Bus stack, no process-spawning or opening crate, `dbus` for the engine alone); `ci/check-lockfile.sh`; `ci/vendor-check.sh` (the vendored Quick Share library and the mdns-sd under it are upstream -- open-quickshare at its commit, mdns-sd's published archive by its sha256 -- plus their reviewed patches, byte for byte) |
 

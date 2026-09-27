@@ -4,25 +4,33 @@ import Sailfish.Silica 1.0
 import "../components"
 
 /*
- * Receive over Magic Wormhole by typing the sender's code (F-MW2). The
- * offer then comes up in the consent dialog like any other, before any
- * data flows. No scanning: that would need the Camera permission, which
- * spec §2 does not grant.
+ * Receive over Magic Wormhole or croc by typing the sender's code (F-MW2,
+ * F-CR2). The offer then comes up in the consent dialog like any other,
+ * before any data flows. No scanning: that would need the Camera
+ * permission, which spec §2 does not grant.
  */
 Page {
     id: page
     objectName: "wormholeReceivePage"
 
     property QtObject engine
+    /// "wormhole" or "croc".
+    property string protocol: "wormhole"
+    readonly property bool croc: page.protocol === "croc"
     property bool busy: false
     property bool alive: true
     /// The code was taken: go back once this page is on top. See leave().
     property bool leaving: false
 
-    /// The code as the engine wants it: trimmed, lower case, spaces as
-    /// dashes -- people read "7 guitarist revenge" aloud.
-    readonly property string code: codeField.text.replace(/^\s+|\s+$/g, "").toLowerCase().replace(/\s+/g, "-")
-    readonly property bool valid: page.code.length <= 100 && /^[0-9]+(-[a-z0-9]+)+$/.test(page.code)
+    /// The code as the engine wants it: trimmed, spaces as dashes --
+    /// people read "7 guitarist revenge" aloud -- and a wormhole code in
+    /// lower case. A croc code is compared byte for byte, so its case
+    /// stays as typed.
+    readonly property string trimmed: codeField.text.replace(/^\s+|\s+$/g, "").replace(/\s+/g, "-")
+    readonly property string code: page.croc ? page.trimmed : page.trimmed.toLowerCase()
+    /// croc takes any 6 to 128 printable ASCII characters.
+    readonly property bool valid: page.croc ? /^[\x21-\x7e]{6,128}$/.test(page.code)
+                                            : page.code.length <= 100 && /^[0-9]+(-[a-z0-9]+)+$/.test(page.code)
 
     Component.onDestruction: page.alive = false
 
@@ -32,7 +40,7 @@ Page {
         }
         page.busy = true
         var self = page
-        page.engine.receiveWormhole(page.code, function (ok, error) {
+        var reply = function (ok, error) {
             if (self.alive !== true) {
                 return
             }
@@ -45,7 +53,12 @@ Page {
             } else {
                 banner.show(self.engine.errorText(error))
             }
-        })
+        }
+        if (page.croc) {
+            page.engine.receiveCroc(page.code, reply)
+        } else {
+            page.engine.receiveWormhole(page.code, reply)
+        }
     }
 
     /// Back to the main page -- this page only, from the top only: the
@@ -88,8 +101,9 @@ Page {
             spacing: Theme.paddingMedium
 
             PageHeader {
-                //: Page title: receive over Magic Wormhole.
+                //: Page title: receive over Magic Wormhole or croc.
                 title: qsTr("Receive with a code")
+                description: page.engine.protocolName(page.protocol)
             }
 
             Banner {
@@ -99,8 +113,11 @@ Page {
             Label {
                 x: Theme.horizontalPageMargin
                 width: parent.width - 2 * Theme.horizontalPageMargin
-                //: How to receive with Magic Wormhole.
-                text: qsTr("Type the code the sender's screen shows, such as 7-guitarist-revenge. You will see what is offered before anything is saved.")
+                text: page.croc
+                      //: How to receive with croc.
+                      ? qsTr("Type the code the sender's croc shows, such as gala-tulip-acorn. You will see what is offered before anything is saved.")
+                      //: How to receive with Magic Wormhole.
+                      : qsTr("Type the code the sender's screen shows, such as 7-guitarist-revenge. You will see what is offered before anything is saved.")
                 textFormat: Text.PlainText
                 wrapMode: Text.Wrap
                 font.pixelSize: Theme.fontSizeSmall
@@ -111,11 +128,11 @@ Page {
                 id: codeField
                 objectName: "codeField"
                 width: parent.width
-                //: The text field for a Magic Wormhole code.
+                //: The text field for a Magic Wormhole or croc code.
                 label: qsTr("Code")
-                placeholderText: "7-guitarist-revenge"
+                placeholderText: page.croc ? "gala-tulip-acorn" : "7-guitarist-revenge"
                 inputMethodHints: Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase | Qt.ImhPreferLowercase
-                maximumLength: 100
+                maximumLength: page.croc ? 128 : 100
                 errorHighlight: text.length > 0 && !page.valid
                 Keys.onReturnPressed: page.receive()
                 Keys.onEnterPressed: page.receive()
@@ -127,7 +144,7 @@ Page {
                 //: Starts receiving with the typed code.
                 text: qsTr("Receive")
                 enabled: page.valid && !page.busy && page.engine.running
-                         && page.engine.protocolEnabled("wormhole")
+                         && page.engine.protocolEnabled(page.protocol)
                 onClicked: page.receive()
             }
 

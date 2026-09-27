@@ -1,4 +1,4 @@
-# Sukkula — Specification v0.4
+# Sukkula — Specification v0.5
 
 Sep 24, 2026 · @Philipp
 
@@ -13,9 +13,16 @@ v0.4 (Sep 26, 2026) makes Send and Receive the two modes of one main page,
 with every way of sending on one send screen. The changes are marked
 **(v0.4)**.
 
+v0.5 (Sep 26, 2026) makes the two modes tabs at the top of the main page,
+gives Receive mode a radar of its own, moves the transfers and received
+texts to a History page, and grants the Sailjail permissions for sending
+from the user's folders and memory cards. It adds croc as a fifth
+protocol, over the internet like Magic Wormhole (§4, F-CR). The changes
+are marked **(v0.5)**.
+
 ## 1. Purpose, scope and name
 
-Sukkula is a GPL-3.0-or-later Sailfish OS app for the Jolla Phone 2026, distributed only through Jolla's Harbour store -- never OpenRepos, never Chum **(v0.2)** -- that sends and receives files and text over four protocols from one UI.
+Sukkula is a GPL-3.0-or-later Sailfish OS app for the Jolla Phone 2026, distributed only through Jolla's Harbour store -- never OpenRepos, never Chum **(v0.2)** -- that sends and receives files and text over four protocols from one UI. **(v0.5: five, with croc.)**
 
 **Name:** *Sukkula* (Finnish for "shuttle" -- the loom's and the space kind; say SOOK-koo-lah). It carries things back and forth, which is the whole app. Package and binary name: `harbour-sukkula`. **(v0.2)**
 
@@ -26,6 +33,7 @@ Sukkula is a GPL-3.0-or-later Sailfish OS app for the Jolla Phone 2026, distribu
 | LocalSend v2 | Yes | Yes | LocalSend app, same LAN |
 | Quick Share | Yes | Yes | Stock Android, same LAN (BLE only for discovery) |
 | Magic Wormhole v1 | Yes | Yes | Any wormhole client, internet |
+| croc 11 and 10 **(v0.5)** | Yes | Yes | Any croc client, internet |
 | Bluetooth OBEX Object Push | Yes | No (system handles it) | Bluetooth |
 
 Sukkula also registers as a target in the system Share menu, so any app can hand it files.
@@ -37,7 +45,7 @@ Sukkula also registers as a target in the system Share menu, so any app can hand
 Every package must pass `sfdk check -s harbour`; anything the validator rejects is out of scope, not worked around.
 
 - **Targets:** aarch64 only, Sailfish OS 5.2 and later, which is the Jolla Phone 2026 and nothing else. No armv7hl, no i486, no compatibility code for older releases. **(v0.2)**
-- **Sailjail permissions:** `Internet;Bluetooth;Downloads` and nothing else. `Bluetooth` grants BlueZ on the system bus (`org.bluez`) and obexd on the session bus (`org.bluez.obex`), which is everything Bluetooth and the Quick Share BLE nudge need. Received files go to `~/Downloads/Sukkula/`, staged in `~/Downloads/Sukkula/.partial/` (see S3); files to send arrive via the Share menu or a file picker.
+- **Sailjail permissions:** `Internet;Bluetooth;Downloads` and nothing else. `Bluetooth` grants BlueZ on the system bus (`org.bluez`) and obexd on the session bus (`org.bluez.obex`), which is everything Bluetooth and the Quick Share BLE nudge need. Received files go to `~/Downloads/Sukkula/`, staged in `~/Downloads/Sukkula/.partial/` (see S3); files to send arrive via the Share menu or a file picker. **(v0.5: `Internet;Bluetooth;Downloads;Documents;Music;Pictures;Videos;RemovableMedia`. The five added are read-only in practice -- nothing is written outside `~/Downloads/Sukkula/` -- and let a file be sent from the user's folders and memory cards, whether picked in the file browser or handed over through the Share menu, where Gallery's photos come from `~/Pictures`. Not `UserDirs`, which would take in the whole home directory, and not `MediaIndexing`: the file browser needs no media index.)**
 - **Linked system libraries** (all on the Harbour allow-list): Qt5 Core/Gui/Qml/Quick/DBus, libsailfishapp, libdbus-1.so.3, libz. Everything else is Rust, statically linked into one private library, `/usr/share/harbour-sukkula/lib/libsukkula_ffi.so`, which the binary finds through its RPATH **(v0.3: not into the binary itself. The `silica-qt5` booster `dlopen()`s the binary, and an executable's thread-locals are resolved to fixed offsets that a `dlopen()`ed one does not get.)**
 - **QML imports:** Sailfish.Silica, Sailfish.Share (ShareProvider), Sailfish.Pickers, Nemo.KeepAlive, Nemo.Notifications. QtBluetooth is not allowed, so BlueZ is reached over raw D-Bus from Rust.
 - **Lifecycle:** receiving only while the app runs (cover page shows "Receiving"). KeepAlive holds the CPU awake during an active transfer only.
@@ -77,17 +85,17 @@ Each requirement has an ID; every ID gets at least one automated test or a named
 
 **Common (F-C)**
 
-- **F-C1** One Receive switch turns all enabled receivers on or off together; each protocol can be disabled in Settings. **(v0.4: the switch is the Send \| Receive mode at the foot of the main page. Receive switches every enabled receiver on; Send switches them off and runs discovery instead, while the app is in front: after 5 s in the background discovery pauses, and it resumes when the app comes back. The mode shown is the engine's state, so the cover's action changes it too.)**
+- **F-C1** One Receive switch turns all enabled receivers on or off together; each protocol can be disabled in Settings. **(v0.4: the switch is the Send \| Receive mode at the foot of the main page. Receive switches every enabled receiver on; Send switches them off and runs discovery instead, while the app is in front: after 5 s in the background discovery pauses, and it resumes when the app comes back. The mode shown is the engine's state, so the cover's action changes it too.)** **(v0.5: Send and Receive are two tabs at the top of the main page, tapped or swiped between, and the page stays in portrait. Receive mode is a radar like Send mode's: this phone at the centre with the name others see, the rings pulsing while it is visible, and a device that offers something on the rings while the consent dialog asks; an accepted transfer draws a line from the sender to the centre and both fill as it comes. The cloud above holds the tiles to receive with a code.)**
 - **F-C2** Every incoming offer shows a consent dialog: sanitised sender name, protocol, file names, sizes and total. There is no auto-accept, not even for known devices.
 - **F-C3** Unanswered offers are declined after 60 s. At most 2 offers wait at once; further ones are declined without UI.
 - **F-C4** Received text is shown as plain text with a Copy button. URLs are never opened automatically.
-- **F-C5** Progress, success and failure are shown per transfer; any transfer can be cancelled.
-- **F-C6** Sukkula appears in the system Share menu (ShareProvider) for files and text, and opens a "Send via…" page. **(v0.4: there is no separate page. Send mode shows every way of sending on one screen, in portrait only: this phone at the centre of a radar of round rings, holding what is to be sent; the LocalSend and Quick Share peers discovery finds and the paired Bluetooth devices on its rings, as many as fit without covering each other and the rest behind "+N", each with a protocol badge; above them a cloud with Magic Wormhole's tile, and a tile kept for croc. A share opens Send mode with its items at the centre; tapping a peer sends, with the file picker first if nothing is chosen. A running send draws a line from the centre to its peer -- through the cloud for Magic Wormhole -- and both fill as it goes.)**
+- **F-C5** Progress, success and failure are shown per transfer; any transfer can be cancelled. **(v0.5: on the radars while a transfer runs and a few seconds after, and on the History page, reached from either tab's pulley menu, for every transfer of the session and the received texts.)**
+- **F-C6** Sukkula appears in the system Share menu (ShareProvider) for files and text, and opens a "Send via…" page. **(v0.4: there is no separate page. Send mode shows every way of sending on one screen, in portrait only: this phone at the centre of a radar of round rings, holding what is to be sent; the LocalSend and Quick Share peers discovery finds and the paired Bluetooth devices on its rings, as many as fit without covering each other and the rest behind "+N", each with a protocol badge; above them a cloud with Magic Wormhole's tile, and a tile kept for croc. A share opens Send mode with its items at the centre; tapping a peer sends, with the file picker first if nothing is chosen. A running send draws a line from the centre to its peer -- through the cloud for Magic Wormhole -- and both fill as it goes.)** **(v0.5: until something is chosen, the centre -- a plus, which opens the file browser, several files at a time -- is all there is; discovery runs meanwhile, and the peers and the cloud appear with the first file. The cloud's tiles come out when it is tapped. Tapping the centre again adds files, and a cross beside it clears them. Texts come from the Share menu only.)**
 - **F-C7** The device name shown to peers defaults to the device model and can be edited.
 
 **LocalSend (F-LS)**, via the upstream `localsend` crate, protocol v2:
 
-- **F-LS1** Discovery via multicast 224.0.0.167:53317, plus the HTTP register fallback. **(v0.2: the fallback registers, over HTTPS and pinned, only with servers already known -- found earlier by multicast or that registered with us -- and never scans the subnet as the upstream apps do. A phone on a network that drops multicast therefore finds only devices it has met before or that register with it.)**
+- **F-LS1** Discovery via multicast 224.0.0.167:53317, plus the HTTP register fallback. **(v0.2: the fallback registers, over HTTPS and pinned, only with servers already known -- found earlier by multicast or that registered with us -- and never scans the subnet as the upstream apps do. A phone on a network that drops multicast therefore finds only devices it has met before or that register with it.)** **(v0.5: LocalSend answers an announcement only by registering with the server it names, so while Send mode looks for devices the HTTPS server runs too, serving registrations and nothing else until Receive is on.)**
 - **F-LS2** HTTPS only, with a self-signed certificate generated on first run and kept in the app data dir (mode 0600). Plain HTTP peers are refused.
 - **F-LS3** When sending, pin the peer's certificate to the fingerprint it announced; abort on mismatch.
 - **F-LS4** Optional receive PIN, off by default.
@@ -107,6 +115,13 @@ Each requirement has an ID; every ID gets at least one automated test or a named
 - **F-MW3** Folder offers arrive as the sender's `.zip` and are saved unopened.
 - **F-MW4** Default mailbox and relay servers, with custom URLs in Settings.
 
+**croc (F-CR) (v0.5)**, our own implementation of croc 11's protocol, and of croc 10's for its clients still about (`crates/sukkula-engine/src/croc/`; no Rust library speaks either), checked against croc v11.5.4's and v10.7.0's Go binaries:
+
+- **F-CR1** Send files, or one text on its own, and show the generated code (three words, as croc 11 makes them, which croc 10 reads alike) as text. No QR code: croc has no URI for one.
+- **F-CR2** Receive by typing a code, then show the consent dialog before any data flows; the sender's file list is checked (S1-S6) before the user sees it.
+- **F-CR3** croc's public relays by default -- the one the code picks, as croc 11 does -- with a custom relay and its password in Settings.
+- **F-CR4** Data always goes through the relay: no LAN shortcut, no resume. Folders arrive flat, each file under its own name; symbolic links are left out.
+
 **Bluetooth (F-BT)**, via obexd over D-Bus:
 
 - **F-BT1** Send files to a paired device over OBEX Object Push, with progress and cancel.
@@ -114,7 +129,7 @@ Each requirement has an ID; every ID gets at least one automated test or a named
 
 ## 5. Security requirements
 
-The attacker is anyone on the same Wi-Fi, within Bluetooth range, or holding a wormhole code; every byte, name, size and alias they send is hostile. Goals: no file written outside `~/Downloads/Sukkula/`, nothing accepted without consent, no crash or memory exhaustion from any input, and no spoofing in the UI.
+The attacker is anyone on the same Wi-Fi, within Bluetooth range, or holding a wormhole or croc code -- and, for croc, the relay **(v0.5)**; every byte, name, size and alias they send is hostile. Goals: no file written outside `~/Downloads/Sukkula/`, nothing accepted without consent, no crash or memory exhaustion from any input, and no spoofing in the UI.
 
 **Rules (S)**
 
@@ -145,6 +160,8 @@ The patched copy lives in `third_party/` with the patches kept separate, so we c
 
 The upstream LocalSend core already sanitises names and verifies client certificates. Sukkula still takes its data as a stream and writes it through its own inbox. For magic-wormhole, Sukkula uses only the v1 transfer API, because the v2 accept path contains `panic!`/`expect` on unexpected offer shapes.
 
+**(v0.5)** croc is the one protocol with no library to adapt: the crates that carry its name speak protocols of their own. Sukkula implements it from croc v11.5.4's and v10.7.0's source, against Go's own test vectors, with every frame and message capped before it is read (`docs/SECURITY.md`, croc).
+
 ## 6. Dependencies and licensing
 
 Sukkula writes adapters, not protocols: each protocol comes from one maintained library, and our own dependencies stay close to this list.
@@ -155,10 +172,12 @@ Sukkula writes adapters, not protocols: each protocol comes from one maintained 
 | [rqs\_lib](https://github.com/ignotusbucius/open-quickshare) | Quick Share | GPL-3.0 | vendored + patches |
 | [magic-wormhole](https://github.com/magic-wormhole/magic-wormhole.rs) | Wormhole | EUPL-1.2 | crates.io `=0.8.1` |
 | dbus | BlueZ obexd | MIT/Apache-2.0 | crates.io |
+| p256, crypto-bigint, aes-gcm, hmac, hkdf, base64, miniz\_oxide **(v0.5)** | croc: its PAKE, key and seal, and DEFLATE (croc's own curve, SIEC255, is ours) | MIT/Apache-2.0 (miniz\_oxide also Zlib) | crates.io |
+| The EFF's short word list #1 **(v0.5)** | croc 11's codes, the list croc carries | CC BY 4.0 | `crates/sukkula-engine/src/croc/eff/` |
 | tokio, serde, serde\_json, thiserror, sha2, tracing | Runtime and plumbing | MIT/Apache-2.0 | crates.io |
 | proptest, tempfile (dev only) | Tests | MIT/Apache-2.0 | crates.io |
 
-Sukkula itself is GPL-3.0-or-later. EUPL-1.2 allows distribution under GPL-3.0 through its compatibility appendix, and Apache-2.0 and MIT are GPL-3.0 compatible.
+Sukkula itself is GPL-3.0-or-later. EUPL-1.2 allows distribution under GPL-3.0 through its compatibility appendix, and Apache-2.0 and MIT are GPL-3.0 compatible. CC BY 4.0, which the FSF counts as GPL-3.0 compatible too, asks for credit, which the About page gives **(v0.5)**.
 
 **Policy**
 
@@ -174,9 +193,9 @@ A change merges only when CI passes: `cargo fmt --check`, `clippy -D warnings`, 
 | Layer | What | Tool |
 | --- | --- | --- |
 | Core | Every S-rule as a property test (names, display text, inbox caps and cleanup) | proptest |
-| Adapters | Loopback transfers per protocol: Sukkula to Sukkula, and Sukkula to the reference client on the same host (LocalSend CLI, `wormhole` CLI, rquickshare) **(v0.2: LocalSend against the upstream core's own client and server; `wormhole` against the pinned Python client in CI's `wormhole-interop` job; no rquickshare interop yet -- Quick Share is Sukkula to Sukkula over the patched library plus hand-built frames, and real Android peers are M-30)** | cargo test (integration) |
+| Adapters | Loopback transfers per protocol: Sukkula to Sukkula, and Sukkula to the reference client on the same host (LocalSend CLI, `wormhole` CLI, rquickshare) **(v0.2: LocalSend against the upstream core's own client and server; `wormhole` against the pinned Python client in CI's `wormhole-interop` job; (v0.5) croc against croc v11.5.4's and v10.7.0's Go binaries, as the peer and as the relay, in CI's `croc-interop` job; no rquickshare interop yet -- Quick Share is Sukkula to Sukkula over the patched library plus hand-built frames, and real Android peers are M-30)** | cargo test (integration) |
 | Hostile input | Malicious peers replaying Q1–Q5 and S1–S7 cases: traversal names, negative and oversized sizes, endless chunks, bidi aliases, slow senders | cargo test with hand-built frames |
-| Parsers | FFI command JSON, LocalSend DTOs, Quick Share frames, wormhole offers | cargo-fuzz, corpus in repo |
+| Parsers | FFI command JSON, LocalSend DTOs, Quick Share frames, wormhole offers, croc's PAKE, banner, messages and file lists **(v0.5)** | cargo-fuzz, corpus in repo |
 | FFI | Start/stop cycles, bad UTF-8, oversize commands, callback on a foreign thread | cargo test + a small C harness under ASan |
 | Device | Manual checklist per release on the Jolla Phone 2026, against Pixel, Samsung, LocalSend iOS/desktop and Bluetooth | Named test IDs M-1… (`docs/MANUAL-TESTS.md`) |
 

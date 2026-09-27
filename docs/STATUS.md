@@ -1,6 +1,6 @@
 # Status
 
-Where Sukkula stands against `docs/SPEC.md` (v0.4), what has been
+Where Sukkula stands against `docs/SPEC.md` (v0.5), what has been
 verified and how, and what is waiting on the owner or on hardware.
 
 ## Built
@@ -9,19 +9,23 @@ Everything the spec asks for in v1.0:
 
 - `sukkula-core` (S1–S7), the trust boundary and the only code that
   writes files.
-- `sukkula-engine` with the four adapters:
+- `sukkula-engine` with the five adapters:
   - LocalSend v2, over the upstream core's DTOs and certificate code;
   - Quick Share, over `third_party/rqs_lib` (open-quickshare 5a31145 plus
     20 patches) and `third_party/mdns-sd` (0.21.4 plus 4 patches);
   - Magic Wormhole v1;
+  - croc 11, our own implementation of its protocol, and croc 10's for
+    its clients still about (spec v0.5);
   - Bluetooth OBEX send.
 - The hub, the C ABI (`sukkula-ffi`) and per-engine logging (S9).
 - The Qt/C++ shell and the Silica UI in en/fi/de/sv, with the Share menu
-  and Send | Receive as the main page's two modes (spec v0.4): the send
-  radar puts every protocol's peers on one screen.
+  and Send | Receive as the main page's two tabs (spec v0.5): the send
+  radar puts every protocol's peers on one screen, the receive radar
+  shows who is sending, and History lists what went and came.
 - The RPM spec for the Jolla Phone 2026 (Sailfish OS 5.2+, aarch64 only).
-- CI with the Harbour gate, 16 fuzz targets, the dependency policy and
-  the vendor check.
+- CI with the Harbour gate, 21 fuzz targets, the dependency policy,
+  the vendor check, and interop against the Python wormhole client and
+  croc's Go binaries, 11 and 10.
 
 ## Verified
 
@@ -30,7 +34,8 @@ On an x86_64 host, from a clean checkout:
 - `make check`: 1,123 test passes across the workspace and the
   per-protocol feature builds.
 - The rest of `make check`:
-  - the fuzz smoke over 16 targets;
+  - the fuzz smoke over 16 targets (the five croc targets since: 60 s
+    each, no finding in the engine);
   - the C harness under ASan/UBSan/LSan;
   - the Qt bridge and QML suites;
   - the aarch64 cross-build of the engine;
@@ -39,6 +44,7 @@ On an x86_64 host, from a clean checkout:
 - `make deny`.
 - `make vendor`.
 - `make wormhole-interop` against the pinned Python client (run during the fix round; it needs PyPI, so it is not part of `make check`).
+- croc's interop tests, all nine, against croc v11.5.4's Go binary with croc v10.7.0's as the other peer on its relay, and against croc v10.7.0's alone, on the development container (spec v0.5).
 
 On GitHub, in pull request #2 (the first runs of `ci.yml` and `rpm.yml`):
 
@@ -93,10 +99,10 @@ docs; the upstream ones are in `docs/UPSTREAM-QUICKSHARE.md`.
 - **Everything in `docs/MANUAL-TESTS.md`:**
   - the phone's firewall;
   - Sailjail;
-  - real Android, LocalSend, wormhole and Bluetooth peers;
+  - real Android, LocalSend, wormhole, croc and Bluetooth peers;
   - the Share-menu activation (`ExecDBus`);
-  - how the send radar looks and feels on the phone (M-18): the host
-    tests lay it out but never look at it.
+  - how the radars and the tabs look and feel on the phone (M-18, M-19):
+    the host tests lay them out but never look at them or swipe.
 
 ## Waiting on the owner
 
@@ -107,9 +113,6 @@ docs; the upstream ones are in `docs/UPSTREAM-QUICKSHARE.md`.
   - switching Wormhole off does not cancel a wormhole transfer already
     running;
   - `docs/UPSTREAM-QUICKSHARE.md` is drafted, not filed.
-- **Receive mode's own design** (spec v0.4): it keeps the list it had
-  for now. The tile beside Magic Wormhole's on the send radar is kept for
-  croc.
 - **The default branch.** `main` exists now; making it the repository's
   default (Settings, General) is the owner's. Until then Dependabot and
   `workflow_dispatch` keep using the old branch.
@@ -121,12 +124,6 @@ spec §2 does not grant. Either is a spec change: the permission goes into
 §2, `harbour-sukkula.desktop` and `POLICY_PERMISSIONS` in
 `ci/harbour-check.sh` in one commit, never a workaround.
 
-- **Sending from the other folders and Gallery.** With only `Downloads`,
-  a photo shared from Gallery (`~/Pictures`) or a file picked in
-  `~/Documents` is probably unreadable inside the sandbox; M-8 records
-  what the phone does. Candidates: `Pictures` and `Videos` for Gallery,
-  `Documents` and `Music` for the rest, or `UserDirs` for all of them.
-  Received files still go to `~/Downloads/Sukkula/` either way.
 - **Scanning a wormhole code as a QR code** (F-MW2). Needs `Camera`, a
   camera view in QML and a QR decoder. The decoder reads what the lens
   sees, so it is hostile input: a new dependency with its own review

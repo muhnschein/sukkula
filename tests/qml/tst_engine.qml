@@ -31,11 +31,12 @@ Script {
         function () {
             test.verify(engine.running, "running after started")
             test.compare(engine.version, "9.9.9-fake")
-            test.compare(engine.protocols, ["local_send", "quick_share", "wormhole", "bluetooth"])
+            test.compare(engine.protocols, ["local_send", "quick_share", "wormhole", "croc", "bluetooth"])
             test.verify(engine.settingsKnown, "settings known")
             test.compare(engine.effectiveDeviceName, "Jolla Phone")
             test.compare(engine.receiving, false)
-            test.compare(engine.protocolStatuses.length, 4)
+            test.compare(engine.protocolStatuses.length, 5)
+            test.compare(engine.protocolStatuses[3], { protocol: "croc", state: "send_only", errorCode: "", errorDetail: "" })
             test.compare(engine.protocolStatuses[2].state, "send_only")
         },
         function () {
@@ -56,6 +57,8 @@ Script {
                 test.pending = { ok: ok, code: error ? error.code : "", transfer: transfer }
             })
             test.compare(last().cmd, { type: "receive_wormhole", code: "7-guitarist-revenge" })
+            engine.receiveCroc("1234-Alpha-bravo-charlie")
+            test.compare(last().cmd, { type: "receive_croc", code: "1234-Alpha-bravo-charlie" })
             bridge.emitEvent(Ev.reply(id, false, "bad_code"))
         },
         function () {
@@ -261,14 +264,27 @@ Script {
             var bad = Ev.qr21()
             bad.rows[3] = bad.rows[3].substring(0, 20) + "2"
             bridge.emitEvent(Ev.wormholeCode(8, "10-e-f", bad))
+            // croc's code: no QR, and a QR a croc event carries is ignored.
+            test.announced = []
+            engine.codeArrived.connect(test.noteCode)
+            bridge.emitEvent(Ev.crocCode(9, "gala-tulip-acorn"))
+            bridge.emitEvent(JSON.stringify({ type: "croc_code", transfer: 10, code: "x-y-z-w", qr: Ev.qr21() }))
+            bridge.emitEvent(JSON.stringify({ type: "croc_code", transfer: 11, code: 7 }))
         },
         function () {
-            test.compare(engine.wormholeCode(5).code, "7-guitarist-revenge")
-            test.compare(engine.wormholeCode(5).qr.size, 21)
-            test.compare(engine.wormholeCode(6).qr, null)
-            test.compare(engine.wormholeCode(7).qr, null)
-            test.compare(engine.wormholeCode(8).qr, null)
-            test.compare(engine.wormholeCode(8).code, "10-e-f", "the code stands without its QR")
+            test.compare(engine.sendCode(5).code, "7-guitarist-revenge")
+            test.compare(engine.sendCode(5).qr.size, 21)
+            test.compare(engine.sendCode(6).qr, null)
+            test.compare(engine.sendCode(7).qr, null)
+            test.compare(engine.sendCode(8).qr, null)
+            test.compare(engine.sendCode(8).code, "10-e-f", "the code stands without its QR")
+            test.compare(engine.sendCode(9), { code: "gala-tulip-acorn", qr: null })
+            test.compare(engine.sendCode(10).qr, null, "croc has no QR, whatever the event says")
+            test.compare(engine.sendCode(11), null, "a code that is not a string")
+            test.compare(test.announced, [5, 6, 7, 8, 9, 10], "every code said, the bad one not")
+            engine.codeArrived.disconnect(test.noteCode)
+            test.compare(engine.protocolName("croc"), "croc")
+            test.verify(engine.protocolEnabled("croc"), "on by default")
             // Bluetooth: bad addresses are dropped, the list replaced.
             bridge.emitEvent(Ev.bluetoothDevices([
                 { address: "aa:bb:cc:dd:ee:ff", name: "Car" },
@@ -317,6 +333,12 @@ Script {
     // Handed between steps.
     property var pending: null
     property var closed: []
+    property var announced: []
+    function noteCode(transferId) {
+        var next = test.announced.slice(0)
+        next.push(transferId)
+        test.announced = next
+    }
     property var failedMessages: []
     function noteFailure(message) {
         var next = test.failedMessages.slice(0)

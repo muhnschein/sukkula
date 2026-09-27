@@ -49,6 +49,7 @@ QtObject {
         localsend: { enabled: true, pin: null },
         quickshare: { enabled: true, visibility: "everyone", ble_nudge: true },
         wormhole: { enabled: true, mailbox_url: null, relay_url: null },
+        croc: { enabled: true, relay: null, password: null },
         bluetooth: { enabled: true },
         logging: false
     })
@@ -93,8 +94,9 @@ QtObject {
     signal transferUpdated(var transferId)
     /// A transfer ended; `state` is "done", "cancelled" or "failed".
     signal transferEnded(var transferId, string direction, string state)
-    /// A wormhole send has its code (F-MW1): see `wormholeCode()`.
-    signal wormholeCodeArrived(var transferId)
+    /// A Magic Wormhole or croc send has its code (F-MW1, F-CR1): see
+    /// `sendCode()`.
+    signal codeArrived(var transferId)
     /// A command without a callback failed; `message` is translated.
     signal failed(string message)
 
@@ -234,6 +236,9 @@ QtObject {
     function receiveWormhole(code, callback) {
         return engine.command({ type: "receive_wormhole", code: code }, callback)
     }
+    function receiveCroc(code, callback) {
+        return engine.command({ type: "receive_croc", code: code }, callback)
+    }
     function cancel(transferId, callback) {
         return engine.command({ type: "cancel", transfer: transferId },
                               callback ? callback : engine._quiet)
@@ -253,9 +258,9 @@ QtObject {
     function firstOffer() {
         return engine.offers.count > 0 ? engine.offer(engine.offers.get(0).offerId) : null
     }
-    /// {code, qr} for a wormhole send, or null; `qr` is {size, rows} or
-    /// null when the engine's was unusable.
-    function wormholeCode(transferId) {
+    /// {code, qr} for a Magic Wormhole or croc send, or null; `qr` is
+    /// {size, rows}, or null for croc and when the engine's was unusable.
+    function sendCode(transferId) {
         var c = engine._codes[transferId]
         return c ? c : null
     }
@@ -300,6 +305,9 @@ QtObject {
         if (protocol === "wormhole") {
             return !(s.wormhole && s.wormhole.enabled === false)
         }
+        if (protocol === "croc") {
+            return !(s.croc && s.croc.enabled === false)
+        }
         if (protocol === "bluetooth") {
             return !(s.bluetooth && s.bluetooth.enabled === false)
         }
@@ -324,6 +332,7 @@ QtObject {
         case "local_send": return "LocalSend"
         case "quick_share": return "Quick Share"
         case "wormhole": return "Magic Wormhole"
+        case "croc": return "croc"
         case "bluetooth": return "Bluetooth"
         }
         return ""
@@ -338,7 +347,7 @@ QtObject {
         case "ready": return qsTr("Ready")
         //: A protocol's receiver could not start.
         case "failed": return qsTr("Failed")
-        //: The protocol can only send from this phone (Bluetooth, Wormhole).
+        //: The protocol can only send from this phone, or receive by a typed code (Bluetooth, Magic Wormhole, croc).
         case "send_only": return qsTr("Send only")
         }
         return ""
@@ -358,9 +367,10 @@ QtObject {
         case "bad_settings":
             return qsTr("A setting could not be used.")
         case "bad_file":
-            // Mostly Sailjail: only Downloads is granted (spec §2), and a
-            // file shared from elsewhere may be out of reach.
-            return qsTr("A file could not be read. Sukkula can read files in Downloads only.")
+            // Mostly Sailjail: the user's folders and memory cards are
+            // granted (spec §2), and a file from anywhere else is out of
+            // reach.
+            return qsTr("A file could not be read. Sukkula can send files from Downloads, Documents, Music, Pictures, Videos and memory cards only.")
         case "too_large":
             return qsTr("Too large, or too many files.")
         case "refused":
@@ -417,7 +427,8 @@ QtObject {
         case "transfer_progress": engine._onTransferProgress(e); break
         case "transfer_finished": engine._onTransferFinished(e); break
         case "text_received": engine._onTextReceived(e); break
-        case "wormhole_code": engine._onWormholeCode(e); break
+        case "wormhole_code": engine._onCode(e, true); break
+        case "croc_code": engine._onCode(e, false); break
         case "bluetooth_devices": engine._onBluetoothDevices(e); break
         default: break // A newer engine's event: not ours to guess at.
         }
@@ -715,14 +726,15 @@ QtObject {
         }
     }
 
-    function _onWormholeCode(e) {
+    /// A send's code; only Magic Wormhole's comes with a QR code.
+    function _onCode(e, withQr) {
         var id = engine._key(e.transfer)
         var code = engine._str(e.code, 128)
         if (id < 0 || code === "") {
             return
         }
-        engine._codes[id] = { code: code, qr: engine._qr(e.qr) }
-        engine.wormholeCodeArrived(id)
+        engine._codes[id] = { code: code, qr: withQr ? engine._qr(e.qr) : null }
+        engine.codeArrived(id)
     }
 
     function _onBluetoothDevices(e) {
@@ -763,7 +775,7 @@ QtObject {
         return typeof v === "string" && allowed.indexOf(v) >= 0 ? v : ""
     }
     function _protocol(v) {
-        return engine._oneOf(v, ["local_send", "quick_share", "wormhole", "bluetooth"])
+        return engine._oneOf(v, ["local_send", "quick_share", "wormhole", "croc", "bluetooth"])
     }
     function _error(v) {
         var codes = ["bad_command", "bad_version", "unavailable", "not_found", "bad_settings",
