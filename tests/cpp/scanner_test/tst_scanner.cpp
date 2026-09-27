@@ -72,9 +72,9 @@ private slots:
         QVERIFY(Scanner::prepare(QImage()).isNull());
         const QImage big = Scanner::prepare(withCode(QSize(1280, 720), 12));
         QCOMPARE(big.format(), QImage::Format_Grayscale8);
-        QCOMPARE(big.size(), QSize(640, 360));
-        const QImage tall = Scanner::prepare(QImage(QSize(300, 2000), QImage::Format_RGB32));
-        QCOMPARE(tall.size(), QSize(96, 640));
+        QCOMPARE(big.size(), QSize(1024, 576));
+        const QImage tall = Scanner::prepare(QImage(QSize(300, 2048), QImage::Format_RGB32));
+        QCOMPARE(tall.size(), QSize(150, 1024));
         const QImage small = Scanner::prepare(withCode(QSize(300, 200), 4));
         QCOMPARE(small.size(), QSize(300, 200));
         QCOMPARE(small.format(), QImage::Format_Grayscale8);
@@ -101,9 +101,9 @@ private slots:
         unsigned w = 0, h = 0, stride = 0;
         int scans = 0;
         sukkula_stub_last_scan(&w, &h, &stride, &scans);
-        QCOMPARE(w, 640u);
-        QCOMPARE(h, 480u);
-        QCOMPARE(stride, 640u);
+        QCOMPARE(w, 1024u);
+        QCOMPARE(h, 768u);
+        QCOMPARE(stride, 1024u);
 #endif
     }
 

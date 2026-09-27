@@ -249,6 +249,10 @@ QtObject {
     function receiveCroc(code, callback) {
         return engine.command({ type: "receive_croc", code: code }, callback)
     }
+    /// A typed or pasted code, whose protocol the engine tells from it.
+    function receiveCode(code, callback) {
+        return engine.command({ type: "receive_code", code: code }, callback)
+    }
     function cancel(transferId, callback) {
         return engine.command({ type: "cancel", transfer: transferId },
                               callback ? callback : engine._quiet)

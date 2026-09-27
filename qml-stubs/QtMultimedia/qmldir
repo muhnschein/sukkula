@@ -8,3 +8,4 @@ VideoOutput 5.0 VideoOutput.qml
 VideoOutput 5.6 VideoOutput.qml
 internal CameraFocus CameraFocus.qml
 internal CameraFlash CameraFlash.qml
+internal CameraViewfinder CameraViewfinder.qml

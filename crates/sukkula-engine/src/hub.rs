@@ -65,7 +65,7 @@ use crate::adapter::{Adapter, CodeReceive, Outgoing, OutgoingFile};
 use crate::api::{
     API_VERSION, Command, CommandEnvelope, ErrorCode, ErrorInfo, Event, FileView,
     MAX_IN_FLIGHT_COMMANDS, MAX_LISTED_FILES, OfferView, Outcome, ProtocolState, ProtocolStatus,
-    RequestId, SendItem, SendTarget, StartConfig, TransferId, parse_command,
+    RequestId, Scanned, SendItem, SendTarget, StartConfig, TransferId, parse_command,
 };
 use crate::ctx::{Ctx, EventSink};
 use crate::logging::{self, LogSink, Logging};
@@ -555,6 +555,24 @@ impl Hub {
                 let request = CodeReceive { code, mailbox_url };
                 adapter.receive_code(request).await.map(Some)
             }
+            Command::ReceiveCode { code } => match crate::scan::typed(&code) {
+                Some(Scanned::Wormhole { code, mailbox_url }) => {
+                    let adapter = self.adapter(Protocol::Wormhole)?;
+                    let request = CodeReceive { code, mailbox_url };
+                    adapter.receive_code(request).await.map(Some)
+                }
+                Some(Scanned::Croc { code }) => {
+                    let adapter = self.adapter(Protocol::Croc)?;
+                    adapter
+                        .receive_code(CodeReceive::typed(code))
+                        .await
+                        .map(Some)
+                }
+                Some(Scanned::Other) | None => Err(ErrorInfo::new(
+                    ErrorCode::BadCode,
+                    "not a Magic Wormhole or croc code",
+                )),
+            },
             Command::ReceiveCroc { code } => {
                 let adapter = self.adapter(Protocol::Croc)?;
                 adapter
@@ -979,6 +997,12 @@ fn command_timeout(cmd: &Command) -> Option<Duration> {
         // It waits for the user too.
         Command::ReceiveWormhole { .. } => Some(RECEIVE_CODE_TIMEOUT),
         Command::ReceiveCroc { .. } => Some(RECEIVE_CROC_TIMEOUT),
+        // Either protocol's, so the longer.
+        Command::ReceiveCode { .. } => Some(if RECEIVE_CROC_TIMEOUT > RECEIVE_CODE_TIMEOUT {
+            RECEIVE_CROC_TIMEOUT
+        } else {
+            RECEIVE_CODE_TIMEOUT
+        }),
         _ => Some(COMMAND_TIMEOUT),
     }
 }
@@ -2737,6 +2761,10 @@ mod tests {
                     r#"{"type":"receive_wormhole","code":"7-guitarist-revenge"}"#.to_owned(),
                     "receive_code",
                 ),
+                (
+                    r#"{"type":"receive_code","code":"7 Guitarist revenge"}"#.to_owned(),
+                    "receive_code",
+                ),
             ],
             Protocol::Bluetooth => vec![
                 (
@@ -2752,6 +2780,10 @@ mod tests {
                 (send(r#"{"protocol":"croc"}"#), "send"),
                 (
                     r#"{"type":"receive_croc","code":"8123-alpha-bravo-charlie"}"#.to_owned(),
+                    "receive_code",
+                ),
+                (
+                    r#"{"type":"receive_code","code":"Gala tulip acorn"}"#.to_owned(),
                     "receive_code",
                 ),
             ],
@@ -2874,6 +2906,57 @@ mod tests {
         for (cmd, _) in commands_of(off) {
             assert_eq!(run(&cmd).unwrap_err().code, ErrorCode::Unavailable, "{cmd}");
         }
+        drop(delivery);
+    }
+
+    /// Spec v0.6: a typed code goes to the protocol it is for, and one
+    /// that is nobody's reaches no adapter.
+    #[test]
+    fn a_typed_code_that_is_nobodys_is_refused_before_any_adapter() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = paused_runtime();
+        let calls = Calls::default();
+        let adapters: Vec<Arc<dyn Adapter>> = EVERY_PROTOCOL
+            .iter()
+            .map(|&protocol| {
+                Arc::new(Fake {
+                    protocol,
+                    calls: calls.clone(),
+                }) as Arc<dyn Adapter>
+            })
+            .collect();
+        let (hub, delivery, log) = test_hub(dir.path(), adapters);
+        let mut next = 0;
+        let mut run = |cmd: &str| {
+            next += 1;
+            take(&hub, &runtime, next, cmd);
+            runtime.block_on(async { tokio::time::sleep(Duration::from_secs(1)).await });
+            reply_to(&log, next)
+        };
+        for code in [
+            "",
+            "abc",
+            "https://example.org/",
+            "7-guitarist-r\u{e9}venge",
+        ] {
+            let cmd = serde_json::json!({"type": "receive_code", "code": code});
+            let reply = run(&cmd.to_string());
+            assert_eq!(reply.unwrap_err().code, ErrorCode::BadCode, "{code:?}");
+        }
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "{:?}",
+            calls.lock().unwrap()
+        );
+        run(r#"{"type":"receive_code","code":"8123-alpha-bravo-charlie"}"#).unwrap();
+        run(r#"{"type":"receive_code","code":"8-guitarist-revenge"}"#).unwrap();
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![
+                (Protocol::Croc, "receive_code"),
+                (Protocol::Wormhole, "receive_code")
+            ]
+        );
         drop(delivery);
     }
 

@@ -83,7 +83,7 @@ receiving by code (spec v0.6): `height` rows of `width` grey (luma)
 pixels, one byte each, every row `stride` bytes after the last. Both sides
 are 1 to 1024 pixels and the stride `width` to 4096 bytes; the frame is
 read during the call only, and must not change meanwhile. The shell scales
-the viewfinder to 640 pixels at most.
+the viewfinder to 1024 pixels at most.
 
 It returns `0` when no QR code in the frame could be read, which is also
 what a code too blurred to read gives. Otherwise it writes what a code
@@ -175,7 +175,7 @@ next command's, and is still subject to the protocol's switch in Settings.
 | --- | --- | --- |
 | A command, or the start configuration | 64 KiB of UTF-8, not counting the NUL | `SUKKULA_ERR_TOO_LONG`, or a `fatal` event; nothing is parsed |
 | Commands waiting for their reply | 64 | `SUKKULA_ERR_BUSY`; nothing is parsed |
-| One command's work | 60 s; `receive_wormhole` 150 s, `receive_croc` 160 s, since they wait for the user | Answered with `internal` |
+| One command's work | 60 s; `receive_wormhole` 150 s, `receive_croc` and `receive_code` 160 s, since they wait for the user | Answered with `internal` |
 | `set_receiving` and `set_settings` waiting for the receive switch | 60 s; then they run to the end, each protocol bounded as below | Answered with `internal`; nothing was changed |
 | One protocol's start or stop | 15 s | That protocol reports `failed`; the others go on |
 | An event | 256 KiB of JSON | Never happens: events are bounded by construction. A `reply` or `transfer_finished` would be replaced by an `internal` failure, anything else dropped |
@@ -390,6 +390,25 @@ to spare.
 
 ```json command
 {"v":1,"id":15,"cmd":{"type":"receive_croc","code":"gala-tulip-acorn"}}
+```
+
+### receive_code
+
+Receives with a code the user typed or pasted, over the protocol the code
+is for (spec v0.6): nobody has to say which. What a QR code would carry
+reads as it would (a `wormhole-transfer:` URI with its mailbox, croc's web
+link, croc's words); croc's words in any case, lowercased, since croc makes
+no capitals; a number, a hyphen and words of letters and digits as a Magic
+Wormhole code; anything else croc takes, 6 to 128 printable characters, as
+a croc code the sender chose, but never a URL. Spaces between words are
+hyphens. A code with a four-digit number and three or more words is croc
+10's. The rest is as for `receive_wormhole` and `receive_croc`, whichever
+it goes to, and it may take as long as the longer of the two, 160 s.
+`bad_code` for text that is nobody's code, before anything is contacted;
+`unavailable` when its protocol is switched off.
+
+```json command
+{"v":1,"id":17,"cmd":{"type":"receive_code","code":"7 guitarist revenge"}}
 ```
 
 ### cancel

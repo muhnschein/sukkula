@@ -1,6 +1,6 @@
 import QtQuick 2.6
 
-// QtMultimedia's Camera, as far as ScanPage.qml uses it, with the same
+// QtMultimedia's Camera, as far as ScanView.qml uses it, with the same
 // values as Qt's. There is no camera: it is "active" once asked to be, if
 // a test has not made it unavailable.
 QtObject {
@@ -19,6 +19,9 @@ QtObject {
         FocusContinuous = 16, FocusMacro = 32
     }
     enum FlashModes { FlashAuto = 1, FlashOff = 2, FlashOn = 4 }
+    enum FocusPointModes {
+        FocusPointAuto = 0, FocusPointCenter = 1, FocusPointFaceDetection = 2, FocusPointCustom = 3
+    }
 
     property int captureMode: 0
     property int cameraState: 2
@@ -28,4 +31,15 @@ QtObject {
 
     property CameraFocus focus: CameraFocus {}
     property CameraFlash flash: CameraFlash {}
+    property CameraViewfinder viewfinder: CameraViewfinder {}
+    /// Focus searches asked for, for tests.
+    property int searches: 0
+
+    function supportedViewfinderResolutions() {
+        return [Qt.size(640, 480), Qt.size(1280, 720), Qt.size(1920, 1080)]
+    }
+    function unlock() {}
+    function searchAndLock() {
+        camera.searches += 1
+    }
 }

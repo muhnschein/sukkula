@@ -24,13 +24,17 @@
 //! A frame is at most [`MAX_SIDE`] pixels a side. Codes printed light on
 //! dark -- croc's in a light terminal -- are found too: a frame with no
 //! code in it is read once more, inverted.
+//!
+//! A code the user types or pastes instead goes through [`typed`], which
+//! tells the protocol from the code's shape as well: nobody has to say
+//! whether it is a Magic Wormhole or a croc code.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use crate::api::Scanned;
 
-/// Longest side of a frame, in pixels. The shell scales the viewfinder to
-/// 640 at most.
+/// Longest side of a frame, in pixels, which the shell scales the
+/// viewfinder to.
 pub const MAX_SIDE: usize = 1024;
 
 /// Largest distance between two rows' starts, in bytes.
@@ -142,6 +146,78 @@ fn texts(frame: &Frame<'_>) -> Option<Vec<String>> {
 #[cfg(not(any(feature = "wormhole", feature = "croc")))]
 fn texts(_frame: &Frame<'_>) -> Option<Vec<String>> {
     None
+}
+
+/// Whether `text` is shaped as croc makes codes: three or more words of
+/// `a` to `z` (croc 11's, one of whose EFF words is `yo-yo`), or croc 10's
+/// four digits and then three or more such words.
+#[must_use]
+pub(crate) fn croc_words(text: &str) -> bool {
+    let word = |w: &&str| !w.is_empty() && w.bytes().all(|b| b.is_ascii_lowercase());
+    let parts: Vec<&str> = text.split('-').collect();
+    match parts.split_first() {
+        Some((pin, words)) if pin.len() == 4 && pin.bytes().all(|b| b.is_ascii_digit()) => {
+            words.len() >= 3 && words.iter().all(word)
+        }
+        _ => parts.len() >= 3 && parts.iter().all(word),
+    }
+}
+
+/// Which protocol a code the user typed or pasted is for, and the code as
+/// that protocol's receive takes it (spec v0.6); `None` for text that is
+/// neither's. The two kinds look nothing alike, so the user need not say:
+///
+/// - what a QR code would give ([`read`]): a pasted `wormhole-transfer:`
+///   URI, with its mailbox, croc's web link, or croc's words;
+/// - croc's words, whatever their case, in lower case: croc makes no
+///   capitals, and a phone keyboard makes the first one;
+/// - a number, a hyphen and words of letters and digits: a Magic Wormhole
+///   code, lowercased, as its receive reads it, which holds it to the rest
+///   of the typed grammar;
+/// - anything else croc takes, 6 to 128 printable characters, as typed:
+///   a code the sender chose. Not a URL, nor a `wormhole-transfer:` URI
+///   that did not read: those are no croc code anybody chose.
+///
+/// Spaces between the words are hyphens, as croc's command line joins
+/// them and as people read codes aloud. A wormhole code with a four-digit
+/// number and three or more words is taken for croc 10's: mailbox servers
+/// hand out small numbers.
+#[must_use]
+pub fn typed(text: &str) -> Option<Scanned> {
+    let text = text.trim();
+    if text.is_empty() || text.len() > MAX_TEXT_BYTES {
+        return None;
+    }
+    let found = read(text);
+    if found != Scanned::Other {
+        return Some(found);
+    }
+    let lower_text = text.to_ascii_lowercase();
+    if lower_text.contains("://") || lower_text.starts_with("wormhole-transfer:") {
+        return None;
+    }
+    let joined = text.split_whitespace().collect::<Vec<_>>().join("-");
+    let lower = joined.to_ascii_lowercase();
+    let croc_length = (6..=128).contains(&joined.len());
+    if croc_length && croc_words(&lower) {
+        return Some(Scanned::Croc { code: lower });
+    }
+    let numbered = joined.split_once('-').is_some_and(|(nameplate, words)| {
+        !nameplate.is_empty() && nameplate.bytes().all(|b| b.is_ascii_digit()) && !words.is_empty()
+    });
+    if numbered {
+        // Only letters, digits and hyphens: what is left of the grammar,
+        // and the library's entropy check, is the adapter's.
+        let plain = lower
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+        return plain.then_some(Scanned::Wormhole {
+            code: lower,
+            mailbox_url: None,
+        });
+    }
+    (croc_length && joined.bytes().all(|b| b.is_ascii_graphic()))
+        .then_some(Scanned::Croc { code: joined })
 }
 
 /// The code a QR code's text holds, or [`Scanned::Other`]. White space
@@ -380,6 +456,58 @@ mod tests {
             }
         }
         scan(&Frame::new(&f, side, side, side).unwrap())
+    }
+
+    #[test]
+    fn a_typed_code_says_which_protocol_it_is_for() {
+        let w = |c: &str| {
+            Some(Scanned::Wormhole {
+                code: c.into(),
+                mailbox_url: None,
+            })
+        };
+        let c = |c: &str| Some(Scanned::Croc { code: c.into() });
+        // Magic Wormhole: a number, then words, however spoken or typed.
+        assert_eq!(typed("7-guitarist-revenge"), w("7-guitarist-revenge"));
+        assert_eq!(typed("  7 Guitarist  revenge\n"), w("7-guitarist-revenge"));
+        assert_eq!(typed("1234-guitarist-revenge"), w("1234-guitarist-revenge"));
+        // croc 11 and croc 10, with a keyboard's capital undone.
+        assert_eq!(typed("gala-tulip-acorn"), c("gala-tulip-acorn"));
+        assert_eq!(typed("Gala tulip acorn"), c("gala-tulip-acorn"));
+        assert_eq!(typed("yo-yo-gala-tulip"), c("yo-yo-gala-tulip"));
+        assert_eq!(
+            typed("8123 Alpha bravo charlie"),
+            c("8123-alpha-bravo-charlie")
+        );
+        // A code a croc sender chose, kept as typed.
+        assert_eq!(typed("MySecret!42"), c("MySecret!42"));
+        assert_eq!(typed("my secret 42"), c("my-secret-42"));
+        // Pasted as a QR code would carry them.
+        assert_eq!(
+            typed("wormhole-transfer:7-guitarist-revenge?rendezvous=wss%3A%2F%2Fm.example%2Fv1"),
+            Some(Scanned::Wormhole {
+                code: "7-guitarist-revenge".into(),
+                mailbox_url: Some("wss://m.example/v1".into()),
+            })
+        );
+        assert_eq!(
+            typed("https://getcroc.com/?code=gala-tulip-acorn"),
+            c("gala-tulip-acorn")
+        );
+        // Nobody's code.
+        for text in [
+            "",
+            "   ",
+            "abc",
+            "https://example.org/menu",
+            "HTTPS://getcroc.com/?code=x",
+            "wormhole-transfer:guitarist",
+            "7-guitarist-revenge\u{202e}x",
+            &"a".repeat(129),
+            &"a".repeat(MAX_TEXT_BYTES + 1),
+        ] {
+            assert_eq!(typed(text), None, "{text:?}");
+        }
     }
 
     #[test]

@@ -10,7 +10,7 @@ import "helpers/Events.js" as Ev
  * from the engine, checked as sukkula-core checks them, saved when the
  * page is left -- not when a page is pushed over it -- and only when
  * something changed, with every field the page does not know kept. Then
- * the About page and receiving by wormhole or croc code (F-MW2, F-CR2).
+ * the About page. Receiving by code is tst_scan.qml's.
  */
 Script {
     id: test
@@ -189,53 +189,6 @@ Script {
             test.verify(all.indexOf("LocalSend") >= 0 && all.indexOf("magic-wormhole") >= 0
                         && all.indexOf("open-quickshare") >= 0 && all.indexOf("croc") >= 0, "the upstreams")
             window.pageStack.pop()
-            // Receiving by code (F-MW2).
-            test.page = window.pageStack.push(Qt.resolvedUrl("../../qml/pages/WormholeReceivePage.qml"),
-                                              { engine: engine })
-        },
-        function () {
-            var field = test.field("codeField")
-            var button = test.field("receiveButton")
-            test.verify(!button.enabled, "nothing typed")
-            var bad = ["../../etc/passwd", "guitarist-revenge", "7", "7-", "7--a", "-7-a", "7-a/b", "7-ää"]
-            for (var i = 0; i < bad.length; i++) {
-                field.text = bad[i]
-                test.verify(!test.page.valid, "refused: " + bad[i])
-            }
-            field.text = "  7 Guitarist Revenge "
-            test.verify(test.page.valid, "spoken form")
-            test.compare(test.page.code, "7-guitarist-revenge")
-            button.clicked()
-            test.compare(test.commandsOfType("receive_wormhole"),
-                         [{ type: "receive_wormhole", code: "7-guitarist-revenge" }])
-        },
-        function () {
-            test.compare(window.pageStack.currentPage.objectName, "mainPage",
-                         "back to the main page; the consent dialog does the rest")
-            // Receiving by croc code (F-CR2): compared byte for byte.
-            test.page = window.pageStack.push(Qt.resolvedUrl("../../qml/pages/WormholeReceivePage.qml"),
-                                              { engine: engine, protocol: "croc" })
-        },
-        function () {
-            var field = test.field("codeField")
-            test.verify(probe.texts(test.page).join("\n").indexOf("gala-tulip-acorn") >= 0,
-                        "croc's example")
-            var bad = ["12345", "1234-ä-b", "1234\u0007xyz", "  a b  "]
-            for (var i = 0; i < bad.length; i++) {
-                field.text = bad[i]
-                test.verify(!test.page.valid, "refused: " + bad[i])
-            }
-            field.text = "abcdef"
-            test.verify(test.page.valid, "croc takes any six")
-            field.text = " 1234 Alpha  bravo charlie\n"
-            test.verify(test.page.valid)
-            test.compare(test.page.code, "1234-Alpha-bravo-charlie", "spaces joined, the case kept")
-            test.field("receiveButton").clicked()
-            test.compare(test.commandsOfType("receive_croc"),
-                         [{ type: "receive_croc", code: "1234-Alpha-bravo-charlie" }])
-        },
-        function () {
-            test.compare(window.pageStack.currentPage.objectName, "mainPage")
         }
     ]
 }

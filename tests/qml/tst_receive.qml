@@ -11,10 +11,10 @@ import "helpers/Events.js" as Ev
  * the offer's place -- whichever of the two events comes first -- draws a
  * line to this phone, fills it and the sender, can be cancelled, and
  * leaves a moment after it ends, or when tapped; a declined offer leaves
- * at once; what comes over the internet comes from its tile through the
- * cloud; and the cloud's tiles open the page to type a code on, for
- * Magic Wormhole or croc, and each goes with its protocol switched off,
- * the cloud with both.
+ * at once; what comes over the internet comes through the QR code, from
+ * its protocol's side; and the QR code opens the camera to scan or type a
+ * code, for Magic Wormhole or croc alike, and goes when both are switched
+ * off (spec v0.6).
  */
 Script {
     id: test
@@ -68,10 +68,9 @@ Script {
             test.verify(test.view.pulsing)
             test.verify(test.find("receiveStatus").visible, "waiting")
             test.compare(test.find("visibleVia").text, "Visible over LocalSend, Quick Share")
-            test.verify(test.find("cloud").visible, "the cloud")
-            test.compare(test.find("cloudLabel").text, "Receive with a code")
-            test.verify(!test.find("wormholeTile").visible)
-            test.verify(!test.find("crocTile").visible)
+            test.verify(test.find("qrButton").visible, "the QR code")
+            test.compare(test.find("cloudLabel").text, "Scan or type a code")
+            test.compare(test.find("cloudGlyph").kind, "qr")
             // An offer: the sender on the rings while the dialog asks.
             bridge.emitEvent(Ev.offer(7, { protocol: "local_send", sender: Ev.EVIL_NAME }))
         },
@@ -149,33 +148,23 @@ Script {
         },
         function () {
             test.compare(test.shown("offerBubble").length, 0)
-            // The cloud's tiles: receiving with a code.
-            test.find("cloud").clicked()
-            test.verify(test.find("wormholeTile").visible, "Magic Wormhole's tile")
-            test.verify(test.find("crocTile").visible, "and croc's")
-            test.find("wormholeTile").clicked()
+            // The QR code: the camera, for either protocol's code.
+            test.find("qrButton").clicked()
         },
         function () {
-            test.compare(window.pageStack.currentPage.objectName, "wormholeReceivePage")
-            test.compare(window.pageStack.currentPage.protocol, "wormhole")
+            test.compare(window.pageStack.currentPage.objectName, "scanPage")
             window.pageStack.pop()
-            return 50
-        },
-        function () {
-            test.find("crocTile").clicked()
-        },
-        function () {
-            test.compare(window.pageStack.currentPage.objectName, "wormholeReceivePage")
-            test.compare(window.pageStack.currentPage.protocol, "croc", "the same page, for croc")
-            window.pageStack.pop()
-            // What comes over the internet comes from its tile.
+            // What comes over the internet comes from above the QR code.
             bridge.emitEvent(Ev.offer(10, { protocol: "wormhole", sender: "" }))
+            return 50
         },
         function () {
             var offers = test.shown("offerBubble")
             test.compare(offers.length, 1)
             test.compare(offers[0].x + offers[0].width / 2, test.view.leftTileX, "on Magic Wormhole's side")
-            test.verify(!test.find("wormholeTile").visible, "the tiles give way")
+            test.compare(test.find("cloudLabel").text, "", "the QR code is part of the picture now")
+            test.find("qrButton").clicked()
+            test.compare(window.pageStack.currentPage.objectName, "mainPage", "and opens no camera")
             bridge.emitEvent(Ev.offerClosed(10, "accepted"))
             bridge.emitEvent(Ev.transferStarted(22, "incoming", { protocol: "wormhole", peer: "" }))
             bridge.emitEvent(Ev.progress(22, 100, 1000))
@@ -191,21 +180,18 @@ Script {
         },
         function () {
             test.compare(test.shown("incomingBubble").length, 0)
-            test.compare(test.find("cloudLabel").text, "Receive with a code", "the cloud's own again")
-            // Magic Wormhole switched off: croc keeps the cloud.
+            test.compare(test.find("cloudLabel").text, "Scan or type a code", "the QR code's own again")
+            // Magic Wormhole switched off: croc keeps the QR code.
             bridge.emitEvent(Ev.settings({ wormhole: { enabled: false, mailbox_url: null, relay_url: null } }))
         },
         function () {
-            test.verify(test.find("cloud").visible, "croc still receives with a code")
-            test.verify(!test.find("wormholeTile").visible)
-            // And croc: no cloud.
+            test.verify(test.find("qrButton").visible, "croc still receives with a code")
+            // And croc: no QR code.
             bridge.emitEvent(Ev.settings({ wormhole: { enabled: false, mailbox_url: null, relay_url: null },
                                            croc: { enabled: false, relay: null, password: null } }))
         },
         function () {
-            test.verify(!test.find("cloud").visible, "nothing to receive a code over")
-            test.verify(!test.find("wormholeTile").visible)
-            test.verify(!test.find("crocTile").visible)
+            test.verify(!test.find("qrButton").visible, "nothing to receive a code over")
         }
     ]
 }

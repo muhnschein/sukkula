@@ -4,8 +4,8 @@
 // grey and small, and hands it to sukkula_scan_qr() (crates/sukkula-ffi/
 // include/sukkula.h) on a thread of its own. What the engine reads comes
 // back as `found(json)` on the GUI thread, the JSON exactly as the engine
-// wrote it; qml/pages/ScanPage.qml is the only caller, and Engine.qml the
-// only reader of the JSON.
+// wrote it; qml/components/ScanView.qml is the only caller, and Engine.qml
+// the only reader of the JSON.
 //
 // Like the bridge it holds no state of the app's and parses nothing: one
 // frame at a time, and whatever the frame says goes to QML untouched.
@@ -30,10 +30,10 @@ class Scanner : public QObject
     Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
 
 public:
-    // Longest side of a frame handed to the engine, in pixels. A code that
-    // fills a third of the viewfinder is still a few pixels a module, and
-    // the engine takes 1024 at most (sukkula.h).
-    static const int MaxSide = 640;
+    // Longest side of a frame handed to the engine, in pixels: the most it
+    // takes (sukkula.h). A code that fills a third of a tall viewfinder is
+    // then still several pixels a module.
+    static const int MaxSide = 1024;
 
     explicit Scanner(QObject *parent = nullptr);
     // Waits for the frame in hand: the engine bounds a scan, so this is

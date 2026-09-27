@@ -9,9 +9,10 @@ import Sailfish.Silica 1.0
  * while it is visible. A device that offers something comes onto the
  * rings with its protocol's badge while the consent dialog asks (F-C2);
  * once accepted, a line runs from it to this phone and both fill up as
- * the bytes come (F-C5). Above, the cloud: tapping it shows the tiles to
- * receive with a code, over Magic Wormhole (F-MW2) or croc, and what
- * comes that way comes through the cloud from its tile.
+ * the bytes come (F-C5). Above, a QR code (spec v0.6): tapping it opens
+ * the camera, to read the sender's Magic Wormhole or croc code off their
+ * screen or type it (F-MW2, F-CR2), and what comes that way comes through
+ * it from above, Magic Wormhole's from the left and croc's from the right.
  *
  * What was received, and what was sent, is on the History page.
  *
@@ -29,8 +30,6 @@ Radar {
     /// How long an ended transfer stays on screen, in ms.
     property int linger: 4000
     property bool alive: true
-    /// The code tiles are out.
-    property bool moreOpen: false
 
     /// Ended incoming transfers still on screen: transferId -> when.
     property var ended: ({})
@@ -80,7 +79,8 @@ Radar {
     readonly property real progress: view.activeTotal > 0 ? Math.min(1, view.activeBytes / view.activeTotal)
                                                           : (view.activeCount > 0 ? 0 : -1)
     readonly property var focused: (view.tick, view.focusId >= 0 ? view.engine.transfer(view.focusId) : null)
-    /// An internet transfer or offer is on screen: the tiles give way.
+    /// An internet transfer or offer is on screen: the QR code is part of
+    /// its picture then, and does not open the camera.
     property bool internetBusy: false
 
     pulsing: view.current && view.receiving && view.readyProtocols.length > 0 && view.activeCount === 0
@@ -209,9 +209,6 @@ Radar {
         if (!focusShown) {
             view.focusId = newest
         }
-        if (internetBusy) {
-            view.moreOpen = false
-        }
         view.place(keys, wanted)
         view.tick++
     }
@@ -314,9 +311,9 @@ Radar {
         }
     }
 
-    function receiveWithCode(protocol) {
-        pageStack.push(Qt.resolvedUrl("../pages/WormholeReceivePage.qml"),
-                       { engine: view.engine, protocol: protocol })
+    /// The camera, to read or type a code: which protocol, the code says.
+    function scanCode() {
+        pageStack.push(Qt.resolvedUrl("../pages/ScanPage.qml"), { engine: view.engine })
     }
 
     function cancelFocused() {
@@ -331,52 +328,28 @@ Radar {
     // ---- The picture ----------------------------------------------------
 
     CloudButton {
-        objectName: "cloud"
+        objectName: "qrButton"
+        kind: "qr"
         x: view.cloudX - width / 2
         y: view.cloudY - view.cloudHeight / 2
-        width: view.cloudWidth
+        width: view.cloudHeight
         cloudHeight: view.cloudHeight
+        lineWidth: Math.max(2, width * 2.5 / 32)
         labelHeight: view.summaryHeight
         labelWidth: view.width - 2 * view.margin
         visible: view.internetOn && view.engine.running
         faint: view.busy && !view.internetBusy
-        //: Receive screen, under the cloud: tapping it shows Magic Wormhole and croc.
-        label: !view.moreOpen && !view.internetBusy ? qsTr("Receive with a code") : ""
+        //: Receive screen, under the QR code: tapping it opens the camera.
+        label: !view.internetBusy ? qsTr("Scan or type a code") : ""
         onClicked: {
             if (!view.internetBusy) {
-                view.moreOpen = !view.moreOpen
+                view.scanCode()
             }
         }
     }
 
-    CodeTile {
-        objectName: "wormholeTile"
-        x: view.margin
-        y: view.tilesY
-        width: view.tileWidth
-        height: view.tileHeight
-        visible: view.wormholeOn && view.moreOpen && !view.internetBusy
-        title: "Magic Wormhole"
-        //: Receive screen: under Magic Wormhole's name on its tile.
-        hint: qsTr("Type the code")
-        onClicked: view.receiveWithCode("wormhole")
-    }
-
-    CodeTile {
-        objectName: "crocTile"
-        x: view.width - view.margin - view.tileWidth
-        y: view.tilesY
-        width: view.tileWidth
-        height: view.tileHeight
-        visible: view.crocOn && view.moreOpen && !view.internetBusy
-        title: "croc"
-        //: Receive screen: under croc's name on its tile.
-        hint: qsTr("Type the code")
-        onClicked: view.receiveWithCode("croc")
-    }
-
     // Offers waiting for an answer: nearby in their slots, from the
-    // internet on their protocol's tile.
+    // internet above the QR code, on their protocol's side.
     Repeater {
         model: view.engine.offers
         delegate: PeerBubble {

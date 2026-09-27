@@ -6,23 +6,27 @@ import "helpers"
 import "helpers/Events.js" as Ev
 
 /*
- * Scanning a code (spec v0.6, F-MW2, F-CR2): the receive page's Scan
- * button opens the camera page, which hands the viewfinder to the scanner
- * a frame at a time, and only while it is on top, the app in front and
- * the camera there; a frame with nothing in it, JSON that is not the
- * engine's, and a QR code with anything but a code in it keep it
- * scanning, the last said as no code and never shown; the first code
- * read goes back to the receive page, which receives with it -- over the
- * protocol the code is for, with the mailbox server its QR code named as
- * long as the code in the field is still the one scanned -- and a code for
- * a protocol switched off is refused (F-C1). Without a scanner there is no
- * Scan button.
+ * Receiving with a code (spec v0.6, F-MW2, F-CR2): the scan page the
+ * Receive tab's QR code opens. The viewfinder is handed to the scanner a
+ * frame at a time, and only while the page is on top, the app in front
+ * and the camera there, with the camera asked for a big enough picture
+ * and to focus; a frame with nothing in it, JSON that is not the
+ * engine's, and a QR code of anything else keep it reading, the last
+ * said as no code and never shown. The first code read is received over
+ * the protocol it is for, with the mailbox its QR code named, and the
+ * page goes once the offer is answered; a code for a protocol switched
+ * off is refused with a word why (F-C1). Under the viewfinder the code
+ * can be typed or pasted instead -- the clipboard offered when it holds
+ * a code -- and the engine tells its protocol (receive_code). A failed
+ * receive says why and reads again. Without a scanner, typing still
+ * works.
  */
 Script {
     id: test
 
     property Item page: null
-    property Item scan: null
+    property Item view: null
+    property int scansBefore: 0
     // The runner's `scanner`, under a name the Engine's own property does
     // not hide.
     readonly property QtObject fake: scanner
@@ -53,201 +57,196 @@ Script {
         return out
     }
 
-    function openScan(protocol) {
-        test.page = window.pageStack.push(Qt.resolvedUrl("../../qml/pages/WormholeReceivePage.qml"),
-                                          { engine: engine, protocol: protocol })
+    function open(withEngine) {
+        test.page = window.pageStack.push(Qt.resolvedUrl("../../qml/pages/ScanPage.qml"),
+                                          { engine: withEngine ? withEngine : engine })
+    }
+
+    function find(name) {
+        return probe.find(test.page, name)
     }
 
     function hint() {
-        return probe.find(test.scan, "scanHint").text
+        return test.find("scanHint").text
+    }
+
+    /// Answers a frame in hand, if there is one.
+    function drain() {
+        if (test.fake.busy) {
+            test.fake.answer("")
+        }
     }
 
     steps: [
         function () {
             window.pageStack.push(Qt.resolvedUrl("../../qml/pages/MainPage.qml"), { engine: engine })
-            test.openScan("wormhole")
+            test.open()
         },
         function () {
-            var button = probe.find(test.page, "scanButton")
-            test.verify(button.visible && button.enabled, "the Scan button")
-            button.clicked()
-            return 50
-        },
-        function () {
-            test.scan = window.pageStack.currentPage
-            test.compare(test.scan.objectName, "scanPage")
-            test.scan.foreground = true
-            test.compare(test.hint(), "Point the camera at the QR code on the sender's screen.")
+            test.page.foreground = true
+            test.view = test.find("scanLoader").item
+            test.verify(test.view !== null, "the viewfinder loaded")
+            test.compare(test.hint(), "Point the camera at the sender's QR code")
+            test.verify(test.find("typeCodeButton").visible, "the typed code, a tap away")
+            test.verify(!test.find("codePanel").visible)
             return 400
         },
         function () {
+            var camera = test.find("camera")
+            test.compare(camera.cameraState, 2, "the camera on")
+            test.compare(camera.captureMode, 2, "in video mode, where autofocus runs")
+            test.compare(camera.viewfinder.resolution, Qt.size(1280, 720), "the smallest picture big enough")
+            test.verify(camera.searches > 0, "asked to focus")
             test.compare(test.fake.scans, 1, "one frame in hand, and no second one asked for")
             test.compare(test.fake.lastItem.objectName, "viewfinder", "the viewfinder is what is scanned")
-            test.compare(probe.find(test.scan, "camera").cameraState, 2, "the camera on")
             // Nothing read.
             test.fake.answer("")
             return 400
         },
         function () {
             test.verify(test.fake.scans >= 2, "the next frame")
+            test.verify(test.find("looking").running, "looking, and saying so")
             // JSON that is no scan result: nothing happens.
             test.fake.answer('{"found":"croc","code":"x"}')
-            return 50
-        },
-        function () {
-            test.verify(window.pageStack.currentPage === test.scan, "still scanning")
-            test.compare(test.hint(), "Point the camera at the QR code on the sender's screen.")
             return 400
         },
         function () {
+            test.verify(window.pageStack.currentPage === test.page, "still scanning")
             // A QR code with a web address in it: said to be no code, and
             // what it holds is shown nowhere.
             test.fake.answer('{"found":"other"}')
             return 50
         },
         function () {
-            test.verify(window.pageStack.currentPage === test.scan, "still scanning")
+            test.verify(window.pageStack.currentPage === test.page, "still scanning")
             test.compare(test.hint(), "That QR code holds no Magic Wormhole or croc code.")
-            test.compare(test.commandsOfType("receive_wormhole").length, 0)
+            test.compare(test.commandsOfType("receive_wormhole").length, 0, "nothing received")
             // In the background: the camera off, no frames.
-            test.scan.foreground = false
+            test.page.foreground = false
             return 50
         },
         function () {
-            test.compare(probe.find(test.scan, "camera").cameraState, 0, "the camera off in the background")
-            test.test_scans = test.fake.scans
-            if (test.fake.busy) {
-                test.fake.answer("")
-            }
+            test.compare(test.find("camera").cameraState, 0, "the camera off in the background")
+            test.drain()
+            test.scansBefore = test.fake.scans
             return 600
         },
         function () {
-            test.compare(test.fake.scans, test.test_scans, "no frame while in the background")
-            test.scan.foreground = true
+            test.compare(test.fake.scans, test.scansBefore, "no frame while in the background")
+            test.page.foreground = true
             return 400
         },
         function () {
-            test.verify(test.fake.scans > test.test_scans, "scanning again in front")
+            test.verify(test.fake.scans > test.scansBefore, "reading again in front")
             // A Magic Wormhole code, from a QR code naming its mailbox.
             test.fake.answer('{"found":"wormhole","code":"7-guitarist-revenge","mailbox_url":"wss://mailbox.example/v1"}')
-            return 100
+            return 150
         },
         function () {
             test.compare(test.commandsOfType("receive_wormhole"),
                          [{ type: "receive_wormhole", code: "7-guitarist-revenge",
                             mailbox_url: "wss://mailbox.example/v1" }])
             test.compare(window.pageStack.currentPage.objectName, "mainPage",
-                         "the camera page gone, the receive page after it")
-            // A croc code scanned on Magic Wormhole's page receives over croc.
+                         "the page gone once the receive was answered")
+            // A croc code: over croc, nobody asked which.
             bridge.clearCommands()
-            test.openScan("wormhole")
+            test.open()
         },
         function () {
-            probe.find(test.page, "scanButton").clicked()
-            return 50
-        },
-        function () {
-            test.scan = window.pageStack.currentPage
-            test.scan.foreground = true
+            test.page.foreground = true
             return 400
         },
         function () {
-            if (!test.fake.busy) {
-                test.fail("no frame in hand")
-            }
+            test.verify(test.fake.busy, "a frame in hand")
             test.fake.answer('{"found":"croc","code":"gala-tulip-acorn"}')
-            return 100
+            return 150
         },
         function () {
-            test.compare(test.commandsOfType("receive_croc"),
-                         [{ type: "receive_croc", code: "gala-tulip-acorn" }])
+            test.compare(test.commandsOfType("receive_croc"), [{ type: "receive_croc", code: "gala-tulip-acorn" }])
             test.compare(test.commandsOfType("receive_wormhole").length, 0)
             test.compare(window.pageStack.currentPage.objectName, "mainPage")
             // croc switched off: its code is refused, with a word why.
             bridge.clearCommands()
             bridge.emitEvent(Ev.settings({ croc: { enabled: false, relay: null, password: null } }))
-            test.openScan("wormhole")
+            test.open()
         },
         function () {
-            probe.find(test.page, "scanButton").clicked()
-            return 50
-        },
-        function () {
-            test.scan = window.pageStack.currentPage
-            test.scan.foreground = true
+            test.page.foreground = true
             return 400
         },
         function () {
             test.fake.answer('{"found":"croc","code":"gala-tulip-acorn"}')
-            return 100
+            return 150
         },
         function () {
             test.compare(test.commandsOfType("receive_croc").length, 0, "croc is off (F-C1)")
-            test.verify(window.pageStack.currentPage === test.page, "back on the receive page")
+            test.verify(window.pageStack.currentPage === test.page, "still here")
             test.verify(probe.texts(test.page).join("\n").indexOf("croc is switched off in Settings") >= 0,
                         "said why")
-            test.compare(probe.find(test.page, "codeField").text, "", "the code not taken")
+            test.verify(!test.find("scanLoader").item.done, "and reading again")
             bridge.emitEvent(Ev.settings({}))
-            // A scanned mailbox goes with the scanned code only: the send
-            // fails, the user edits the code, and it goes without.
-            bridge.commandResult = -1
-            probe.find(test.page, "scanButton").clicked()
+            // The code typed instead: the clipboard offered when it holds
+            // a code, and not when it holds anything else.
+            Clipboard.text = "milk, eggs, bread"
+            test.find("typeCodeButton").clicked()
             return 50
         },
         function () {
-            test.scan = window.pageStack.currentPage
-            test.scan.foreground = true
-            return 400
-        },
-        function () {
-            test.fake.answer('{"found":"wormhole","code":"7-guitarist-revenge","mailbox_url":"wss://mailbox.example/v1"}')
+            test.verify(test.find("codePanel").visible, "the typed code's panel")
+            test.compare(test.find("codeField").text, "", "a shopping list is not pasted")
+            test.compare(test.hint(), "Or point the camera at the code", "the camera still reads")
+            test.find("codeField").text = "  7 Guitarist revenge "
+            // A receive that fails says why, and the code stays.
+            bridge.commandResult = -1
+            test.find("receiveButton").clicked()
             return 100
         },
         function () {
-            test.verify(window.pageStack.currentPage === test.page, "the command failed: still here")
-            test.compare(test.commandsOfType("receive_wormhole")[0].mailbox_url, "wss://mailbox.example/v1")
+            test.compare(test.commandsOfType("receive_code"), [{ type: "receive_code", code: "7 Guitarist revenge" }],
+                         "the code as typed: the engine tells its protocol")
+            test.verify(window.pageStack.currentPage === test.page, "failed: still here")
+            test.verify(test.find("codePanel").visible, "the panel back")
+            test.verify(probe.texts(test.page).join("\n").indexOf("Not available") >= 0, "said why")
             bridge.commandResult = 0
-            bridge.clearCommands()
-            probe.find(test.page, "codeField").text = "8-guitarist-revenge"
-            probe.find(test.page, "receiveButton").clicked()
-            test.compare(test.commandsOfType("receive_wormhole"),
-                         [{ type: "receive_wormhole", code: "8-guitarist-revenge" }], "no mailbox for another code")
-            return 100
+            test.find("receiveButton").clicked()
+            return 150
+        },
+        function () {
+            test.compare(test.commandsOfType("receive_code").length, 2)
+            test.compare(window.pageStack.currentPage.objectName, "mainPage")
+            Clipboard.text = " Gala tulip acorn\n"
+            test.open()
+        },
+        function () {
+            test.find("typeCodeButton").clicked()
+            test.compare(test.find("codeField").text, "Gala tulip acorn", "a code on the clipboard, offered")
+            window.pageStack.pop()
+            return 50
         },
         function () {
             // The camera missing: said, and nothing scanned.
-            test.openScan("croc")
+            test.open()
         },
         function () {
-            probe.find(test.page, "scanButton").clicked()
-            return 50
-        },
-        function () {
-            test.scan = window.pageStack.currentPage
-            test.scan.foreground = true
-            if (test.fake.busy) {
-                test.fake.answer("")
-            }
-            probe.find(test.scan, "camera").availability = 1
-            test.test_scans = test.fake.scans
+            test.page.foreground = true
+            test.drain()
+            test.find("camera").availability = 1
+            test.scansBefore = test.fake.scans
             return 600
         },
         function () {
             test.compare(test.hint(), "The camera is not available.")
-            test.compare(test.fake.scans, test.test_scans, "nothing scanned without a camera")
-            window.pageStack.pop()
+            test.compare(test.fake.scans, test.scansBefore, "nothing scanned without a camera")
+            test.verify(test.find("typeCodeButton").visible, "the code can still be typed")
             window.pageStack.pop()
             return 50
         },
         function () {
-            // No scanner: no Scan button.
-            test.page = window.pageStack.push(Qt.resolvedUrl("../../qml/pages/WormholeReceivePage.qml"),
-                                              { engine: noScanner })
+            // No scanner: the code can still be typed.
+            test.open(noScanner)
         },
         function () {
-            test.verify(!probe.find(test.page, "scanButton").visible, "nothing to scan with")
+            test.verify(test.find("typeCodeButton").visible, "typing without a scanner")
         }
     ]
-
-    property int test_scans: 0
 }

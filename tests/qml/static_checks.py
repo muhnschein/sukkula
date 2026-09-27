@@ -146,7 +146,7 @@ ONLY_IN = {
     "Sailfish.Pickers": {"qml/pages/FilePicker.qml", "qml/pages/SingleFilePicker.qml"},
     "Nemo.KeepAlive": {"qml/harbour-sukkula.qml"},
     "Nemo.Notifications": {"qml/harbour-sukkula.qml"},
-    "QtMultimedia": {"qml/pages/ScanPage.qml"},
+    "QtMultimedia": {"qml/components/ScanView.qml"},
 }
 
 NEWER_THAN_QT56 = [

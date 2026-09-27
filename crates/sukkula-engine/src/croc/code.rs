@@ -317,7 +317,7 @@ pub(crate) fn from_qr(text: &str) -> Option<Scanned> {
     let code = match Url::parse(text) {
         Ok(url) if url.host_str() == Some(WEB_HOST) => web_code(&url),
         Ok(_) => return None,
-        Err(_) if generated(text) => Some(text.to_owned()),
+        Err(_) if crate::scan::croc_words(text) => Some(text.to_owned()),
         Err(_) => return None,
     };
     Some(
@@ -342,19 +342,6 @@ fn web_code(url: &Url) -> Option<String> {
     let mut pairs = url.query_pairs();
     let (key, code) = pairs.next()?;
     (key == "code" && pairs.next().is_none()).then(|| code.into_owned())
-}
-
-/// Whether `text` is shaped as croc makes codes: croc 11's words, or
-/// croc 10's four digits and words.
-fn generated(text: &str) -> bool {
-    let word = |w: &str| !w.is_empty() && w.bytes().all(|b| b.is_ascii_lowercase());
-    let parts: Vec<&str> = text.split('-').collect();
-    match parts.split_first() {
-        Some((pin, words)) if pin.len() == 4 && pin.bytes().all(|b| b.is_ascii_digit()) => {
-            words.len() >= 3 && words.iter().all(|w| word(w))
-        }
-        _ => parts.len() >= 3 && parts.iter().all(|w| word(w)),
-    }
 }
 
 #[cfg(test)]

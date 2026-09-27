@@ -186,10 +186,11 @@ Script {
             test.compare(test.engine.discoveryUsers, 0)
             test.compare(test.engine.localSendPeers.count, 0, "and the peers are forgotten")
             // Receiving with a code: its reply pops its own page only.
-            test.stack.push(Qt.resolvedUrl("../../qml/pages/WormholeReceivePage.qml"), { engine: test.engine })
+            test.stack.push(Qt.resolvedUrl("../../qml/pages/ScanPage.qml"), { engine: test.engine })
+            test.find("typeCodeButton").clicked()
             test.find("codeField").text = "7-guitarist-revenge"
             test.find("receiveButton").clicked()
-            test.pendingId = test.lastId("receive_wormhole")
+            test.pendingId = test.lastId("receive_code")
             bridge.emitEvent(Ev.offer(4, {}))
             return 100
         },
@@ -199,7 +200,7 @@ Script {
             return 200
         },
         function () {
-            test.compare(test.names(), ["mainPage", "wormholeReceivePage", "consentDialog"],
+            test.compare(test.names(), ["mainPage", "scanPage", "consentDialog"],
                          "the code's reply leaves the dialog alone")
             test.stack.currentPage.reject()
             return 400

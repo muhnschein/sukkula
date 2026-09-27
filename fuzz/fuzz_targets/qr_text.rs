@@ -14,7 +14,9 @@
 //! credentials or fragment, whose one query parameter is `code`, with the
 //! code as that parameter says, white space joined by hyphens. Anything
 //! else is `Other`, and every croc-shaped code of 6 to 128 bytes is read
-//! as one. White space around the text changes nothing.
+//! as one. White space around the text changes nothing. And the same text,
+//! typed (`scan::typed`), gives what the QR code would, or else what the
+//! typed rules restated in `typed` below say.
 #![no_main]
 // `fuzz_target!` itself writes the input to RUST_LIBFUZZER_DEBUG_PATH when
 // that is set; the S3 ban is for shipped code, and this is the harness.
@@ -142,4 +144,53 @@ fuzz_target!(|data: &[u8]| {
         found,
         "white space around the text changed it"
     );
+    typed(t, &found);
 });
+
+/// The same text typed instead (`scan::typed`): what a QR code would give,
+/// else croc's words in lower case, else a numbered code of letters and
+/// digits for Magic Wormhole, else a croc code as typed -- words joined by
+/// hyphens, 6 to 128 printable characters, never a URL.
+fn typed(t: &str, scanned: &Scanned) {
+    let got = scan::typed(t);
+    if *scanned != Scanned::Other {
+        assert_eq!(got.as_ref(), Some(scanned), "typed, {t:?} reads otherwise");
+        return;
+    }
+    let joined = t.split_whitespace().collect::<Vec<_>>().join("-");
+    let lower = joined.to_ascii_lowercase();
+    match got {
+        None | Some(Scanned::Other) => {
+            assert!(got.is_none(), "typed gives Other for {t:?}");
+            assert!(
+                !(croc_shaped(&lower) && (6..=128).contains(&lower.len())),
+                "croc's words {t:?} refused"
+            );
+        }
+        Some(Scanned::Wormhole { code, mailbox_url }) => {
+            assert_eq!(code, lower, "a typed wormhole code changed");
+            assert!(mailbox_url.is_none(), "a mailbox from typing");
+            let (nameplate, words) = code.split_once('-').expect("a numbered code");
+            assert!(!nameplate.is_empty() && nameplate.bytes().all(|b| b.is_ascii_digit()));
+            assert!(
+                !words.is_empty()
+                    && words
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            );
+        }
+        Some(Scanned::Croc { code }) => {
+            assert!(
+                !t.to_ascii_lowercase().contains("://"),
+                "a URL as a croc code"
+            );
+            if croc_shaped(&lower) {
+                assert_eq!(code, lower, "croc's words not lowercased");
+            } else {
+                assert_eq!(code, joined, "a chosen croc code changed");
+            }
+            assert!((6..=128).contains(&code.len()));
+            assert!(code.bytes().all(|b| b.is_ascii_graphic()));
+        }
+    }
+}

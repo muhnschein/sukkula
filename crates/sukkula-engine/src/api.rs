@@ -155,6 +155,17 @@ pub enum Command {
         /// The code the sender's screen shows, e.g. `gala-tulip-acorn`.
         code: String,
     },
+    /// Receives with a code the user typed or pasted, over the protocol
+    /// the code is for (spec v0.6; `crate::scan::typed`): a Magic Wormhole
+    /// code, a croc code, or a pasted `wormhole-transfer:` URI or croc
+    /// link. As with the two above, the offer goes through consent like
+    /// any other, and the reply comes once the user has answered it.
+    // CONTRACT: new (additive).
+    ReceiveCode {
+        /// What the user typed, e.g. `7-guitarist-revenge` or
+        /// `gala-tulip-acorn`.
+        code: String,
+    },
     /// Cancels a transfer in either direction (F-C5).
     Cancel {
         /// From [`Event::TransferStarted`].

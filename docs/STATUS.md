@@ -23,9 +23,11 @@ Everything the spec asks for in v1.0:
   radar puts every protocol's peers on one screen, the receive radar
   shows who is sending, and History lists what went and came.
 - Scanning a Magic Wormhole or croc code off the sender's screen (spec
-  v0.6): the camera page, `src/scanner.cpp`, `sukkula_scan_qr`, and
-  `third_party/rqrr` (0.11.0 plus 2 patches) behind it; croc's code as a
-  QR code on the send side.
+  v0.6): the Receive tab's QR code opens one page for both, the
+  viewfinder with the code a tap away to type, and the engine tells a
+  code's protocol (`receive_code`); `src/scanner.cpp`, `sukkula_scan_qr`,
+  and `third_party/rqrr` (0.11.0 plus 2 patches) behind it; croc's code
+  as a QR code on the send side.
 - The RPM spec for the Jolla Phone 2026 (Sailfish OS 5.2+, aarch64 only).
 - CI with the Harbour gate, 23 fuzz targets, the dependency policy,
   the vendor check, and interop against the Python wormhole client and

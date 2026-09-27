@@ -4,8 +4,9 @@ import QtQuick 2.6
 /*
  * The radars' line drawings, in the ambience's colours: a person, a
  * phone, a file, a text, a plus, the cloud the internet protocols go
- * through, and the protocol marks. The marks are Sukkula's own, not the protocols'
- * logos.
+ * through, a QR code, and the protocol marks. The marks are Sukkula's own,
+ * not the protocols' logos; the QR code is piirit's icon
+ * (icons/cover/qr.svg there), redrawn here.
  *
  * A canvas loses what it drew when the scene graph lets go of its
  * texture, as it does while the phone is locked: it paints again whenever
@@ -17,8 +18,8 @@ import QtQuick 2.6
 Canvas {
     id: glyph
 
-    /// "person", "phone", "file", "text", "add", "cloud", "local_send",
-    /// "quick_share" or "bluetooth".
+    /// "person", "phone", "file", "text", "add", "cloud", "qr",
+    /// "local_send", "quick_share" or "bluetooth".
     property string kind: "person"
     property color color: "white"
     /// Stroke width in pixels.
@@ -125,6 +126,39 @@ Canvas {
         ctx.stroke()
     }
 
+    // A rounded rectangle's outline, as a path.
+    function _roundRect(ctx, x, y, w, h, r) {
+        ctx.beginPath()
+        ctx.moveTo(x + r, y)
+        ctx.lineTo(x + w - r, y)
+        ctx.arcTo(x + w, y, x + w, y + r, r)
+        ctx.lineTo(x + w, y + h - r)
+        ctx.arcTo(x + w, y + h, x + w - r, y + h, r)
+        ctx.lineTo(x + r, y + h)
+        ctx.arcTo(x, y + h, x, y + h - r, r)
+        ctx.lineTo(x, y + r)
+        ctx.arcTo(x, y, x + r, y, r)
+        ctx.closePath()
+    }
+
+    // A QR code: piirit's icon on its 32-unit grid -- three finder
+    // patterns, outlined round a filled eye, and five modules of data.
+    // Stroked at the width the caller gives (piirit's is 2.5 units).
+    function _qr(ctx) {
+        var u = 1 / 32
+        var finders = [[4.5, 4.5], [18.5, 4.5], [4.5, 18.5]]
+        for (var i = 0; i < finders.length; i++) {
+            glyph._roundRect(ctx, finders[i][0] * u, finders[i][1] * u, 9 * u, 9 * u, 1.5 * u)
+            ctx.stroke()
+            ctx.fillRect((finders[i][0] + 3.25) * u, (finders[i][1] + 3.25) * u, 2.5 * u, 2.5 * u)
+        }
+        var data = [[17.25, 17.25], [24.75, 17.25], [21, 21], [17.25, 24.75], [24.75, 24.75]]
+        for (var j = 0; j < data.length; j++) {
+            glyph._roundRect(ctx, data[j][0] * u, data[j][1] * u, 4 * u, 4 * u, 0.5 * u)
+            ctx.fill()
+        }
+    }
+
     // LocalSend: a dotted ring round a dot.
     function _localSend(ctx) {
         var dots = 8
@@ -185,6 +219,7 @@ Canvas {
         case "text": glyph._text(ctx); break
         case "add": glyph._add(ctx); break
         case "cloud": glyph._cloud(ctx); break
+        case "qr": glyph._qr(ctx); break
         case "local_send": glyph._localSend(ctx); break
         case "quick_share": glyph._quickShare(ctx); break
         case "bluetooth": glyph._bluetooth(ctx); break

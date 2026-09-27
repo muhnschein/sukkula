@@ -1,6 +1,6 @@
 import QtQuick 2.6
 
-// QtMultimedia's VideoOutput, as far as ScanPage.qml uses it: an item that
+// QtMultimedia's VideoOutput, as far as ScanView.qml uses it: an item that
 // shows nothing.
 Item {
     enum FillModes { Stretch = 0, PreserveAspectFit = 1, PreserveAspectCrop = 2 }
