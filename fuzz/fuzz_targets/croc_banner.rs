@@ -6,7 +6,9 @@
 //! relay that could smuggle a port 0, a number past 65535 or a thousand
 //! ports into the list would steer or stall us. Asserted, against the
 //! banner read independently here: a banner is taken only if it is
-//! `ports|||address` with an address of at most 64 bytes, and `ports` is
+//! `ports|||address`, or `ports|||address|||token` as croc 11's relays
+//! write it to a client that asks for a token (which is not read), with
+//! an address of at most 64 bytes, and `ports` is
 //! either `ok` (no data ports: the room's own connection carries the data)
 //! or 1 to 16 comma-separated decimal numbers of at most five digits, each
 //! 1 to 65535 -- and then the ports are exactly those, in order. "bad
@@ -22,7 +24,9 @@ use sukkula_engine::croc::fuzzing::{self, BANNER_PORTS};
 /// The ports a banner names, read here without the engine's code.
 fn expected(plain: &[u8]) -> Option<Vec<u16>> {
     let text = std::str::from_utf8(plain).ok()?;
-    let (ports, address) = text.split_once("|||")?;
+    let mut parts = text.split("|||");
+    let ports = parts.next()?;
+    let address = parts.next()?;
     if address.len() > 64 {
         return None;
     }

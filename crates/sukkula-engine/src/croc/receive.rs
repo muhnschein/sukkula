@@ -6,6 +6,12 @@
 //! empty `externalip`, and nothing is asked for. Only after the yes does a
 //! file get requested and written, through the inbox.
 //!
+//! The relay is the one croc 11 takes the code to (`relay.rs`), and the
+//! key croc 11's, confirmed (`pakekey.rs`). A croc 10 sender answers the
+//! same first message -- it reads no `v` -- and is told by its answer:
+//! no `v`, and croc 10's short salt. Its key is then croc 10's, from the
+//! same points.
+//!
 //! As for Magic Wormhole, the transfer is registered when the offer is
 //! accepted, and that is when `receive_code` returns its id; a wrong code,
 //! an unreachable relay or a declined offer ends the command with an
@@ -15,11 +21,13 @@
 //! # Chunks from several rooms
 //!
 //! The sender spreads a file's chunks over the data rooms, each room in
-//! order, the rooms in no order among themselves, and the inbox writes a
-//! file front to back. So the chunks are merged: each room holds at most
-//! one chunk read ahead, and the next chunk the file needs is always the
-//! first one some room has, since every room delivers in order. Nothing
-//! more is buffered, and a room that runs ahead is held back by TCP. A
+//! order, the rooms in no order among themselves (croc 10's sender deals
+//! them out in turn, croc 11's to whichever room is free), and the inbox
+//! writes a file front to back. So the chunks are merged: each room holds
+//! at most one chunk read ahead, and the next chunk the file needs is
+//! always the first one some room has, since every room delivers in
+//! order. Nothing more is buffered, and a room that runs ahead is held
+//! back by TCP. A
 //! chunk that is not the next one any room can give -- sent twice,
 //! replayed, from another file, past the end -- fails the transfer.
 
@@ -36,10 +44,13 @@ use super::message::{
     self, CHUNK_BYTES, Kind, MAX_CHUNK_PLAIN, MAX_CONTROL_BYTES, Message, OfferError,
 };
 use super::pake::{Curve, MAX_PAKE_BYTES, Pake};
-use super::relay::{self, Relay};
+use super::pakekey::{self, Side};
+use super::relay::{self, Relay, Relays};
 use super::send::{join_rooms, next_message, send_message};
 use super::xxh64::Xxh64;
-use super::{CLEANUP_WAIT, Inner, PEER_LABEL, cancellable, deadline, protocol, random};
+use super::{
+    CLEANUP_WAIT, Inner, MAX_DATA_ROOMS, PEER_LABEL, cancellable, deadline, protocol, random,
+};
 use crate::api::{ErrorCode, ErrorInfo, Event, TransferId};
 use crate::by_code::declined_error;
 use crate::ctx::{Accepted, ReceivingFile, TransferHandle};
@@ -67,7 +78,7 @@ struct Session {
 /// with the transfer the rest runs as.
 pub(super) async fn start(inner: Arc<Inner>, raw_code: String) -> Result<TransferId, ErrorInfo> {
     let code = code::parse(&raw_code)?;
-    let relay = Relay::from_settings(&inner.ctx.settings().croc)?;
+    let relay = Relays::from_settings(&inner.ctx.settings().croc)?.for_code(&code);
     let shutdown = inner.ctx.shutdown_token().clone();
     let (accepted, session) = {
         let _slot = inner.connecting.slot().ok_or_else(|| {
@@ -109,30 +120,13 @@ async fn until_accepted(
     wait_for_sender(&mut control, t.handshake).await?;
     control.send(b"handshake", t.handshake).await?;
 
-    let mut pake =
-        Pake::start(Curve::P256, code.password(), random()?).ok_or_else(|| protocol("no key"))?;
-    let mut hello = Message::new(Kind::Pake);
-    hello.b = pake.message();
-    hello.b2 = Curve::P256.name().as_bytes().to_vec();
-    control.send(&hello.encode(None)?, t.handshake).await?;
-    let frame = control.recv_skipping(deadline(t.handshake)).await?;
-    let reply = Message::decode(&frame, None)
-        .filter(|m| m.kind == Kind::Pake && m.b.len() <= MAX_PAKE_BYTES)
-        .ok_or_else(|| protocol("the croc sender did not answer the key exchange"))?;
-    pake.finish(&reply.b)
-        .map_err(|_| protocol("the croc sender's key exchange is malformed"))?;
-    let salt: [u8; crypt::SALT_BYTES] = reply
-        .b2
-        .as_slice()
-        .try_into()
-        .map_err(|_| protocol("the croc sender's salt is malformed"))?;
-    let key = pake.key().ok_or_else(|| protocol("no key"))?;
-    let cipher = Cipher::new(&crypt::derive(&key, &salt));
+    let cipher = key_exchange(&mut control, code, t.handshake).await?;
 
     if joined.ports.is_empty() {
         return Err(protocol("the croc relay offers no data rooms"));
     }
-    let data = join_rooms(relay, &joined.ports, &room, t.handshake).await?;
+    let ports: Vec<u16> = joined.ports.iter().take(MAX_DATA_ROOMS).copied().collect();
+    let data = join_rooms(relay, &ports, &room, t.handshake).await?;
     send_message(
         &mut control,
         &cipher,
@@ -232,6 +226,66 @@ async fn until_accepted(
             Err(declined_error(&declined))
         }
     }
+}
+
+/// The peers' PAKE, croc 11's way: our message, the sender's, then each
+/// side's proof of the key, ours first. A croc 10 sender's answer has no
+/// `v` and an 8-byte salt, and nothing is proved: its key is PBKDF2 of
+/// croc 10's hash of the same points. Returns the session cipher.
+async fn key_exchange(
+    control: &mut Conn,
+    code: &Code,
+    limit: std::time::Duration,
+) -> Result<Cipher, ErrorInfo> {
+    let mut pake =
+        Pake::start(Curve::P256, code.password(), random()?).ok_or_else(|| protocol("no key"))?;
+    let mut hello = Message::new(Kind::Pake);
+    hello.v = pakekey::VERSION;
+    hello.b = pake.message();
+    hello.b2 = Curve::P256.name().as_bytes().to_vec();
+    control.send(&hello.encode(None)?, limit).await?;
+    let frame = control.recv_skipping(deadline(limit)).await?;
+    let reply = Message::decode(&frame, None)
+        .filter(|m| m.kind == Kind::Pake && m.b.len() <= MAX_PAKE_BYTES)
+        .ok_or_else(|| protocol("the croc sender did not answer the key exchange"))?;
+    pake.finish(&reply.b)
+        .map_err(|_| protocol("the croc sender's key exchange is malformed"))?;
+    let bad_salt = || protocol("the croc sender's salt is malformed");
+    if reply.v == 0 {
+        let salt: [u8; crypt::SALT_BYTES] =
+            reply.b2.as_slice().try_into().map_err(|_| bad_salt())?;
+        let key = pake.key().ok_or_else(|| protocol("no key"))?;
+        return Ok(Cipher::new(&crypt::derive(&key, &salt)));
+    }
+    if reply.v != pakekey::VERSION {
+        return Err(ErrorInfo::new(
+            ErrorCode::Unavailable,
+            "the croc sender speaks a newer croc than Sukkula",
+        ));
+    }
+    let salt: [u8; pakekey::SALT_BYTES] = reply.b2.as_slice().try_into().map_err(|_| bad_salt())?;
+    let keys = pakekey::for_transfer(&pake, &code.room(), &hello.b, &reply.b, &salt)
+        .ok_or_else(|| protocol("no key"))?;
+    let mut ours = Message::new(Kind::PakeConfirm);
+    ours.v = pakekey::VERSION;
+    ours.b = keys.tag(Side::Receiver).to_vec();
+    control.send(&ours.encode(None)?, limit).await?;
+    // A sender whose key is another's hangs up rather than answer.
+    let wrong = || ErrorInfo::new(ErrorCode::BadCode, "the sender has a different code");
+    let frame = control.recv_skipping(deadline(limit)).await.map_err(|e| {
+        if e.code == ErrorCode::Network {
+            wrong()
+        } else {
+            e
+        }
+    })?;
+    let theirs = Message::decode(&frame, None)
+        .filter(|c| c.kind == Kind::PakeConfirm && c.v == pakekey::VERSION)
+        .ok_or_else(|| protocol("the croc sender did not confirm the key"))?;
+    if !keys.verify(Side::Sender, &theirs.b) {
+        return Err(wrong());
+    }
+    Ok(Cipher::new(keys.encryption()))
 }
 
 /// croc's file list as an offer: its files by name and size, from "croc".

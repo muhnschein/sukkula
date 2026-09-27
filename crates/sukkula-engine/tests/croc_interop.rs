@@ -1,14 +1,18 @@
 //! Interop with croc itself (spec §7: "Sukkula to the reference client on
-//! the same host"), offline: croc v10.7.0's Go binary as the relay and as
-//! the other peer, on loopback.
+//! the same host"), offline: croc's Go binary as the relay and as the
+//! other peer, on loopback. `SUKKULA_CROC` is that binary: croc v11.5.4,
+//! or v10.7.0, the suite runs against either. `SUKKULA_CROC10`, if set, is
+//! croc v10.7.0 too, for croc 10 peers on the first binary's relay (the
+//! public relays run croc 11 now, and croc 10 clients still use them).
 //!
 //! Ignored by a plain `cargo test`, which has no croc. CI's `croc-interop`
-//! job builds the pinned commit with `-mod=readonly`, every module the one
-//! croc's `go.sum` names, and runs these with `--include-ignored`; `make
-//! croc-interop` does the same locally. With a croc binary at hand:
+//! job builds both pinned commits with `-mod=readonly`, every module the
+//! one croc's `go.sum` names, and runs these with `--include-ignored`,
+//! once with each as `SUKKULA_CROC`; `make croc-interop` does the same
+//! locally. With croc binaries at hand:
 //!
 //! ```sh
-//! SUKKULA_CROC=/path/to/croc \
+//! SUKKULA_CROC=/path/to/croc11 SUKKULA_CROC10=/path/to/croc10 \
 //!   cargo test -p sukkula-engine --test croc_interop -- --ignored
 //! ```
 //!
@@ -50,6 +54,11 @@ fn croc_bin() -> String {
     std::env::var("SUKKULA_CROC").expect("set SUKKULA_CROC to croc's executable")
 }
 
+/// croc 10's Go client, from `SUKKULA_CROC10`, if set.
+fn croc10_bin() -> Option<String> {
+    std::env::var("SUKKULA_CROC10").ok()
+}
+
 /// `n` ports for a relay. Asking the system for free ones and letting them
 /// go raced: until croc had bound them, another test's relay could be
 /// given the same ones, or an outgoing connection one as its own. So they
@@ -72,13 +81,13 @@ fn free_ports(n: usize) -> Vec<u16> {
     out
 }
 
-/// Runs croc with `args` and `env`, in `dir`.
+/// Runs croc `bin` with `args` and `env`, in `dir`.
 ///
 /// S8 bans spawning processes in Sukkula; this is the test harness running
 /// the reference client, never the app, so the ban is lifted here alone.
 #[allow(clippy::disallowed_types, clippy::disallowed_methods)]
-fn run(dir: &Path, env: &[(&str, &str)], args: &[&str]) -> Child {
-    std::process::Command::new(croc_bin())
+fn run(bin: &str, dir: &Path, env: &[(&str, &str)], args: &[&str]) -> Child {
+    std::process::Command::new(bin)
         .current_dir(dir)
         .env("CROC_CONFIG_DIR", dir.join("croc-config"))
         .env("HOME", dir)
@@ -115,6 +124,7 @@ async fn go_relay(password: &str) -> GoRelay {
         .collect::<Vec<_>>()
         .join(",");
     let child = run(
+        &croc_bin(),
         dir.path(),
         &[],
         &[
@@ -304,9 +314,9 @@ async fn finish(mut child: Child) -> (bool, String, String) {
 
 const CODE: &str = "8123-alpha-bravo-charlie";
 
-/// Starts a Go sender of `args`, with croc's global options `global`, and
+/// Starts `bin` sending `args`, with croc's global options `global`, and
 /// gives it time to be in the room first.
-async fn go_send(dir: &Path, relay: &GoRelay, global: &[&str], args: &[&str]) -> Child {
+async fn go_send(bin: &str, dir: &Path, relay: &GoRelay, global: &[&str], args: &[&str]) -> Child {
     let mut all = vec![
         "--ignore-stdin",
         "--disable-clipboard",
@@ -320,7 +330,7 @@ async fn go_send(dir: &Path, relay: &GoRelay, global: &[&str], args: &[&str]) ->
     all.push("send");
     all.push("--no-local");
     all.extend_from_slice(args);
-    let child = run(dir, &[("CROC_SECRET", CODE)], &all);
+    let child = run(bin, dir, &[("CROC_SECRET", CODE)], &all);
     tokio::time::sleep(Duration::from_secs(2)).await;
     child
 }
@@ -336,7 +346,14 @@ async fn files_from_croc_reach_sukkula() {
     write(&dir.path().join("empty.txt"), b"");
     mkdir(&dir.path().join("folder"));
     write(&dir.path().join("folder/inner.txt"), b"inside");
-    let child = go_send(dir.path(), &relay, &[], &["big.bin", "empty.txt", "folder"]).await;
+    let child = go_send(
+        &croc_bin(),
+        dir.path(),
+        &relay,
+        &[],
+        &["big.bin", "empty.txt", "folder"],
+    )
+    .await;
     let adapter = b.adapter.clone();
     let rx = tokio::spawn(async move { adapter.receive_code(CODE.into()).await });
     b.accept_next().await;
@@ -361,6 +378,7 @@ async fn uncompressed_single_room_files_from_croc() {
     write(&dir.path().join("a.bin"), &data);
     // Chunks not deflated, and all through the first room.
     let child = go_send(
+        &croc_bin(),
         dir.path(),
         &relay,
         &["--no-compress"],
@@ -382,7 +400,14 @@ async fn a_text_from_croc_reaches_sukkula() {
     let relay = go_relay("pass123").await;
     let mut b = Side::new(&relay);
     let dir = tempfile::tempdir().unwrap();
-    let child = go_send(dir.path(), &relay, &[], &["--text", "terve croc <b>x</b>"]).await;
+    let child = go_send(
+        &croc_bin(),
+        dir.path(),
+        &relay,
+        &[],
+        &["--text", "terve croc <b>x</b>"],
+    )
+    .await;
     let adapter = b.adapter.clone();
     let rx = tokio::spawn(async move { adapter.receive_code(CODE.into()).await });
     b.accept_next().await;
@@ -398,9 +423,10 @@ async fn a_text_from_croc_reaches_sukkula() {
     assert!(finish(child).await.0);
 }
 
-/// Runs croc as a receiver of `code` into `out`, with croc's global
+/// Runs `bin` as a receiver of `code` into `out`, with croc's global
 /// options `extra`.
 fn go_receive(
+    bin: &str,
     dir: &Path,
     relay: &GoRelay,
     code: &str,
@@ -423,7 +449,7 @@ fn go_receive(
         args.insert(0, "--yes");
     }
     args.extend_from_slice(extra);
-    run(dir, &[("CROC_SECRET", code)], &args)
+    run(bin, dir, &[("CROC_SECRET", code)], &args)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -442,7 +468,7 @@ async fn files_from_sukkula_reach_croc() {
     let dir = tempfile::tempdir().unwrap();
     let out: PathBuf = dir.path().join("out");
     mkdir(&out);
-    let child = go_receive(dir.path(), &relay, &code, &out, true, &[]);
+    let child = go_receive(&croc_bin(), dir.path(), &relay, &code, &out, true, &[]);
     let (ok, _, err) = finish(child).await;
     assert!(ok, "croc receive failed: {err}");
     assert_eq!(std::fs::read(out.join("big.bin")).unwrap(), big);
@@ -468,7 +494,7 @@ async fn a_text_from_sukkula_reaches_croc() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out");
     mkdir(&out);
-    let child = go_receive(dir.path(), &relay, &code, &out, true, &[]);
+    let child = go_receive(&croc_bin(), dir.path(), &relay, &code, &out, true, &[]);
     let (ok, stdout, err) = finish(child).await;
     assert!(ok, "croc receive failed: {err}");
     assert_eq!(stdout, "hei croc, täältä Sukkula");
@@ -490,7 +516,7 @@ async fn croc_declining_is_said_to_sukkula() {
     let out = dir.path().join("out");
     mkdir(&out);
     // No --yes and nothing on stdin: croc refuses.
-    let child = go_receive(dir.path(), &relay, &code, &out, false, &[]);
+    let child = go_receive(&croc_bin(), dir.path(), &relay, &code, &out, false, &[]);
     let (ok, _, _) = finish(child).await;
     assert!(!ok);
     match a.outcome(id).await.0 {
@@ -515,9 +541,70 @@ async fn a_croc_receiver_on_siec_is_answered_on_siec() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out");
     mkdir(&out);
-    let child = go_receive(dir.path(), &relay, &code, &out, true, &["--curve", "siec"]);
+    let child = go_receive(
+        &croc_bin(),
+        dir.path(),
+        &relay,
+        &code,
+        &out,
+        true,
+        &["--curve", "siec"],
+    );
     let (ok, _, err) = finish(child).await;
     assert!(ok, "croc receive failed: {err}");
     assert_eq!(std::fs::read(out.join("s.txt")).unwrap(), b"on siec");
     assert_eq!(a.outcome(id).await.0, Outcome::Done);
+}
+
+/// A croc 10 receiver on the relay of `SUKKULA_CROC` takes our code: it
+/// reads it as croc 11 does, and is answered croc 10's way.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs croc (SUKKULA_CROC, SUKKULA_CROC10)"]
+async fn a_croc10_receiver_takes_our_code() {
+    let Some(croc10) = croc10_bin() else {
+        eprintln!("SUKKULA_CROC10 is not set: skipped");
+        return;
+    };
+    let relay = go_relay("pass123").await;
+    let a = Side::new(&relay);
+    let data = pattern(100_000, 11);
+    let id = a
+        .adapter
+        .send(SendTarget::Croc, vec![a.file("old.bin", &data)])
+        .await
+        .unwrap();
+    let code = a.code(id).await;
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out");
+    mkdir(&out);
+    let child = go_receive(&croc10, dir.path(), &relay, &code, &out, true, &[]);
+    let (ok, _, err) = finish(child).await;
+    assert!(ok, "croc 10 receive failed: {err}");
+    assert_eq!(std::fs::read(out.join("old.bin")).unwrap(), data);
+    assert_eq!(a.outcome(id).await.0, Outcome::Done);
+}
+
+/// A croc 10 sender on the relay of `SUKKULA_CROC` reaches us: its answer
+/// to our key exchange says it is croc 10's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs croc (SUKKULA_CROC, SUKKULA_CROC10)"]
+async fn a_croc10_sender_reaches_sukkula() {
+    let Some(croc10) = croc10_bin() else {
+        eprintln!("SUKKULA_CROC10 is not set: skipped");
+        return;
+    };
+    let relay = go_relay("pass123").await;
+    let mut b = Side::new(&relay);
+    let dir = tempfile::tempdir().unwrap();
+    let data = pattern(100_000, 13);
+    write(&dir.path().join("old.bin"), &data);
+    let child = go_send(&croc10, dir.path(), &relay, &[], &["old.bin"]).await;
+    let adapter = b.adapter.clone();
+    let rx = tokio::spawn(async move { adapter.receive_code(CODE.into()).await });
+    b.accept_next().await;
+    let id = rx.await.unwrap().unwrap();
+    assert_eq!(b.outcome(id).await.0, Outcome::Done);
+    assert_eq!(b.received("old.bin"), data);
+    let (ok, _, err) = finish(child).await;
+    assert!(ok, "croc 10 send failed: {err}");
 }

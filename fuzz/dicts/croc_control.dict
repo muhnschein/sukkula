@@ -24,3 +24,10 @@
 "\x03\x00"
 "cDI1Ng=="
 "null"
+# croc 11's: the PAKE version, its confirmation, the probe's new fields.
+"\"v\""
+"\"pake-confirm\""
+"\"Version\""
+"\"Curve\""
+"\"Bytes2\""
+"2"

@@ -794,7 +794,7 @@ Send screen: under croc&apos;s name on its tile.</extracomment>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <source>Type the code the sender&apos;s croc shows, such as 1234-alpha-bravo-charlie. You will see what is offered before anything is saved.</source>
+        <source>Type the code the sender&apos;s croc shows, such as gala-tulip-acorn. You will see what is offered before anything is saved.</source>
         <extracomment>How to receive with croc.</extracomment>
         <translation type="unfinished"></translation>
     </message>

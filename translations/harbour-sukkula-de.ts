@@ -794,9 +794,9 @@ Send screen: under croc&apos;s name on its tile.</extracomment>
         <translation>Empfangen</translation>
     </message>
     <message>
-        <source>Type the code the sender&apos;s croc shows, such as 1234-alpha-bravo-charlie. You will see what is offered before anything is saved.</source>
+        <source>Type the code the sender&apos;s croc shows, such as gala-tulip-acorn. You will see what is offered before anything is saved.</source>
         <extracomment>How to receive with croc.</extracomment>
-        <translation>Gib den Code ein, den croc beim Absender zeigt, etwa 1234-alpha-bravo-charlie. Du siehst, was angeboten wird, bevor etwas gespeichert wird.</translation>
+        <translation>Gib den Code ein, den croc beim Absender zeigt, etwa gala-tulip-acorn. Du siehst, was angeboten wird, bevor etwas gespeichert wird.</translation>
     </message>
 </context>
 <context>

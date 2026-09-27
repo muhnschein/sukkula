@@ -10,13 +10,14 @@
 //!   and a stream is inflated only whole and under its cap -- a deflate
 //!   bomb stops at the cap;
 //! - an unsealed message is exactly its JSON: `t` names its kind (one of
-//!   croc's eight, anything else ignored as Go ignores it), `m` its text,
-//!   `b` and `b2` standard base64 of its bytes;
+//!   croc's nine, anything else ignored as Go ignores it), `v` its PAKE
+//!   version (0 if absent), `m` its text, `b` and `b2` standard base64 of
+//!   its bytes;
 //! - under a key the fuzzer does not have, nothing opens;
 //! - sealed under the key, any message reads back as it reads unsealed:
 //!   the seal hides nothing and adds nothing;
-//! - the LAN probe's message is taken only under 16 KiB, with its `Kind`
-//!   and `Bytes` as the JSON says.
+//! - the LAN probe's message is taken only under 16 KiB, with its `Kind`,
+//!   `Bytes` and `Version` as the JSON says.
 #![no_main]
 // `fuzz_target!` itself writes the input to RUST_LIBFUZZER_DEBUG_PATH when
 // that is set; the S3 ban is for shipped code, and this is the harness.
@@ -30,8 +31,9 @@ use sukkula_engine::croc::fuzzing::{self, CONTROL_BYTES, PAKE_BYTES, Read};
 use sukkula_fuzz::{as_struct, value_of};
 
 /// croc's message kinds, and the engine's names for them.
-const KINDS: [(&str, &str); 8] = [
+const KINDS: [(&str, &str); 9] = [
     ("pake", "Pake"),
+    ("pake-confirm", "PakeConfirm"),
     ("externalip", "ExternalIp"),
     ("fileinfo", "FileInfo"),
     ("recipientready", "RecipientReady"),
@@ -54,7 +56,7 @@ fn bytes_of(v: &Value, key: &str) -> Vec<u8> {
 /// An unsealed message, restated from its inflated JSON.
 fn restated(json: &[u8]) -> Option<Read> {
     let v = value_of(json, "a message")?;
-    let v = as_struct(v, &["t", "m", "b", "b2"]);
+    let v = as_struct(v, &["t", "v", "m", "b", "b2"]);
     let t = v
         .get("t")
         .and_then(Value::as_str)
@@ -67,7 +69,17 @@ fn restated(json: &[u8]) -> Option<Read> {
         None | Some(Value::Null) => String::new(),
         Some(m) => m.as_str().expect("read a non-string m").to_owned(),
     };
-    Some((kind.to_owned(), m, bytes_of(&v, "b"), bytes_of(&v, "b2")))
+    let version = match v.get("v") {
+        None => 0,
+        Some(n) => n.as_i64().expect("read a v that is no integer"),
+    };
+    Some((
+        kind.to_owned(),
+        version,
+        m,
+        bytes_of(&v, "b"),
+        bytes_of(&v, "b2"),
+    ))
 }
 
 fuzz_target!(|data: &[u8]| {
@@ -95,16 +107,18 @@ fuzz_target!(|data: &[u8]| {
             assert_eq!(*plain, r, "the message is not its JSON");
         }
     }
-    if let Some((kind, bytes)) = &read.probe {
+    if let Some((kind, bytes, version)) = &read.probe {
         assert!(
             data.len() <= 2 * PAKE_BYTES,
             "a {} byte probe read",
             data.len()
         );
         if let Some(v) = value_of(data, "a probe") {
-            let v = as_struct(v, &["Bytes", "Kind"]);
+            let v = as_struct(v, &["Bytes", "Kind", "Version"]);
             assert_eq!(v.get("Kind").and_then(Value::as_str), Some(kind.as_str()));
             assert_eq!(*bytes, bytes_of(&v, "Bytes"), "the probe's bytes");
+            let expected = v.get("Version").map_or(Some(0), Value::as_i64);
+            assert_eq!(Some(*version), expected, "the probe's version");
         }
     }
     // The input as a message's JSON, sealed and read back.

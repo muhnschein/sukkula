@@ -83,6 +83,7 @@ Every ID names the requirement it covers.
 | M-47 | F-CR2 | `croc send photo.jpg somefolder/` on the laptop; on the phone, Receive tab, the cloud, croc, type the code (spaces or hyphens). Accept. Then `croc send --text hello` and receive it; then type a wrong code for a third send. | The consent dialog lists the photo and the folder's files, flat, before anything flows; accepted, each arrives intact in `~/Downloads/Sukkula/`. The text lands in History with Copy. The wrong code says so, and the laptop's croc reports a bad password. |
 | M-48 | F-CR3 | Run `croc relay --pass s3cret` on the laptop; point Settings' croc relay at it with that password; send and receive once each. Then set a wrong password. | Both transfers go through the laptop's relay (its log shows the room); with the wrong password each fails with "A setting could not be used." |
 | M-49 | F-CR4 | With the laptop on the same Wi-Fi, send a 1 GB file to `croc` on the laptop; cancel another half-way from each side. | Data goes through the relay (croc on the laptop says so, never "local"); each cancel stops both sides and leaves no partial file on the phone. |
+| M-63 | F-CR1, F-CR2 | The laptop's croc is 11 (`croc --version`) and on the public relays (no `--relay`, no `CROC_RELAY`); send a file each way, and each way with an Android phone's croc app. Then, with croc 10 on the laptop, receive our code and send one of its own. | Every transfer arrives intact; neither the laptop's croc 11 nor the app warns of a "legacy" peer; croc 10 takes our code and its own reaches us. |
 
 ## Bluetooth
 

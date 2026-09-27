@@ -22,11 +22,12 @@ pub const PAKE_BYTES: usize = super::pake::MAX_PAKE_BYTES;
 /// A chunk's size: what a request's ranges count in.
 pub const CHUNK_BYTES: usize = message::CHUNK_BYTES;
 
-/// A typed code: its room and password, if it is one.
+/// A typed code: its room, its password, and which of croc's four public
+/// relays it picks, if it is one.
 #[must_use]
-pub fn code(typed: &str) -> Option<(String, Vec<u8>)> {
+pub fn code(typed: &str) -> Option<(String, Vec<u8>, usize)> {
     let c = code::parse(typed).ok()?;
-    Some((c.room(), c.password().to_vec()))
+    Some((c.room(), c.password().to_vec(), c.relay_index(4)))
 }
 
 /// A peer's or a relay's PAKE message, answered on each curve spoken: the
@@ -46,8 +47,8 @@ pub fn pake(bytes: &[u8]) -> (Option<&'static str>, bool, bool) {
 }
 
 /// One control message as read: its kind (`Debug` of the engine's own),
-/// `m`, `b` and `b2`.
-pub type Read = (String, String, Vec<u8>, Vec<u8>);
+/// `v`, `m`, `b` and `b2`.
+pub type Read = (String, i64, String, Vec<u8>, Vec<u8>);
 
 /// What [`control`] makes of a frame, each way it can be read.
 #[derive(Debug, Default)]
@@ -56,12 +57,12 @@ pub struct Control {
     pub plain: Option<Read>,
     /// Sealed under a fixed key the fuzzer does not have.
     pub sealed: Option<Read>,
-    /// As the LAN probe's message: its kind and bytes.
-    pub probe: Option<(String, Vec<u8>)>,
+    /// As the LAN probe's message: its kind, bytes and version.
+    pub probe: Option<(String, Vec<u8>, i64)>,
 }
 
 fn read(m: Message) -> Read {
-    (format!("{:?}", m.kind), m.m, m.b, m.b2)
+    (format!("{:?}", m.kind), m.v, m.m, m.b, m.b2)
 }
 
 /// A control frame, read unsealed, sealed under a fixed key, and as the
@@ -71,7 +72,7 @@ pub fn control(frame: &[u8]) -> Control {
     Control {
         plain: Message::decode(frame, None).map(read),
         sealed: Message::decode(frame, Some(&Cipher::new(&[3; 32]))).map(read),
-        probe: SimpleMessage::decode(frame),
+        probe: SimpleMessage::decode(frame).map(|p| (p.kind, p.bytes, p.version)),
     }
 }
 

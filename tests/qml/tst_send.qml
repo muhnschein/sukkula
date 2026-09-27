@@ -426,18 +426,18 @@ Script {
             var tile = test.find("crocTile")
             test.verify(tile.visible && tile.starting, "croc's tile waits for its code")
             test.verify(test.find("internetLine").visible, "through the cloud")
-            bridge.emitEvent(Ev.crocCode(91, "1234-alpha-bravo-charlie"))
+            bridge.emitEvent(Ev.crocCode(91, "gala-tulip-acorn"))
             bridge.emitEvent(Ev.transferStarted(91, "outgoing", { protocol: "croc", peer: "croc" }))
         },
         function () {
-            test.compare(probe.find(test.find("crocTile"), "tileCode").text, "1234-alpha-bravo-charlie")
+            test.compare(probe.find(test.find("crocTile"), "tileCode").text, "gala-tulip-acorn")
             test.find("crocTile").clicked()
             test.page = window.pageStack.currentPage
             test.compare(test.page.objectName, "wormholeCodePage")
             test.compare(test.page.protocol, "croc")
         },
         function () {
-            test.compare(probe.find(test.page, "wormholeCode").text, "1234-alpha-bravo-charlie")
+            test.compare(probe.find(test.page, "wormholeCode").text, "gala-tulip-acorn")
             test.verify(!probe.find(test.page, "wormholeQr").visible, "croc has no QR code")
             test.compare(probe.find(test.page, "pageHeaderTitle").text, "croc")
             window.pageStack.pop()

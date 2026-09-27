@@ -183,22 +183,28 @@ wormhole-interop:
 			--no-default-features --features wormhole --locked \
 			--test wormhole_interop -- --include-ignored
 
-## croc-interop: Sukkula against croc v10.7.0's Go binary, as the other peer
-## and as the relay, both ways. Network (GitHub, and Go's module proxy
-## checked against its checksum database), and Go 1.25 or later (GO=...).
-## The same commit and build as ci.yml's croc-interop job.
+## croc-interop: Sukkula against croc v11.5.4's and v10.7.0's Go binaries,
+## as the other peer and as the relay, both ways, and croc 10 peers on
+## croc 11's relay. Network (GitHub, and Go's module proxy checked against
+## its checksum database), and Go 1.27 or later (GO=...). The same commits
+## and builds as ci.yml's croc-interop job.
 GO ?= go
-CROC_TAG := v10.7.0
-CROC_COMMIT := 2d9db41befec73287d727506409d87493f513a00
+CROC11_TAG := v11.5.4
+CROC11_COMMIT := 15a4577e56bf6bbad116576e448bd33120bd90c1
+CROC10_TAG := v10.7.0
+CROC10_COMMIT := 2d9db41befec73287d727506409d87493f513a00
 croc-interop:
 	@t=$${CARGO_TARGET_DIR:-target}; case $$t in /*) ;; *) t="$(CURDIR)/$$t" ;; esac; \
-		src="$$t/croc-interop-src"; b="$$t/croc-interop-bin"; rm -rf "$$src" "$$b"; \
-		git -c advice.detachedHead=false clone --quiet --depth 1 --branch $(CROC_TAG) https://github.com/schollz/croc "$$src" && \
-		test "$$(git -C "$$src" rev-parse HEAD)" = $(CROC_COMMIT) && \
-		(cd "$$src" && GOFLAGS=-mod=readonly GOSUMDB=sum.golang.org $(GO) build -o "$$b/croc" .) && \
-		SUKKULA_CROC="$$b/croc" $(CARGO) test -p sukkula-engine \
-			--no-default-features --features croc --locked \
-			--test croc_interop -- --include-ignored
+		build() { src="$$t/croc-interop-src-$$1"; rm -rf "$$src" "$$t/croc-interop-$$1"; \
+			git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$$2" https://github.com/schollz/croc "$$src" && \
+			test "$$(git -C "$$src" rev-parse HEAD)" = "$$3" && \
+			(cd "$$src" && GOFLAGS=-mod=readonly GOSUMDB=sum.golang.org $(GO) build -o "$$t/croc-interop-$$1/croc" .); }; \
+		build 11 $(CROC11_TAG) $(CROC11_COMMIT) && build 10 $(CROC10_TAG) $(CROC10_COMMIT) && \
+		for v in 11 10; do \
+			SUKKULA_CROC="$$t/croc-interop-$$v/croc" SUKKULA_CROC10="$$t/croc-interop-10/croc" \
+			$(CARGO) test -p sukkula-engine --no-default-features --features croc --locked \
+				--test croc_interop -- --include-ignored || exit 1; \
+		done
 
 ## sonar-reports: the coverage report SonarQube Cloud imports
 ## (.github/workflows/build.yml), written to target/sonar/lcov.info: the

@@ -1,17 +1,33 @@
-//! croc codes: `1234-word-word-word`.
+//! croc codes, as croc 11 reads them (`src/codephrase/codephrase.go`).
 //!
-//! croc v10.0.3 and later derive two things from a code: the room the two
-//! sides meet in on the relay, `hex(SHA-256(first four bytes ‖ "croc"))`,
-//! and the PAKE password, everything after the fifth byte. Nothing is
-//! normalised: a code is compared byte for byte.
+//! A code gives two things: the room the two sides meet in on the relay,
+//! `hex(SHA-256(selector ‖ "croc"))`, and the PAKE password. Which part of
+//! the code is which depends on its shape:
 //!
-//! Ours are croc's own shape: four digits, then three words from
-//! mnemonicode's list spelling four random bytes as croc spells them. The
-//! words carry 32 bits; the digits only pick the room.
+//! - three words of the EFF short word list (one of which, `yo-yo`, has a
+//!   hyphen of its own), or three words of lowercase letters: the first
+//!   word selects the room, the other two, hyphen and all, are the
+//!   password;
+//! - four words of lowercase letters: the first two, the last two;
+//! - anything else, croc 10's `8123-alpha-bravo-charlie` among them: the
+//!   first four bytes, and everything after the fifth.
+//!
+//! Nothing is normalised: a code is compared byte for byte.
+//!
+//! Ours are three EFF words whose first word has four letters, so that
+//! croc 10's rule -- the first four bytes, everything after the fifth --
+//! finds the same room and password: a croc 10 receiver on the same relay
+//! can take them too. The password is the last two words, about 21 bits,
+//! as croc 11's own; the first word only picks the room.
+//!
+//! With croc's public relays, the code also says which of them the two
+//! sides use: [`Code::relay_index`].
+
+use std::collections::HashSet;
+use std::sync::OnceLock;
 
 use sha2::{Digest, Sha256};
 
-use super::words::{BASE, WORDS};
 use crate::api::{ErrorCode, ErrorInfo};
 
 /// Shortest code croc takes, in bytes.
@@ -20,57 +36,245 @@ pub(super) const MIN_CODE_BYTES: usize = 6;
 /// Longest code taken here, in bytes. croc's are under 40.
 pub(super) const MAX_CODE_BYTES: usize = 128;
 
-/// A code that can be used: printable ASCII, no spaces, 6 to 128 bytes.
+/// The EFF's Short Wordlist #1, as croc 11 carries it: 1296 words, one a
+/// line. By the Electronic Frontier Foundation, under the Creative Commons
+/// Attribution 4.0 International licence (`eff/LICENSE.txt`); the dice
+/// numbers of the original are left out
+/// (<https://www.eff.org/files/2016/09/08/eff_short_wordlist_1.txt>).
+static EFF_LIST: &str = include_str!("eff/eff-short-wordlist-1.txt");
+
+/// The list, in order: 1296 words.
+fn eff_words() -> &'static [&'static str] {
+    static WORDS: OnceLock<Vec<&'static str>> = OnceLock::new();
+    WORDS.get_or_init(|| EFF_LIST.lines().collect())
+}
+
+/// Whether `word` is on the list.
+fn is_eff_word(word: &str) -> bool {
+    static SET: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    SET.get_or_init(|| eff_words().iter().copied().collect())
+        .contains(word)
+}
+
+/// The list's four-letter words, which our codes start with.
+fn four_letter_words() -> &'static [&'static str] {
+    static WORDS: OnceLock<Vec<&'static str>> = OnceLock::new();
+    WORDS.get_or_init(|| {
+        eff_words()
+            .iter()
+            .copied()
+            .filter(|w| w.len() == 4)
+            .collect()
+    })
+}
+
+/// A code that can be used: printable ASCII, no spaces, 6 to 128 bytes,
+/// with the room and password it gives.
 #[derive(Clone, PartialEq, Eq)]
-pub(super) struct Code(String);
+pub(super) struct Code {
+    typed: String,
+    room: String,
+    password: String,
+}
 
 impl std::fmt::Debug for Code {
     /// S9: the code is the transfer's secret.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Code(<{} bytes>)", self.0.len())
+        write!(f, "Code(<{} bytes>)", self.typed.len())
     }
 }
 
 impl std::fmt::Display for Code {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
+        f.write_str(&self.typed)
     }
 }
 
 impl Code {
-    /// The room on the relay.
-    pub(super) fn room(&self) -> String {
+    /// A code already checked to be printable ASCII of a length croc takes.
+    fn new(typed: String) -> Code {
+        let (selector, password) = split(&typed);
         let mut h = Sha256::new();
-        h.update(self.0.as_bytes().get(..4).unwrap_or_default());
+        h.update(selector.as_bytes());
         h.update(b"croc");
-        sukkula_core::hex::encode(&h.finalize())
+        let room = sukkula_core::hex::encode(&h.finalize());
+        Code {
+            room,
+            password,
+            typed,
+        }
     }
 
-    /// The PAKE password: everything after the fifth byte.
+    /// The room on the relay.
+    pub(super) fn room(&self) -> String {
+        self.room.clone()
+    }
+
+    /// The PAKE password.
     pub(super) fn password(&self) -> &[u8] {
-        self.0.as_bytes().get(5..).unwrap_or_default()
+        self.password.as_bytes()
+    }
+
+    /// Whether this is croc 10's own kind of code, four digits and then
+    /// words (`8123-alpha-bravo-charlie`), which croc 11 never makes.
+    pub(super) fn is_croc10s(&self) -> bool {
+        let b = self.typed.as_bytes();
+        b.get(..4)
+            .is_some_and(|pin| pin.iter().all(u8::is_ascii_digit))
+            && b.get(4) == Some(&b'-')
+    }
+
+    /// Which of `pool` public relays the code belongs to: SHA-256 of the
+    /// code, read as a big-endian number, modulo `pool`
+    /// (`codephrase.RelayIndex`). Zero for an empty pool.
+    pub(super) fn relay_index(&self, pool: usize) -> usize {
+        let Ok(n) = u64::try_from(pool) else {
+            return 0;
+        };
+        let digest = Sha256::digest(self.typed.as_bytes());
+        let index = digest.iter().fold(0u64, |acc, b| {
+            acc.checked_mul(256)
+                .and_then(|a| a.checked_add(u64::from(*b)))
+                .and_then(|a| a.checked_rem(n))
+                .unwrap_or(0)
+        });
+        usize::try_from(index).unwrap_or(0)
     }
 }
 
-/// A new code from ten random bytes: four digits, three words.
-pub(super) fn generate(random: [u8; 10]) -> Code {
-    let [d0, d1, d2, d3, d4, d5, w0, w1, w2, w3] = random;
-    // Four digits from 48 bits: the bias of 2^48 mod 10^4 is nothing.
-    let digits = u64::from_le_bytes([d0, d1, d2, d3, d4, d5, 0, 0])
-        .checked_rem(10_000)
-        .unwrap_or(0);
-    let x = u32::from_le_bytes([w0, w1, w2, w3]);
-    let word = |i: u32| {
-        let n = x
-            .checked_div(BASE.checked_pow(i).unwrap_or(1))
-            .and_then(|v| v.checked_rem(BASE))
-            .unwrap_or(0);
-        WORDS
-            .get(usize::try_from(n).unwrap_or(0))
-            .copied()
-            .unwrap_or("croc")
+/// The room selector and the password of `code`, by its shape.
+fn split(code: &str) -> (&str, String) {
+    if let Some(words) = eff_sequence(code, 3).or_else(|| lowercase_words(code, 3)) {
+        let (first, rest) = words.split_at(1);
+        return (first.first().copied().unwrap_or_default(), rest.join("-"));
+    }
+    if let Some(words) = lowercase_words(code, 4) {
+        // The first two words and the hyphen between them, as typed.
+        let first_two = words
+            .iter()
+            .take(2)
+            .map(|w| w.len())
+            .sum::<usize>()
+            .saturating_add(1);
+        let selector = code.get(..first_two).unwrap_or_default();
+        return (selector, words.get(2..).unwrap_or_default().join("-"));
+    }
+    (
+        code.get(..4).unwrap_or_default(),
+        code.get(5..).unwrap_or_default().to_owned(),
+    )
+}
+
+/// `code` as exactly `count` words of the EFF list, hyphen-joined; the
+/// list's `yo-yo` makes the reading a search.
+fn eff_sequence(code: &str, count: usize) -> Option<Vec<&str>> {
+    let parts: Vec<&str> = code.split('-').collect();
+    if parts.len() < count || parts.len() > count.saturating_mul(2) {
+        return None;
+    }
+    let mut words = Vec::with_capacity(count);
+    search(code, &parts, 0, count, &mut words).then_some(words)
+}
+
+/// Whether `parts[start..]` reads as the remaining words, pushed onto
+/// `words` (taken off again when they do not lead anywhere).
+fn search<'a>(
+    code: &'a str,
+    parts: &[&str],
+    start: usize,
+    count: usize,
+    words: &mut Vec<&'a str>,
+) -> bool {
+    if words.len() == count {
+        return start == parts.len();
+    }
+    for end in start.saturating_add(1)..=parts.len() {
+        let Some(word) = span(code, parts, start, end) else {
+            continue;
+        };
+        if !is_eff_word(word) {
+            continue;
+        }
+        words.push(word);
+        if search(code, parts, end, count, words) {
+            return true;
+        }
+        words.pop();
+    }
+    false
+}
+
+/// Parts `start..end` of `code`, with the hyphens between them, as a slice
+/// of `code` itself.
+fn span<'a>(code: &'a str, parts: &[&str], start: usize, end: usize) -> Option<&'a str> {
+    let offset = parts
+        .get(..start)?
+        .iter()
+        .map(|p| p.len().saturating_add(1))
+        .sum::<usize>();
+    let len = parts
+        .get(start..end)?
+        .iter()
+        .map(|p| p.len())
+        .sum::<usize>()
+        .saturating_add(end.saturating_sub(start).saturating_sub(1));
+    code.get(offset..offset.checked_add(len)?)
+}
+
+/// `code` as exactly `count` hyphen-separated words of `a` to `z`.
+fn lowercase_words(code: &str, count: usize) -> Option<Vec<&str>> {
+    let words: Vec<&str> = code.split('-').collect();
+    (words.len() == count
+        && words
+            .iter()
+            .all(|w| !w.is_empty() && w.bytes().all(|b| b.is_ascii_lowercase())))
+    .then_some(words)
+}
+
+/// A new code: three EFF words, the first of four letters, on relay
+/// `index` of a pool of `pool` when `on` is `Some((index, pool))`.
+///
+/// # Errors
+///
+/// [`ErrorCode::Internal`]: no randomness.
+pub(super) fn generate(on: Option<(usize, usize)>) -> Result<Code, ErrorInfo> {
+    generate_with(on, super::random::<2>)
+}
+
+/// [`generate`] with the random numbers from `draw`, two bytes a time.
+fn generate_with(
+    on: Option<(usize, usize)>,
+    mut draw: impl FnMut() -> Result<[u8; 2], ErrorInfo>,
+) -> Result<Code, ErrorInfo> {
+    let mut pick = |from: &[&'static str]| -> Result<&'static str, ErrorInfo> {
+        // Uniform: a draw past the last whole multiple of the list's length
+        // is drawn again.
+        let n = u32::try_from(from.len()).unwrap_or(1).max(1);
+        let limit = 65_536u32.checked_div(n).unwrap_or(1).saturating_mul(n);
+        loop {
+            let v = u32::from(u16::from_le_bytes(draw()?));
+            if v < limit {
+                let i = usize::try_from(v.checked_rem(n).unwrap_or(0)).unwrap_or(0);
+                return from
+                    .get(i)
+                    .copied()
+                    .ok_or_else(|| ErrorInfo::new(ErrorCode::Internal, "the word list"));
+            }
+        }
     };
-    Code(format!("{digits:04}-{}-{}-{}", word(0), word(1), word(2)))
+    loop {
+        let typed = format!(
+            "{}-{}-{}",
+            pick(four_letter_words())?,
+            pick(eff_words())?,
+            pick(eff_words())?
+        );
+        let code = Code::new(typed);
+        match on {
+            Some((index, pool)) if code.relay_index(pool) != index => {}
+            _ => return Ok(code),
+        }
+    }
 }
 
 /// A code as the user typed it: spaces between the parts become hyphens,
@@ -86,25 +290,94 @@ pub(super) fn parse(typed: &str) -> Result<Code, ErrorInfo> {
     if !ok {
         return Err(ErrorInfo::new(ErrorCode::BadCode, "not a croc code"));
     }
-    Ok(Code(joined))
+    Ok(Code::new(joined))
 }
 
 #[cfg(test)]
-#[allow(clippy::arithmetic_side_effects, clippy::field_reassign_with_default)] // Test scenes.
+#[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)] // Test scenes.
 mod tests {
     use super::*;
 
     #[test]
-    fn rooms_and_passwords_are_croc_s() {
-        // croc-protocol.md §1.2, seen on a live relay.
-        let code = parse("8123-alpha-bravo-charlie").unwrap();
+    fn the_list_is_croc_s() {
+        assert_eq!(eff_words().len(), 1296);
+        assert_eq!(eff_words()[0], "acid");
+        assert_eq!(eff_words()[1295], "zoom");
+        assert_eq!(four_letter_words().len(), 432);
+        assert!(is_eff_word("yo-yo"));
+        let unique: HashSet<_> = eff_words().iter().collect();
+        assert_eq!(unique.len(), 1296);
+    }
+
+    #[test]
+    fn rooms_passwords_and_relays_are_croc_11_s() {
+        // croc-v11-delta.md §1.1, from croc 11.5.4's own codephrase.
+        let vectors = [
+            (
+                "8123-alpha-bravo-charlie",
+                "1cdafe5c70a87f001f2f437fa6773c0ee726d10b7c3f86184dc68fa709c2f355",
+                "alpha-bravo-charlie",
+                0,
+            ),
+            (
+                "acid-acorn-acre",
+                "f72491c26f320da8a93ea323d8d23b4561e0634f967ba21cb268a1cd0df48a12",
+                "acorn-acre",
+                2,
+            ),
+            (
+                "yo-yo-acid-acorn",
+                "f8fbf63e42e2aaebb9962a27896c7c9fcd5ad3c3d3457bbc23a60e5cf4384266",
+                "acid-acorn",
+                3,
+            ),
+            (
+                "abc-def-ghi",
+                "aeb08bd382d1018e9369dcda6e10630fa1766be6c196ae02e2b52e21a40bef82",
+                "def-ghi",
+                0,
+            ),
+            (
+                "alpha-bravo-charlie-delta",
+                "82ed354962d360d22cd73b8448ee8f9793b069714a504ac1deabcee219dee7a1",
+                "charlie-delta",
+                1,
+            ),
+            (
+                "Alpha-bravo-charlie",
+                "94548cbeeba0c89fffade65a415449490867e8840b31f99fc57acf9f0df56ed1",
+                "-bravo-charlie",
+                3,
+            ),
+            (
+                "hello-world",
+                "dfe709f1615e56e943774c13c219257e9e725f62f3fd44629a57c210bc357f6c",
+                "-world",
+                1,
+            ),
+        ];
+        for (typed, room, password, relay) in vectors {
+            let code = parse(typed).unwrap();
+            assert_eq!(code.room(), room, "{typed}");
+            assert_eq!(code.password(), password.as_bytes(), "{typed}");
+            assert_eq!(code.relay_index(4), relay, "{typed}");
+        }
+        // Five EFF words are the legacy split, whose room is the first
+        // word's when it has four letters.
+        let five = parse("acid-acorn-acre-afar-agent").unwrap();
+        assert_eq!(five.room(), parse("acid-acorn-acre").unwrap().room());
+        assert_eq!(five.password(), b"acorn-acre-afar-agent");
         assert_eq!(
-            code.room(),
-            "1cdafe5c70a87f001f2f437fa6773c0ee726d10b7c3f86184dc68fa709c2f355"
+            parse(" acid acorn  acre ").unwrap(),
+            parse("acid-acorn-acre").unwrap()
         );
-        assert_eq!(code.password(), b"alpha-bravo-charlie");
-        assert_eq!(parse(" 8123 alpha  bravo charlie ").unwrap(), code);
-        assert_eq!(format!("{code:?}"), "Code(<24 bytes>)");
+        assert!(parse("8123-alpha-bravo-charlie").unwrap().is_croc10s());
+        assert!(!parse("acid-acorn-acre").unwrap().is_croc10s());
+        assert!(!parse("81234-alpha").unwrap().is_croc10s());
+        assert_eq!(
+            format!("{:?}", parse("acid-acorn-acre").unwrap()),
+            "Code(<15 bytes>)"
+        );
     }
 
     #[test]
@@ -122,15 +395,29 @@ mod tests {
     }
 
     #[test]
-    fn our_codes_are_croc_shaped() {
-        // mnemonicode's own vectors (croc-protocol.md A.4).
-        let c = generate([0, 0, 0, 0, 0, 0, 1, 2, 3, 4]);
-        assert_eq!(c.to_string(), "0000-papa-twist-alpine");
-        let c = generate([0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
-        assert_eq!(c.to_string(), "0655-natural-analyze-verbal");
-        assert_eq!(WORDS[0], "academy");
-        assert_eq!(WORDS[1625], "amen");
-        let c = generate([9; 10]);
-        assert_eq!(parse(&c.to_string()).unwrap(), c);
+    fn our_codes_suit_croc_11_and_croc_10_alike() {
+        let mut seed = 7u32;
+        let mut draw = || {
+            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            Ok((u16::try_from(seed >> 16).unwrap()).to_le_bytes())
+        };
+        for relay in 0..4 {
+            let code = generate_with(Some((relay, 4)), &mut draw).unwrap();
+            let typed = code.to_string();
+            let words: Vec<_> = typed.split('-').collect();
+            assert!(words.len() >= 3 && words[0].len() == 4, "{typed}");
+            assert_eq!(code.relay_index(4), relay, "{typed}");
+            // croc 11 reads it as three EFF words ...
+            assert_eq!(eff_sequence(&typed, 3).unwrap().len(), 3, "{typed}");
+            // ... and croc 10's byte split finds the same room and password.
+            let mut h = Sha256::new();
+            h.update(&typed.as_bytes()[..4]);
+            h.update(b"croc");
+            assert_eq!(code.room(), sukkula_core::hex::encode(&h.finalize()));
+            assert_eq!(code.password(), &typed.as_bytes()[5..]);
+            assert_eq!(parse(&typed).unwrap(), code);
+        }
+        let any = generate(None).unwrap();
+        assert!(eff_sequence(&any.to_string(), 3).is_some());
     }
 }

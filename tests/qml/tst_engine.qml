@@ -267,7 +267,7 @@ Script {
             // croc's code: no QR, and a QR a croc event carries is ignored.
             test.announced = []
             engine.codeArrived.connect(test.noteCode)
-            bridge.emitEvent(Ev.crocCode(9, "1234-alpha-bravo-charlie"))
+            bridge.emitEvent(Ev.crocCode(9, "gala-tulip-acorn"))
             bridge.emitEvent(JSON.stringify({ type: "croc_code", transfer: 10, code: "x-y-z-w", qr: Ev.qr21() }))
             bridge.emitEvent(JSON.stringify({ type: "croc_code", transfer: 11, code: 7 }))
         },
@@ -278,7 +278,7 @@ Script {
             test.compare(engine.sendCode(7).qr, null)
             test.compare(engine.sendCode(8).qr, null)
             test.compare(engine.sendCode(8).code, "10-e-f", "the code stands without its QR")
-            test.compare(engine.sendCode(9), { code: "1234-alpha-bravo-charlie", qr: null })
+            test.compare(engine.sendCode(9), { code: "gala-tulip-acorn", qr: null })
             test.compare(engine.sendCode(10).qr, null, "croc has no QR, whatever the event says")
             test.compare(engine.sendCode(11), null, "a code that is not a string")
             test.compare(test.announced, [5, 6, 7, 8, 9, 10], "every code said, the bad one not")

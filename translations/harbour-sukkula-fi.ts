@@ -794,9 +794,9 @@ Send screen: under croc&apos;s name on its tile.</extracomment>
         <translation>Vastaanota</translation>
     </message>
     <message>
-        <source>Type the code the sender&apos;s croc shows, such as 1234-alpha-bravo-charlie. You will see what is offered before anything is saved.</source>
+        <source>Type the code the sender&apos;s croc shows, such as gala-tulip-acorn. You will see what is offered before anything is saved.</source>
         <extracomment>How to receive with croc.</extracomment>
-        <translation>Kirjoita koodi, jonka lähettäjän croc näyttää, esimerkiksi 1234-alpha-bravo-charlie. Näet, mitä tarjotaan, ennen kuin mitään tallennetaan.</translation>
+        <translation>Kirjoita koodi, jonka lähettäjän croc näyttää, esimerkiksi gala-tulip-acorn. Näet, mitä tarjotaan, ennen kuin mitään tallennetaan.</translation>
     </message>
 </context>
 <context>

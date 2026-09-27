@@ -1,28 +1,41 @@
-//! croc v10 (spec v0.5): files or a text to anyone with the code, through
-//! a croc relay on the internet.
+//! croc 11, and croc 10 (spec v0.5): files or a text to anyone with the
+//! code, through a croc relay on the internet.
 //!
 //! # Why ours
 //!
-//! There is no croc library for Rust that speaks croc v10 with Go's
-//! peers: the crates that carry the name speak protocols of their own, or
-//! only half of croc's. So the protocol is implemented here, from croc
-//! v10.7.0's source, as the Go and TypeScript clients croc ships speak
-//! it, against Go's own test vectors, and checked against the Go binary
-//! (`tests/croc_interop.rs`). `docs/SECURITY.md` says what that means for
-//! a report.
+//! There is no croc library for Rust that speaks croc with Go's peers:
+//! the crates that carry the name speak protocols of their own, or only
+//! half of croc's. So the protocol is implemented here, from croc
+//! v11.5.4's and v10.7.0's source, as the Go and TypeScript clients croc
+//! ships speak it, against Go's own test vectors, and checked against the
+//! Go binaries (`tests/croc_interop.rs`). `docs/SECURITY.md` says what
+//! that means for a report.
+//!
+//! # croc 11 and croc 10
+//!
+//! croc 11 changed the codes, the relays and the peers' key exchange,
+//! and the two do not agree a key with each other. Most clients about are
+//! croc 11's, which refuse a croc 10 peer or warn of it as "legacy"; so
+//! Sukkula is croc 11, and falls back for croc 10's clients: a sender
+//! answers whichever its receiver speaks, a receiver takes a croc 10
+//! sender's answer, and our codes read the same to both. Everything after the key
+//! is croc 10's, which croc 11 still speaks to a peer that asks for none
+//! of its newer features, as Sukkula does.
 //!
 //! # The protocol, in short
 //!
 //! - **Relay** (`relay.rs`): every connection starts with a PAKE on croc's
 //!   own curve, SIEC255 (`siec.rs`), under a public password, then the
 //!   relay's password, its list of data ports and the room, sealed.
-//! - **Rendezvous**: the room is the SHA-256 of the code's first four
-//!   bytes (`code.rs`). The sender waits there; the receiver joins and
-//!   says `handshake`.
-//! - **Key** (`pake.rs`): a PAKE between the peers on P-256 under the
-//!   rest of the code, then PBKDF2 with the sender's salt; AES-256-GCM from
-//!   there on (`crypt.rs`). Both sides then join one data room per relay
-//!   port.
+//! - **Rendezvous** (`code.rs`): the room is the SHA-256 of the code's
+//!   first word, and croc's public relay the one the code picks. The
+//!   sender waits there; the receiver joins and says `handshake`.
+//! - **Key** (`pake.rs`, `pakekey.rs`): a PAKE between the peers on P-256
+//!   under the rest of the code, bound to the room and to who is who; HKDF
+//!   with the sender's salt then gives the key and a proof of it for each
+//!   side, exchanged before anything is sealed. AES-256-GCM from there on
+//!   (`crypt.rs`). Both sides then join one data room per relay port, up
+//!   to eight.
 //! - **Transfer** (`message.rs`): the sender lists its files; the receiver
 //!   asks for them one at a time; the chunks, 32 KiB each with their
 //!   position, go over the data rooms; each file is closed by both sides
@@ -31,8 +44,11 @@
 //! # What is not done
 //!
 //! - No LAN shortcut: croc's sender runs a relay of its own and announces
-//!   it by multicast. Ours answers a receiver's LAN probe with no
-//!   addresses, and data always goes through the relay.
+//!   it by multicast. Ours leaves croc 11's LAN probe unanswered, answers
+//!   croc 10's with no addresses, and data always goes through the relay.
+//! - None of croc 11's newer features -- file lists in parts, hashes as
+//!   the files are read, compression per file, its own data path -- which
+//!   croc 11 uses only with a peer that asks for them.
 //! - No resume and no reconnection: a transfer asks for whole files and
 //!   says it cannot reconnect, which Go peers accept.
 //! - Hashes other than XXH64 (croc's `--hash`, which nobody changes) are
@@ -45,12 +61,14 @@
 //! The relay is someone else's server on the internet: until the peers
 //! have their key it sees everything, and after it can drop, delay,
 //! replay or reflect sealed messages (croc numbers nothing), though it
-//! cannot read or forge them. The peer is whoever has the code. So every
-//! frame is capped before it is read and every message before it is
-//! inflated; the file list is checked before the user sees it and S1-S6
-//! apply to it as to any offer; the sender serves only chunks of its own
-//! files, each once; the receiver takes each chunk once, in order, from any
-//! of the data rooms, and a file only whole and with its hash. Nothing of
+//! cannot read or forge them. croc 10's key exchange is not confirmed and
+//! binds nothing; it is spoken only to a peer that speaks nothing else.
+//! The peer is whoever has the code. So every frame is capped before it
+//! is read and every message before it is inflated; the file list is
+//! checked before the user sees it and S1-S6 apply to it as to any offer;
+//! the sender serves only chunks of its own files, each once; the receiver
+//! takes each chunk once, in order, from any of the data rooms, and a file
+//! only whole and with its hash. Nothing of
 //! ours -- no address, no machine id, no request -- goes to the peer before
 //! the user has said yes, beyond the PAKE and croc's `externalip`, which
 //! carries nothing.
@@ -62,11 +80,11 @@ mod crypt;
 pub mod fuzzing;
 mod message;
 mod pake;
+mod pakekey;
 mod receive;
 mod relay;
 mod send;
 mod siec;
-mod words;
 mod xxh64;
 
 use std::sync::Arc;
@@ -82,8 +100,9 @@ use crate::ctx::Ctx;
 /// What the UI shows as the other side: croc has no names.
 pub const PEER_LABEL: &str = "croc";
 
-/// Most data rooms a send uses. croc's relay offers four.
-const MAX_SEND_ROOMS: usize = 4;
+/// Most data rooms either side uses: croc 11 uses no more, and a sender
+/// that sent over a ninth would wait for a receiver that never comes.
+const MAX_DATA_ROOMS: usize = 8;
 
 pub use crate::by_code::{ANSWER_WAIT, MAX_CONNECTING_RECEIVES, PEER_WAIT, Tuning};
 

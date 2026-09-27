@@ -1,8 +1,9 @@
 //! What croc peers say to each other (`src/message/message.go`,
 //! `src/croc/croc.go`).
 //!
-//! A control message is JSON `{"t", "m", "b", "b2"}`, raw DEFLATE, and --
-//! from the second PAKE message on -- sealed. `b` and `b2` are base64,
+//! A control message is JSON `{"t", "v", "m", "b", "b2"}`, raw DEFLATE,
+//! and -- once the peers have their key -- sealed. `v` is croc 11's PAKE
+//! version, on its `pake` and `pake-confirm` messages only. `b` and `b2` are base64,
 //! and for a file list or a file request `b` holds JSON of its own. Go
 //! ignores fields and types it does not know, and so does this; everything
 //! is read under a size cap, and what the protocol lets a peer choose --
@@ -10,7 +11,8 @@
 //! acts on it. Names are then S1's (`sukkula_core::offer`).
 //!
 //! The LAN probe's messages are different: plain JSON
-//! `{"Bytes", "Kind"}`, neither compressed nor sealed.
+//! `{"Bytes", "Kind"}` (croc 11 adds `Bytes2`, `Version` and `Curve`),
+//! neither compressed nor sealed.
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
@@ -38,8 +40,10 @@ pub(super) const MAX_CHUNK_PLAIN: usize = CHUNK_BYTES + 8;
 /// The kinds of control message.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Kind {
-    /// A PAKE message, the only kind sent before the key.
+    /// A PAKE message, sent before the key.
     Pake,
+    /// croc 11's proof of the key, sent before it is used.
+    PakeConfirm,
     /// Each side's address as the relay saw it; informational.
     ExternalIp,
     /// The sender's file list.
@@ -62,6 +66,7 @@ impl Kind {
     fn wire(self) -> &'static str {
         match self {
             Kind::Pake => "pake",
+            Kind::PakeConfirm => "pake-confirm",
             Kind::ExternalIp => "externalip",
             Kind::FileInfo => "fileinfo",
             Kind::RecipientReady => "recipientready",
@@ -76,6 +81,7 @@ impl Kind {
     fn from_wire(t: &str) -> Kind {
         [
             Kind::Pake,
+            Kind::PakeConfirm,
             Kind::ExternalIp,
             Kind::FileInfo,
             Kind::RecipientReady,
@@ -94,6 +100,8 @@ impl Kind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Message {
     pub(super) kind: Kind,
+    /// croc 11's PAKE version; 0, and left out, elsewhere.
+    pub(super) v: i64,
     pub(super) m: String,
     pub(super) b: Vec<u8>,
     pub(super) b2: Vec<u8>,
@@ -102,6 +110,8 @@ pub(super) struct Message {
 #[derive(Serialize, Deserialize)]
 struct MessageWire {
     t: String,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    v: i64,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     m: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -110,11 +120,17 @@ struct MessageWire {
     b2: Option<String>,
 }
 
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's signature.
+fn is_zero(v: &i64) -> bool {
+    *v == 0
+}
+
 impl Message {
     /// A message of `kind` with nothing in it.
     pub(super) fn new(kind: Kind) -> Message {
         Message {
             kind,
+            v: 0,
             m: String::new(),
             b: Vec::new(),
             b2: Vec::new(),
@@ -130,6 +146,7 @@ impl Message {
         let b64 = |v: &[u8]| (!v.is_empty()).then(|| STANDARD.encode(v));
         let wire = MessageWire {
             t: self.kind.wire().to_owned(),
+            v: self.v,
             m: self.m.clone(),
             b: b64(&self.b),
             b2: b64(&self.b2),
@@ -167,6 +184,7 @@ impl Message {
         };
         Some(Message {
             kind: Kind::from_wire(&wire.t),
+            v: wire.v,
             m: wire.m,
             b: unb64(wire.b)?,
             b2: unb64(wire.b2)?,
@@ -174,32 +192,49 @@ impl Message {
     }
 }
 
-/// The LAN probe's message: `{"Bytes": <base64>, "Kind": "pake1"}`.
+/// The LAN probe's message: `{"Bytes": <base64>, "Kind": "pake1"}`, and
+/// from croc 11 `"Version": 2` too.
 #[derive(Serialize, Deserialize)]
 pub(super) struct SimpleMessage {
     #[serde(rename = "Bytes")]
     bytes: String,
     #[serde(rename = "Kind")]
+    kind: String,
+    #[serde(rename = "Version", default, skip_serializing)]
+    version: i64,
+}
+
+/// A probe message read.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct Probe {
     pub(super) kind: String,
+    pub(super) bytes: Vec<u8>,
+    /// croc 11's PAKE version, 0 from croc 10.
+    pub(super) version: i64,
 }
 
 impl SimpleMessage {
-    /// A probe message of `kind` carrying `bytes`.
+    /// A probe message of `kind` carrying `bytes`, as croc 10 writes one.
     pub(super) fn encode(kind: &str, bytes: &[u8]) -> Vec<u8> {
         serde_json::to_vec(&SimpleMessage {
             bytes: STANDARD.encode(bytes),
             kind: kind.to_owned(),
+            version: 0,
         })
         .unwrap_or_default()
     }
 
-    /// `(kind, bytes)` of a probe message, if the frame is one.
-    pub(super) fn decode(frame: &[u8]) -> Option<(String, Vec<u8>)> {
+    /// The probe message in `frame`, if it is one.
+    pub(super) fn decode(frame: &[u8]) -> Option<Probe> {
         if frame.len() > super::pake::MAX_PAKE_BYTES.saturating_mul(2) {
             return None;
         }
         let m: SimpleMessage = serde_json::from_slice(frame).ok()?;
-        Some((m.kind, STANDARD.decode(m.bytes).ok()?))
+        Some(Probe {
+            bytes: STANDARD.decode(m.bytes).ok()?,
+            kind: m.kind,
+            version: m.version,
+        })
     }
 }
 
@@ -506,13 +541,51 @@ mod tests {
     }
 
     #[test]
+    fn croc_11_s_messages_read_and_are_written_alike() {
+        // croc-v11-delta.md A.4: Go 1.27's deflate, which ends otherwise.
+        let go = unhex(
+            "002d00d2ff7b2274223a2270616b65222c2276223a322c2262223a226533303d222c226232223a\
+             22634449314e673d3d227d0300",
+        );
+        let m = Message::decode(&go, None).unwrap();
+        assert_eq!((m.kind, m.v), (Kind::Pake, 2));
+        assert_eq!(
+            (m.b.as_slice(), m.b2.as_slice()),
+            (&b"{}"[..], &b"p256"[..])
+        );
+        let json = crypt::inflate(&m.encode(None).unwrap(), 1024).unwrap();
+        assert_eq!(json, br#"{"t":"pake","v":2,"b":"e30=","b2":"cDI1Ng=="}"#);
+        let go = unhex(
+            "004d00b2ff7b2274223a2270616b652d636f6e6669726d222c2276223a322c2262223a2257673372\
+             3450344657616167335a504f35785759666d77466f344e38734d4931515a55323456425665316f3d\
+             227d0300",
+        );
+        let m = Message::decode(&go, None).unwrap();
+        assert_eq!((m.kind, m.v, m.b.len()), (Kind::PakeConfirm, 2, 32));
+        // A truncated stream is not a message.
+        assert!(Message::decode(&go[..go.len() - 2], None).is_none());
+        // No `v` is croc 10's, and a number out of range no message.
+        let old = crypt::deflate(br#"{"t":"pake","b":"e30="}"#);
+        assert_eq!(Message::decode(&old, None).unwrap().v, 0);
+        let huge = crypt::deflate(br#"{"t":"pake","v":1e99}"#);
+        assert!(Message::decode(&huge, None).is_none());
+    }
+
+    #[test]
     fn probe_messages() {
         let wire = SimpleMessage::encode("pake2", b"xy");
         assert_eq!(wire, br#"{"Bytes":"eHk=","Kind":"pake2"}"#);
         assert_eq!(
             SimpleMessage::decode(br#"{"Bytes":"eHk=","Kind":"pake1"}"#),
-            Some(("pake1".into(), b"xy".to_vec()))
+            Some(Probe {
+                kind: "pake1".into(),
+                bytes: b"xy".to_vec(),
+                version: 0
+            })
         );
+        // croc 11's.
+        let v2 = br#"{"Bytes":"e30=","Bytes2":null,"Kind":"pake1","Version":2,"Curve":"p256"}"#;
+        assert_eq!(SimpleMessage::decode(v2).unwrap().version, 2);
         assert_eq!(SimpleMessage::decode(b"handshake"), None);
     }
 

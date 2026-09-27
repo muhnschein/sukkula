@@ -67,8 +67,9 @@ Page {
                     "LocalSend core – Apache-2.0",
                     "open-quickshare (rqs_lib) – GPL-3.0",
                     "magic-wormhole.rs – EUPL-1.2",
-                    "croc's protocol, and mnemonicode's words – MIT",
-                    "RustCrypto (p256, aes-gcm), miniz_oxide – MIT / Apache-2.0",
+                    "croc's protocol – MIT",
+                    "The EFF's short word list – CC BY 4.0",
+                    "RustCrypto (p256, aes-gcm, hkdf), miniz_oxide – MIT / Apache-2.0",
                     "dbus-rs – MIT / Apache-2.0",
                     "tokio, serde – MIT / Apache-2.0",
                     "Qt – LGPL-3.0, Sailfish Silica"

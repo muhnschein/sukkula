@@ -383,18 +383,20 @@ client on the same host, as `cargo test`:
   wormhole-interop` (`PYTHON=` names another 3.12). To move to a newer
   client, run the tests against it by hand, then regenerate the file with
   the command in its header.
-- **croc**: `tests/croc_interop.rs` runs croc v10.7.0's Go binary as
-  the relay and as the other peer, on loopback: files and a text each
-  way, a declined offer, a sender with `--no-compress --no-multi`, and a
-  receiver on croc's own curve. Its tests are `#[ignore]` on a machine
-  without croc; the `croc-interop` job clones the `v10.7.0` tag, checks it
-  is the commit pinned beside it, and builds it with `-mod=readonly`, so
-  every module is the one croc's `go.sum` names, checked against Go's
-  checksum database; then it runs them with `--include-ignored`, and fails
-  if none ran. Locally: `make croc-interop` (Go 1.25 or later; `GO=` names
-  another). To move to a newer croc, change the tag and commit in both,
-  run the tests, and read croc's changes to the protocol first: the
-  implementation is ours (`src/croc/mod.rs`).
+- **croc**: `tests/croc_interop.rs` runs croc's Go binary as the relay
+  and as the other peer, on loopback: files and a text each way, a
+  declined offer, a sender with `--no-compress --no-multi`, a receiver on
+  croc's own curve, and croc 10 peers each way on the binary's relay. Its
+  tests are `#[ignore]` on a machine without croc; the `croc-interop` job
+  clones the `v11.5.4` and `v10.7.0` tags, checks each is the commit
+  pinned beside it, and builds it with `-mod=readonly`, so every module is
+  the one croc's `go.sum` names, checked against Go's checksum database;
+  then it runs them with `--include-ignored` once with each binary as the
+  relay and the peer, and fails if none ran. Locally: `make croc-interop`
+  (Go 1.27 or later; `GO=` names another). To move to a newer croc,
+  change the tag and commit in both, run the tests, and read croc's
+  changes to the protocol first: the implementation is ours
+  (`src/croc/mod.rs`).
 - **Quick Share: no reference-client test.** `tests/quickshare.rs` is
   Sukkula to Sukkula and a hand-built hostile sender. rquickshare is a
   desktop GUI over the same `rqs_lib` Sukkula vendors, so a test against

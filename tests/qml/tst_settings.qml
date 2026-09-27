@@ -218,7 +218,7 @@ Script {
         },
         function () {
             var field = test.field("codeField")
-            test.verify(probe.texts(test.page).join("\n").indexOf("1234-alpha-bravo-charlie") >= 0,
+            test.verify(probe.texts(test.page).join("\n").indexOf("gala-tulip-acorn") >= 0,
                         "croc's example")
             var bad = ["12345", "1234-ä-b", "1234\u0007xyz", "  a b  "]
             for (var i = 0; i < bad.length; i++) {

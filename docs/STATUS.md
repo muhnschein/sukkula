@@ -14,7 +14,8 @@ Everything the spec asks for in v1.0:
   - Quick Share, over `third_party/rqs_lib` (open-quickshare 5a31145 plus
     20 patches) and `third_party/mdns-sd` (0.21.4 plus 4 patches);
   - Magic Wormhole v1;
-  - croc v10, our own implementation of its protocol (spec v0.5);
+  - croc 11, our own implementation of its protocol, and croc 10's for
+    its clients still about (spec v0.5);
   - Bluetooth OBEX send.
 - The hub, the C ABI (`sukkula-ffi`) and per-engine logging (S9).
 - The Qt/C++ shell and the Silica UI in en/fi/de/sv, with the Share menu
@@ -24,7 +25,7 @@ Everything the spec asks for in v1.0:
 - The RPM spec for the Jolla Phone 2026 (Sailfish OS 5.2+, aarch64 only).
 - CI with the Harbour gate, 21 fuzz targets, the dependency policy,
   the vendor check, and interop against the Python wormhole client and
-  croc's Go binary.
+  croc's Go binaries, 11 and 10.
 
 ## Verified
 
@@ -43,7 +44,7 @@ On an x86_64 host, from a clean checkout:
 - `make deny`.
 - `make vendor`.
 - `make wormhole-interop` against the pinned Python client (run during the fix round; it needs PyPI, so it is not part of `make check`).
-- croc's interop tests against croc v10.7.0's Go binary, all seven, on the development container (spec v0.5).
+- croc's interop tests, all nine, against croc v11.5.4's Go binary with croc v10.7.0's as the other peer on its relay, and against croc v10.7.0's alone, on the development container (spec v0.5).
 
 On GitHub, in pull request #2 (the first runs of `ci.yml` and `rpm.yml`):
 

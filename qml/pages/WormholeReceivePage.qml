@@ -115,7 +115,7 @@ Page {
                 width: parent.width - 2 * Theme.horizontalPageMargin
                 text: page.croc
                       //: How to receive with croc.
-                      ? qsTr("Type the code the sender's croc shows, such as 1234-alpha-bravo-charlie. You will see what is offered before anything is saved.")
+                      ? qsTr("Type the code the sender's croc shows, such as gala-tulip-acorn. You will see what is offered before anything is saved.")
                       //: How to receive with Magic Wormhole.
                       : qsTr("Type the code the sender's screen shows, such as 7-guitarist-revenge. You will see what is offered before anything is saved.")
                 textFormat: Text.PlainText
@@ -130,7 +130,7 @@ Page {
                 width: parent.width
                 //: The text field for a Magic Wormhole or croc code.
                 label: qsTr("Code")
-                placeholderText: page.croc ? "1234-alpha-bravo-charlie" : "7-guitarist-revenge"
+                placeholderText: page.croc ? "gala-tulip-acorn" : "7-guitarist-revenge"
                 inputMethodHints: Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase | Qt.ImhPreferLowercase
                 maximumLength: page.croc ? 128 : 100
                 errorHighlight: text.length > 0 && !page.valid

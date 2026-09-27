@@ -78,23 +78,30 @@ consent.**
   its own thread before that thread ends; nothing waits for it.
 - **A croc relay sees the start and can spoil the rest.** croc's relay
   is someone else's server: the PAKE with it runs under a password croc
-  publishes, so it -- or anyone on the path to it, the default relay
+  publishes, so it -- or anyone on the path to it, the default relays
   being plain TCP -- sees each side's address, the room (a hash of the
-  code's four digits) and the timing. The peers' own PAKE, under the rest
+  code's first word) and the timing. The peers' own PAKE, under the rest
   of the code, keys everything after, so the relay cannot read or forge
   the file list or a chunk; but croc numbers nothing, so it can drop,
   delay, replay or reflect sealed messages. Sukkula takes each chunk once,
   in order, and a file only whole and with its XXH64, and fails the
   transfer otherwise; what a relay can do is stop it. A relay of one's own
   can be set in Settings (F-CR3).
-- **A croc code is 32 bits.** Ours are croc's shape: four digits, which
-  only choose the room, and three words from a list of 1,626. Someone who
-  guesses the room while a send waits gets one PAKE attempt: a wrong
-  guess ends the send as a wrong code, so the odds stay one in 2^32 per
-  send, and a right one still meets the sender's user, who sees a
-  stranger take the transfer. Codes typed by hand
-  from other croc clients may be weaker; Sukkula takes any croc code of 6
-  to 128 printable characters, as croc does.
+- **A croc code is about 27 bits.** Ours are croc 11's shape: three words
+  from the EFF's short list of 1,296. The first only chooses the room;
+  the other two, about 21 bits, are the PAKE's password. Ours start with
+  one of the list's 432 four-letter words, so that croc 10 reads the same
+  room and password in them, and are drawn until they pick the relay the
+  send waits on (a quarter of them do). Someone who guesses the room
+  while a send waits gets one PAKE attempt: croc 11's key confirmation
+  ends the send as a wrong code at a wrong guess (croc 10's receivers,
+  without it, at their first sealed message), so the odds stay about one
+  in 2^27 per send, and a right one still meets the sender's user, who
+  sees a stranger take the transfer. croc 10's own codes were stronger
+  (four digits and three words of 1,626); croc 11 chose shorter ones, and
+  so do we, to be typed into it. Codes typed by hand from other croc
+  clients may be weaker; Sukkula takes any croc code of 6 to 128
+  printable characters, as croc does.
 - **mDNS announcements are unauthenticated.** Any host on the link can
   announce a Quick Share device under any name, or send a goodbye for
   another device's announcement and take it off the send radar until it
@@ -181,18 +188,23 @@ These are enforced in the code and checked in CI, not merely intended.
   library future inside `catch_unwind` and a timeout, and the mailbox
   connection, where the library mints hashcash without yielding, on a
   thread of its own rather than an engine worker.
-- **croc is ours, and read under caps.** No Rust library speaks croc v10
-  with Go's peers, so Sukkula implements it (`crates/sukkula-engine/src/croc/`).
-  Every frame is capped before it is read (1 MiB for a control message,
-  64 KiB for a chunk, 8 KiB for a PAKE message), every message before it
-  is inflated, and the relay's list of data ports at 16. The file list is
+- **croc is ours, and read under caps.** No Rust library speaks croc 11
+  or croc 10 with Go's peers, so Sukkula implements both
+  (`crates/sukkula-engine/src/croc/`): croc 11's key exchange, bound to
+  the room and each side's role and confirmed before anything is sealed,
+  and croc 10's, only as a sender to a receiver that asks for it and as
+  a receiver to a sender that answers with it. Every frame is capped
+  before it is read (1 MiB for a control message, 64 KiB for a chunk,
+  8 KiB for a PAKE message), every message before it is inflated, and the
+  relay's list of data ports at 16, of which 8 are used. The file list is
   checked before the user sees it: XXH64 or no hash, at least one file,
   a text only as one file of at most 64 KiB, and then S1-S6 as for any
   offer. Nothing of ours goes to the peer before the user says yes but
-  the PAKE and croc's `externalip`, which carries nothing; our answer to
-  croc's LAN probe names no address. As a sender, Sukkula serves only
-  chunks of its own files, each once, to a request it has checked, and
-  never follows a peer to another address: data goes through the relay.
+  the PAKE and croc's `externalip`, which carries nothing; croc 11's LAN
+  probe gets no answer, and our answer to croc 10's names no address. As
+  a sender, Sukkula serves only chunks of its own files, each once, to a
+  request it has checked, and never follows a peer to another address:
+  data goes through the relay.
 - **Bluetooth connects only to `unix:` buses.** libdbus starts a process
   for `unixexec:` and `autolaunch:` addresses, and falls back to
   `autolaunch:` when left to find the session bus itself. Every Bluetooth

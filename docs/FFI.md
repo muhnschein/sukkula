@@ -203,8 +203,10 @@ its `send`, `receive_wormhole`, `receive_croc` or `list_bluetooth_devices`
 is `unavailable`. A settings file from before `wormhole.enabled` existed
 reads as on, and one from before `croc` as croc's defaults.
 
-`croc.relay` is a relay other than croc's own `croc.schollz.com:9009`:
-`host`, `host:port` or `[v6]:port`, no scheme (`bad_settings` otherwise).
+`croc.relay` is a relay other than croc's public ones (`1.getcroc.com`
+to `4.getcroc.com`, port 9009, whichever the code picks, as croc 11
+does): `host`, `host:port` or `[v6]:port`, no scheme (`bad_settings`
+otherwise).
 `croc.password` is that relay's password when it is not croc's default,
 `pass123`: printable ASCII, at most 64 bytes. Like the PIN, it is never
 logged.
@@ -300,20 +302,22 @@ offers from the LAN, so a LAN flood cannot make it `busy`.
 ### receive_croc
 
 Receives with a croc code the sender's screen shows, e.g.
-`8123-alpha-bravo-charlie`; words separated by spaces are joined with
-hyphens, as croc's command line joins them, and nothing else is changed.
+`gala-tulip-acorn` (croc 11) or `8123-alpha-bravo-charlie` (croc 10);
+words separated by spaces are joined with hyphens, as croc's command line
+joins them, and nothing else is changed.
 As for `receive_wormhole`, the offer goes through consent like any other,
 the reply comes once the user has answered it, and an offer the user
 asked for does not count against the LAN's limit. `bad_code` for a
-malformed code, or one nobody is sending with; `unavailable` for a
-sender that hashes with anything but croc's default xxhash.
+malformed code, one nobody is sending with, or one the sender's key
+does not confirm; `unavailable` for a sender that hashes with anything
+but croc's default xxhash, or speaks a croc newer than 11.
 
 It may take up to 160 s: four steps of at most 20 s (the relay, the sender
 and the key, the data rooms, the offer), the dialog's whole 60 s, and room
 to spare.
 
 ```json command
-{"v":1,"id":15,"cmd":{"type":"receive_croc","code":"8123-alpha-bravo-charlie"}}
+{"v":1,"id":15,"cmd":{"type":"receive_croc","code":"gala-tulip-acorn"}}
 ```
 
 ### cancel
@@ -542,7 +546,7 @@ The code a croc send waits on. croc has no URI scheme, so there is no QR
 code to go with it.
 
 ```json event
-{"type":"croc_code","transfer":17,"code":"0655-natural-analyze-verbal"}
+{"type":"croc_code","transfer":17,"code":"gala-tulip-acorn"}
 ```
 
 ### bluetooth_devices

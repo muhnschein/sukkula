@@ -1,20 +1,28 @@
-//! schollz/pake v3.1.1, the PAKE croc runs twice: on SIEC255 with the
-//! public password `{1, 2, 3}` to every relay connection, and between the
-//! two peers on the curve the receiver names (`p256` by default), with the
+//! schollz/pake v3, the PAKE croc runs twice: on SIEC255 with the public
+//! password `{1, 2, 3}` to every relay connection, and between the two
+//! peers on the curve the receiver names (`p256` by default), with the
 //! code's words as the password.
 //!
 //! Role 0 (the receiver, or the relay's client) picks `a` and sends
 //! `X = w·U + a·G`; role 1 picks `b`, sends `Y = w·V + b·G`, and both get
-//! `Z` (`a·(Y − w·V)`, `b·(X − w·U)`) and the key
-//! `K = SHA-256(pw ‖ X ‖ Y ‖ Z)`, each coordinate as its shortest
-//! big-endian bytes. There is no key confirmation: a wrong password shows
-//! up as the first message that does not decrypt.
+//! `Z` (`a·(Y − w·V)`, `b·(X − w·U)`). The key is a SHA-256 over them,
+//! each coordinate as its shortest big-endian bytes, in one of two ways:
+//!
+//! - [`Pake::key`], pake v3.1.1's `SHA-256(pw ‖ X ‖ Y ‖ Z)`: every relay
+//!   connection, and croc 10 between the peers;
+//! - [`Pake::bound_key`], pake v3.2.0's identity-bound key: croc 11
+//!   between the peers, each field length-prefixed and the two sides'
+//!   identities and the curve's name hashed in too (`pakekey.rs`).
+//!
+//! Neither confirms the key: croc 10 finds a wrong password at the first
+//! message that does not decrypt, croc 11 by its `pake-confirm` tags.
 //!
 //! The messages are Go's `json.Marshal` of the whole `Pake` struct: keys
 //! in Unicode (`Xᵤ`, `Xᵥ`), coordinates as bare decimal numbers too big
 //! for any JSON number type, and every private field as `null`. They are
 //! written here byte for byte, and read with only what is used taken:
-//! `Role` and the other side's point, which must be on the curve.
+//! `Role` and the other side's point, which must be on the curve. pake
+//! v3.2.0 writes the same bytes as v3.1.1.
 //!
 //! Only SIEC255 and P-256 are spoken; a receiver asking for `p384`,
 //! `p521` or `ed25519` (croc's `--curve`, which nobody changes) is
@@ -31,6 +39,9 @@ use super::siec;
 
 /// Longest PAKE message read, in bytes. Go's are under 2 KiB.
 pub(super) const MAX_PAKE_BYTES: usize = 8 * 1024;
+
+/// What pake v3.2.0 hashes first into an identity-bound key.
+const BOUND_KEY_DOMAIN: &[u8] = b"github.com/schollz/pake/v3/identity-bound-session-key/v1";
 
 /// Longest decimal coordinate read: 2^256 has 78 digits.
 const MAX_DIGITS: usize = 78;
@@ -222,9 +233,10 @@ pub(super) struct Pake {
     secret: Secret,
     /// Role 0's own X, or the X role 1 received.
     x: Option<([u8; 32], [u8; 32])>,
-    /// Role 1's own Y.
+    /// Role 1's own Y, or the Y role 0 received.
     y: Option<([u8; 32], [u8; 32])>,
-    key: Option<[u8; 32]>,
+    /// Z, once both have spoken.
+    z: Option<([u8; 32], [u8; 32])>,
 }
 
 impl std::fmt::Debug for Pake {
@@ -255,7 +267,7 @@ impl Pake {
             secret: a,
             x: Some(x),
             y: None,
-            key: None,
+            z: None,
         })
     }
 
@@ -292,7 +304,6 @@ impl Pake {
             .ok_or(off)?;
         let x = x_point.coordinates().ok_or(off)?;
         let y = y_point.coordinates().ok_or(off)?;
-        let key = session_key(pw, &x, &y, &z);
         Ok(Pake {
             curve,
             role: 1,
@@ -300,7 +311,7 @@ impl Pake {
             secret: b,
             x: Some(x),
             y: Some(y),
-            key: Some(key),
+            z: Some(z),
         })
     }
 
@@ -310,7 +321,7 @@ impl Pake {
     ///
     /// The answer is malformed, not from role 1, or off the curve.
     pub(super) fn finish(&mut self, theirs: &[u8]) -> Result<(), PakeError> {
-        if self.role != 0 || self.key.is_some() {
+        if self.role != 0 || self.z.is_some() {
             return Err(PakeError::WrongRole);
         }
         let wire = read(theirs)?;
@@ -326,16 +337,53 @@ impl Pake {
             .and_then(|d| d.mul(self.secret))
             .and_then(Point::coordinates)
             .ok_or(off)?;
-        let y = y_point.coordinates().ok_or(off)?;
         // Role 0 hashes its own X, whatever role 1 echoed.
-        let x = self.x.ok_or(off)?;
-        self.key = Some(session_key(&self.pw, &x, &y, &z));
+        self.y = Some(y_point.coordinates().ok_or(off)?);
+        self.z = Some(z);
         Ok(())
     }
 
-    /// The shared key, once both sides have spoken.
+    /// The curve.
+    pub(super) fn curve(&self) -> Curve {
+        self.curve
+    }
+
+    /// X, Y and Z, once both sides have spoken.
+    fn points(&self) -> Option<[&([u8; 32], [u8; 32]); 3]> {
+        Some([self.x.as_ref()?, self.y.as_ref()?, self.z.as_ref()?])
+    }
+
+    /// pake v3.1.1's key, once both sides have spoken: the relay's, and
+    /// croc 10's between the peers.
     pub(super) fn key(&self) -> Option<[u8; 32]> {
-        self.key
+        let mut h = Sha256::new();
+        h.update(&self.pw);
+        for (x, y) in self.points()? {
+            h.update(shortest(x));
+            h.update(shortest(y));
+        }
+        Some(h.finalize().into())
+    }
+
+    /// pake v3.2.0's identity-bound key, once both sides have spoken:
+    /// croc 11's between the peers. `ids` are the receiver's and the
+    /// sender's identities (`pakekey::identities`).
+    pub(super) fn bound_key(&self, ids: (&[u8], &[u8])) -> Option<[u8; 32]> {
+        let mut h = Sha256::new();
+        let mut field = |v: &[u8]| {
+            h.update(u64::try_from(v.len()).unwrap_or(u64::MAX).to_le_bytes());
+            h.update(v);
+        };
+        field(BOUND_KEY_DOMAIN);
+        field(&self.pw);
+        field(ids.0);
+        field(ids.1);
+        field(self.curve.name().as_bytes());
+        for (x, y) in self.points()? {
+            field(shortest(x));
+            field(shortest(y));
+        }
+        Some(h.finalize().into())
     }
 
     /// This side's message, as Go's `json.Marshal` writes it.
@@ -346,7 +394,8 @@ impl Pake {
             None => ("null".to_owned(), "null".to_owned()),
         };
         let (xx, xy) = pair(self.x);
-        let (yx, yy) = pair(self.y);
+        // Role 0's message has no Y, even after it has the answer.
+        let (yx, yy) = pair(self.y.filter(|_| self.role == 1));
         format!(
             "{{\"Role\":{},\"Uᵤ\":{ux},\"Uᵥ\":{uy},\"Vᵤ\":{vx},\"Vᵥ\":{vy},\"Xᵤ\":{xx},\"Xᵥ\":{xy},\
              \"Yᵤ\":{yx},\"Yᵥ\":{yy},\"P\":null,\"Pw\":null,\"Vpwᵤ\":null,\"Vpwᵥ\":null,\
@@ -392,20 +441,6 @@ fn point_of(curve: Curve, x: Option<&RawValue>, y: Option<&RawValue>) -> Result<
         return Err(PakeError::Malformed);
     };
     curve.point(x.get(), y.get()).ok_or(PakeError::NotOnCurve)
-}
-
-fn session_key(
-    pw: &[u8],
-    x: &([u8; 32], [u8; 32]),
-    y: &([u8; 32], [u8; 32]),
-    z: &([u8; 32], [u8; 32]),
-) -> [u8; 32] {
-    let mut h = Sha256::new();
-    h.update(pw);
-    for c in [&x.0, &x.1, &y.0, &y.1, &z.0, &z.1] {
-        h.update(shortest(c));
-    }
-    h.finalize().into()
 }
 
 /// Go's `big.Int.Bytes()`: no leading zero bytes, empty for zero.

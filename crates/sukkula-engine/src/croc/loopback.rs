@@ -293,8 +293,9 @@ async fn a_wrong_code_is_said_and_nothing_is_offered() {
         .await
         .unwrap();
     let code = sender.code(id).await;
-    // The same room, other words.
-    let wrong = format!("{}-wrong-words-here", code.split('-').next().unwrap());
+    // The same room, other words: croc 11 reads three words as the room's
+    // and the password's.
+    let wrong = format!("{}-wrong-words", code.split('-').next().unwrap());
     let err = receiver.adapter.receive_code(wrong).await.unwrap_err();
     assert_eq!(err.code, ErrorCode::BadCode, "{err:?}");
     assert!(
@@ -302,7 +303,7 @@ async fn a_wrong_code_is_said_and_nothing_is_offered() {
         "the user was never asked"
     );
     match sender.outcome(id).await.0 {
-        Outcome::Failed { error } => assert_eq!(error.code, ErrorCode::BadCode),
+        Outcome::Failed { error } => assert_eq!(error.code, ErrorCode::BadCode, "{error:?}"),
         other => panic!("{other:?}"),
     }
     // A code that is not one at all never reaches the network.

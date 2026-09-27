@@ -8,9 +8,18 @@
 //! The receiver then has [`super::Tuning::peer_wait`] to type it and
 //! [`super::Tuning::answer_wait`] to accept.
 //!
+//! The code is made for the relay: with croc's public relays, the first
+//! that answers, trying them in order, and a code that picks it
+//! ([`Code::relay_index`]). The first is croc 10's public relay too, and
+//! our codes read the same to croc 10 and croc 11 (`code.rs`), so either
+//! can receive. Which one did, its first PAKE message says (`"v": 2` or
+//! not), and the key is agreed its way: croc 11's, confirmed
+//! (`pakekey.rs`), or croc 10's.
+//!
 //! What the receiver asks for is served exactly: a file of the list with
 //! bytes in it, the chunks named (or all of them), each once, and nothing
-//! else. Chunk `k` goes over data room `k mod n`, as croc's sender does.
+//! else. Chunk `k` goes over data room `k mod n`, as croc 10's sender
+//! does.
 
 use std::os::unix::fs::FileExt;
 use std::sync::Arc;
@@ -27,12 +36,13 @@ use super::message::{
     self, CHUNK_BYTES, Kind, MAX_CONTROL_BYTES, MAX_DATA_FRAME, Message, Sending, SimpleMessage,
 };
 use super::pake::{Curve, MAX_PAKE_BYTES, Pake};
-use super::relay::{self, Relay};
+use super::pakekey::{self, Side};
+use super::relay::{self, Joined, Relay, Relays};
 use super::xxh64::Xxh64;
 use super::{
-    CLEANUP_WAIT, Inner, MAX_SEND_ROOMS, PEER_LABEL, cancellable, deadline, protocol, random,
+    CLEANUP_WAIT, Inner, MAX_DATA_ROOMS, PEER_LABEL, cancellable, deadline, protocol, random,
 };
-use crate::adapter::{Outgoing, OutgoingFile};
+use crate::adapter::Outgoing;
 use crate::api::{Direction, ErrorCode, ErrorInfo, Event, SendTarget, TransferId};
 use crate::by_code::{bad_file, open_checked};
 use crate::ctx::TransferHandle;
@@ -73,7 +83,7 @@ pub(super) fn start(
             "croc carries files, or one text on its own",
         ));
     }
-    let relay = Relay::from_settings(&inner.ctx.settings().croc)?;
+    let relays = Relays::from_settings(&inner.ctx.settings().croc)?;
     let views: Vec<_> = items.iter().map(Outgoing::view).collect();
     let total = views.iter().fold(0u64, |a, v| a.saturating_add(v.size));
     let handle = inner
@@ -91,7 +101,7 @@ pub(super) fn start(
     let id = handle.id();
     let inner = inner.clone();
     tokio::spawn(async move {
-        let result = cancellable(handle.token(), run(&inner, &handle, items, &relay)).await;
+        let result = cancellable(handle.token(), run(&inner, &handle, items, &relays)).await;
         handle.finish_with(result.map(|()| Vec::new()));
     });
     Ok(id)
@@ -101,7 +111,7 @@ async fn run(
     inner: &Inner,
     handle: &TransferHandle,
     items: Vec<Outgoing>,
-    relay: &Relay,
+    relays: &Relays,
 ) -> Result<(), ErrorInfo> {
     let t = inner.tuning;
     // Opened before anything else: a code is not worth showing for a file
@@ -120,20 +130,19 @@ async fn run(
             tokio::task::spawn_blocking(move || Ok(vec![hash]))
         }
     };
-    let code = code::generate(random()?);
+    let (code, relay, mut control) = meet(relays, t.handshake).await?;
     let room = code.room();
-    let mut control = relay::join(relay, relay.port, &room, MAX_CONTROL_BYTES, t.handshake).await?;
     inner.ctx.emit(Event::CrocCode {
         transfer: handle.id(),
         code: code.to_string(),
     });
     wait_for_receiver(&mut control.conn, &code, t.peer_wait, t.idle).await?;
     let cipher = key_exchange(&mut control.conn, &code, t.handshake).await?;
-    let ports: Vec<u16> = control.ports.iter().take(MAX_SEND_ROOMS).copied().collect();
+    let ports: Vec<u16> = control.ports.iter().take(MAX_DATA_ROOMS).copied().collect();
     if ports.is_empty() {
         return Err(protocol("the croc relay offers no data rooms"));
     }
-    let mut data = join_rooms(relay, &ports, &room, t.handshake).await?;
+    let mut data = join_rooms(&relay, &ports, &room, t.handshake).await?;
     // The receiver says where it is; we say nothing.
     let limit = t.handshake;
     loop {
@@ -249,6 +258,23 @@ async fn run(
     }
 }
 
+/// A code, and the room for it on a relay: the first of croc's public
+/// relays that answers, with a code that picks it, or the relay the
+/// settings name.
+async fn meet(relays: &Relays, limit: Duration) -> Result<(Code, Relay, Joined), ErrorInfo> {
+    let mut failed = None;
+    for (relay, on) in relays.for_sending() {
+        let code = code::generate(on)?;
+        match relay::join(&relay, relay.port, &code.room(), MAX_CONTROL_BYTES, limit).await {
+            Ok(joined) => return Ok((code, relay, joined)),
+            // Unreachable, or not a croc relay: the next one.
+            Err(e) if e.code == ErrorCode::Network => failed = Some(e),
+            Err(e) => return Err(e),
+        }
+    }
+    Err(failed.unwrap_or_else(|| protocol("no croc relay")))
+}
+
 /// croc's name for a text sent as a file (`croc-stdin-…`).
 const TEXT_NAME: &str = "croc-stdin-sukkula";
 
@@ -265,8 +291,8 @@ async fn open_all(items: Vec<Outgoing>, limit: Duration) -> Result<Payload, Erro
             Outgoing::File(f) => {
                 let file = open_checked(&f, limit).await?;
                 // Go's receivers refuse two files of one name, and names
-                // with any space but ASCII's.
-                let name = unique(&mut names, &go_name(&f));
+                // croc 11 would not write.
+                let name = unique(&mut names, &croc_name(f.name.as_str()));
                 sources.push(Source {
                     name,
                     size: f.size,
@@ -278,18 +304,82 @@ async fn open_all(items: Vec<Outgoing>, limit: Duration) -> Result<Payload, Erro
     Ok(Payload::Files(sources))
 }
 
-/// The name as a Go receiver takes it: every kind of space an ASCII one.
-fn go_name(f: &OutgoingFile) -> String {
-    f.name
-        .as_str()
+/// The name as croc's receivers take it (croc 11's `receivefs`): every
+/// kind of space an ASCII one, and whatever croc 11 refuses in a name --
+/// a character that does not print, `:`, a slash of either kind, a
+/// trailing dot or space -- a `_`; a name croc 11 will not write (a
+/// Windows device's, `.git`, `.ssh`, `.gnupg`) gets a `_` in front.
+fn croc_name(name: &str) -> String {
+    let mut out: String = name
         .chars()
-        .map(|c| if c.is_whitespace() { ' ' } else { c })
-        .collect()
+        .map(|c| match c {
+            c if c.is_whitespace() => ' ',
+            ':' | '/' | '\\' => '_',
+            c if !prints(c) => '_',
+            c => c,
+        })
+        .collect();
+    if out.is_empty() || out.ends_with(['.', ' ']) {
+        out.pop();
+        out.push('_');
+    }
+    let stem = out.split('.').next().unwrap_or_default().to_uppercase();
+    let reserved = matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CLOCK$" | "CONIN$" | "CONOUT$"
+    ) || stem
+        .strip_prefix("COM")
+        .or_else(|| stem.strip_prefix("LPT"))
+        .is_some_and(|n| {
+            matches!(
+                n,
+                "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+            )
+        });
+    let hidden = matches!(out.to_lowercase().as_str(), ".git" | ".ssh" | ".gnupg");
+    if reserved || hidden {
+        out.insert(0, '_');
+    }
+    out
 }
 
-/// `name`, or `name (2)`, `name (3)`, … if it is taken.
+/// Whether Go counts `c` as printable in a name: not a control or format
+/// character, nor a private or non-character code point. (Code points
+/// Unicode has not assigned yet are not known here.)
+fn prints(c: char) -> bool {
+    !c.is_control()
+        && !matches!(
+            u32::from(c),
+            0xAD | 0x600..=0x605
+                | 0x61C
+                | 0x6DD
+                | 0x70F
+                | 0x890..=0x891
+                | 0x8E2
+                | 0x180E
+                | 0x200B..=0x200F
+                | 0x2028..=0x202E
+                | 0x2060..=0x206F
+                | 0xFDD0..=0xFDEF
+                | 0xFEFF
+                | 0xFFF9..=0xFFFB
+                | 0x110BD
+                | 0x110CD
+                | 0x13430..=0x1343F
+                | 0x1BCA0..=0x1BCA3
+                | 0x1D173..=0x1D17A
+                | 0xE0001
+                | 0xE0020..=0xE007F
+                | 0xE000..=0xF8FF
+                | 0xF0000..=0x10FFFF
+        )
+        && (u32::from(c) & 0xFFFE) != 0xFFFE
+}
+
+/// `name`, or `name (2)`, `name (3)`, … if it is taken, letter case aside:
+/// croc 11 takes two names that differ only in case for one.
 fn unique(taken: &mut std::collections::HashSet<String>, name: &str) -> String {
-    if taken.insert(name.to_owned()) {
+    if taken.insert(name.to_lowercase()) {
         return name.to_owned();
     }
     let (stem, ext) = match name.rfind('.') {
@@ -299,7 +389,7 @@ fn unique(taken: &mut std::collections::HashSet<String>, name: &str) -> String {
     let mut n = 2u32;
     loop {
         let candidate = format!("{stem} ({n}){ext}");
-        if taken.insert(candidate.clone()) {
+        if taken.insert(candidate.to_lowercase()) {
             return candidate;
         }
         n = n.saturating_add(1);
@@ -328,10 +418,11 @@ fn hash_all(files: &[(Arc<std::fs::File>, u64)]) -> Result<Vec<[u8; 8]>, ErrorIn
     Ok(out)
 }
 
-/// Waits for the receiver's `handshake`, answering croc's LAN probe on
-/// the way (a Go receiver waits for its answer before anything else).
-/// The probe is answered on the curve it came on, and its `ips?` with no
-/// addresses: we run no relay of our own.
+/// Waits for the receiver's `handshake`, answering croc 10's LAN probe
+/// on the way (a croc 10 receiver waits for its answer before anything
+/// else). The probe is answered on the curve it came on, and its `ips?`
+/// with no addresses: we run no relay of our own. croc 11's probe is not
+/// answered at all.
 async fn wait_for_receiver(
     control: &mut Conn,
     code: &Code,
@@ -371,12 +462,18 @@ async fn wait_for_receiver(
             }
         }
         probes = probes.saturating_add(1);
-        let pake1 = SimpleMessage::decode(&frame).filter(|(kind, bytes)| {
-            kind == "pake1" && bytes.len() <= MAX_PAKE_BYTES && probes <= 1
-        });
-        let Some((_, bytes)) = pake1 else {
+        let pake1 = SimpleMessage::decode(&frame)
+            .filter(|p| p.kind == "pake1" && p.bytes.len() <= MAX_PAKE_BYTES && probes <= 1);
+        let Some(pake1) = pake1 else {
             return Err(protocol("the croc receiver spoke out of turn"));
         };
+        if pake1.version != 0 {
+            // croc 11's: it waits half a second for an answer, then goes on
+            // to the handshake, and takes one that comes later for a broken
+            // transfer. So none is given.
+            continue;
+        }
+        let bytes = pake1.bytes;
         let answered = Curve::of_message(&bytes)
             .and_then(|curve| Pake::answer(curve, code.password(), random().ok()?, &bytes).ok());
         match answered.and_then(|p| Some((p.message(), p.key()?))) {
@@ -398,8 +495,8 @@ async fn wait_for_receiver(
     }
 }
 
-/// The peers' PAKE, the receiver speaking first; returns the session
-/// cipher.
+/// The peers' PAKE, the receiver speaking first, croc 11's way or croc
+/// 10's, as the receiver's message says; returns the session cipher.
 async fn key_exchange(
     control: &mut Conn,
     code: &Code,
@@ -409,6 +506,12 @@ async fn key_exchange(
     let m = Message::decode(&frame, None)
         .filter(|m| m.kind == Kind::Pake && m.b.len() <= MAX_PAKE_BYTES)
         .ok_or_else(|| protocol("the croc receiver did not start the key exchange"))?;
+    if m.v != 0 && m.v != pakekey::VERSION {
+        return Err(ErrorInfo::new(
+            ErrorCode::Unavailable,
+            "the croc receiver speaks a newer croc than Sukkula",
+        ));
+    }
     let curve = Curve::from_name(&m.b2).ok_or_else(|| {
         ErrorInfo::new(
             ErrorCode::Unavailable,
@@ -417,13 +520,37 @@ async fn key_exchange(
     })?;
     let pake = Pake::answer(curve, code.password(), random()?, &m.b)
         .map_err(|_| protocol("the croc receiver's key exchange is malformed"))?;
-    let key = pake.key().ok_or_else(|| protocol("no key"))?;
-    let salt: [u8; crypt::SALT_BYTES] = random()?;
     let mut reply = Message::new(Kind::Pake);
     reply.b = pake.message();
+    if m.v == 0 {
+        // croc 10: the key through PBKDF2 with our salt, unconfirmed.
+        let key = pake.key().ok_or_else(|| protocol("no key"))?;
+        let salt: [u8; crypt::SALT_BYTES] = random()?;
+        reply.b2 = salt.to_vec();
+        control.send(&reply.encode(None)?, limit).await?;
+        return Ok(Cipher::new(&crypt::derive(&key, &salt)));
+    }
+    let salt: [u8; pakekey::SALT_BYTES] = random()?;
+    reply.v = pakekey::VERSION;
     reply.b2 = salt.to_vec();
+    let keys = pakekey::for_transfer(&pake, &code.room(), &m.b, &reply.b, &salt)
+        .ok_or_else(|| protocol("no key"))?;
     control.send(&reply.encode(None)?, limit).await?;
-    Ok(Cipher::new(&crypt::derive(&key, &salt)))
+    let frame = control.recv_skipping(deadline(limit)).await?;
+    let theirs = Message::decode(&frame, None)
+        .filter(|c| c.kind == Kind::PakeConfirm && c.v == pakekey::VERSION)
+        .ok_or_else(|| protocol("the croc receiver did not confirm the key"))?;
+    if !keys.verify(Side::Receiver, &theirs.b) {
+        return Err(ErrorInfo::new(
+            ErrorCode::BadCode,
+            "the receiver typed a different code",
+        ));
+    }
+    let mut ours = Message::new(Kind::PakeConfirm);
+    ours.v = pakekey::VERSION;
+    ours.b = keys.tag(Side::Sender).to_vec();
+    control.send(&ours.encode(None)?, limit).await?;
+    Ok(Cipher::new(keys.encryption()))
 }
 
 /// Joins the data room on each port at once.
@@ -620,6 +747,33 @@ mod tests {
         assert_eq!(unique(&mut taken, ".profile"), ".profile (2)");
         assert_eq!(unique(&mut taken, "x"), "x");
         assert_eq!(unique(&mut taken, "x"), "x (2)");
+        assert_eq!(unique(&mut taken, "A.TXT"), "A (4).TXT", "case aside");
+    }
+
+    #[test]
+    fn names_are_ones_croc_11_writes() {
+        for (name, sent) in [
+            ("plain.txt", "plain.txt"),
+            ("a\u{a0}b\tc.txt", "a b c.txt"),
+            ("a:b\\c.txt", "a_b_c.txt"),
+            ("zero\u{200b}width\u{feff}.txt", "zero_width_.txt"),
+            ("private\u{e000}.txt", "private_.txt"),
+            ("trailing.", "trailing_"),
+            ("space ", "space_"),
+            ("con", "_con"),
+            ("Con.txt", "_Con.txt"),
+            ("com1.log", "_com1.log"),
+            ("LPT\u{b9}", "_LPT\u{b9}"),
+            ("com10.log", "com10.log"),
+            ("console.txt", "console.txt"),
+            (".git", "_.git"),
+            (".SSH", "_.SSH"),
+            (".gnupg.txt", ".gnupg.txt"),
+            ("émoji 😀.png", "émoji 😀.png"),
+            ("", "_"),
+        ] {
+            assert_eq!(croc_name(name), sent, "{name:?}");
+        }
     }
 
     #[test]

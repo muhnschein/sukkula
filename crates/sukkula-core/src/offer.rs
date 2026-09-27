@@ -30,7 +30,7 @@ pub enum Protocol {
     Wormhole,
     /// Bluetooth OBEX Object Push.
     Bluetooth,
-    /// croc v10, through a relay (spec v0.5).
+    /// croc 11, and croc 10, through a relay (spec v0.5).
     // CONTRACT: new (additive), last, so the others keep their order.
     Croc,
 }

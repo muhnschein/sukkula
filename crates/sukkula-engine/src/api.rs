@@ -146,7 +146,7 @@ pub enum Command {
     /// any other, and the reply comes once the user has answered it.
     // CONTRACT: new (additive).
     ReceiveCroc {
-        /// The code the sender's screen shows, e.g. `8123-alpha-bravo-charlie`.
+        /// The code the sender's screen shows, e.g. `gala-tulip-acorn`.
         code: String,
     },
     /// Cancels a transfer in either direction (F-C5).

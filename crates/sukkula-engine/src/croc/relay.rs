@@ -15,19 +15,35 @@
 //! What the relay says is not trusted: every frame of the handshake is
 //! small and bounded, the banner must be a short list of ports, and the
 //! answer to the room must be `ok` exactly.
+//!
+//! croc 11's relays take this handshake as croc 10's did, and pair a
+//! client that makes it with one that uses their newer shortcuts. Which of
+//! croc's four public relays two peers meet on, the code says
+//! ([`Code::relay_index`]).
 
 use std::time::Duration;
 
 use sukkula_core::config::{CrocSettings, relay_host_port};
 
+use super::code::Code;
 use super::conn::{Conn, network};
 use super::crypt::{self, Cipher};
 use super::pake::{Curve, MAX_PAKE_BYTES, Pake};
 use super::random;
 use crate::api::{ErrorCode, ErrorInfo};
 
-/// croc's public relay (`src/models/constants.go`).
-pub(super) const DEFAULT_HOST: &str = "croc.schollz.com";
+/// croc 11's public relays (`src/publicrelay/publicrelay.go`), in the
+/// order codes pick them by.
+pub(super) const PUBLIC_RELAYS: [&str; 4] = [
+    "1.getcroc.com",
+    "2.getcroc.com",
+    "3.getcroc.com",
+    "4.getcroc.com",
+];
+
+/// croc 10's public relay, which its senders wait on: today the first of
+/// croc 11's under another name.
+pub(super) const CROC10_HOST: &str = "croc.schollz.com";
 
 /// croc's relay port.
 pub(super) const DEFAULT_PORT: u16 = 9009;
@@ -35,7 +51,7 @@ pub(super) const DEFAULT_PORT: u16 = 9009;
 /// croc's default relay password.
 pub(super) const DEFAULT_PASSWORD: &str = "pass123";
 
-/// Most data ports taken from a banner. croc's relay has four.
+/// Most data ports read from a banner. croc's public relays have eight.
 pub(super) const MAX_BANNER_PORTS: usize = 16;
 
 /// Longest handshake frame after the PAKE: a sealed banner and address.
@@ -64,29 +80,87 @@ impl std::fmt::Debug for Relay {
     }
 }
 
-impl Relay {
-    /// The relay the settings name, or croc's own.
+/// Where the peers meet.
+#[derive(Clone, Debug)]
+pub(super) enum Relays {
+    /// croc's public relays, the one the code picks, with this password.
+    Public(String),
+    /// The one relay the settings name.
+    Own(Relay),
+}
+
+impl Relays {
+    /// The relay the settings name, or croc's public ones.
     ///
     /// # Errors
     ///
     /// [`ErrorCode::BadSettings`]: the relay does not parse (the settings
     /// were checked when saved; this checks again at every use).
-    pub(super) fn from_settings(s: &CrocSettings) -> Result<Relay, ErrorInfo> {
-        let (host, port) = match &s.relay {
-            None => (DEFAULT_HOST.to_owned(), DEFAULT_PORT),
-            Some(r) => relay_host_port(r)
-                .ok_or_else(|| ErrorInfo::new(ErrorCode::BadSettings, "the croc relay"))?,
-        };
-        Ok(Relay {
-            host,
-            port,
-            password: s
-                .password
-                .clone()
-                .unwrap_or_else(|| DEFAULT_PASSWORD.to_owned()),
+    pub(super) fn from_settings(s: &CrocSettings) -> Result<Relays, ErrorInfo> {
+        let password = s
+            .password
+            .clone()
+            .unwrap_or_else(|| DEFAULT_PASSWORD.to_owned());
+        Ok(match &s.relay {
+            None => Relays::Public(password),
+            Some(r) => {
+                let (host, port) = relay_host_port(r)
+                    .ok_or_else(|| ErrorInfo::new(ErrorCode::BadSettings, "the croc relay"))?;
+                Relays::Own(Relay {
+                    host,
+                    port,
+                    password,
+                })
+            }
         })
     }
 
+    /// The relay a receiver takes `code` to: the one croc 11 picks for it
+    /// ([`Code::relay_index`]); for croc 10's own kind of code, which croc
+    /// 11 never makes, croc 10's.
+    pub(super) fn for_code(&self, code: &Code) -> Relay {
+        match self {
+            Relays::Own(r) => r.clone(),
+            Relays::Public(password) => {
+                let host = if code.is_croc10s() {
+                    CROC10_HOST
+                } else {
+                    PUBLIC_RELAYS
+                        .get(code.relay_index(PUBLIC_RELAYS.len()))
+                        .copied()
+                        .unwrap_or(CROC10_HOST)
+                };
+                Relay {
+                    host: host.to_owned(),
+                    port: DEFAULT_PORT,
+                    password: password.clone(),
+                }
+            }
+        }
+    }
+
+    /// The relays a sender tries, in order, each with what its code must
+    /// pick (`Some((index, of))`), or anything (`None`).
+    pub(super) fn for_sending(&self) -> Vec<(Relay, Option<(usize, usize)>)> {
+        match self {
+            Relays::Own(r) => vec![(r.clone(), None)],
+            Relays::Public(password) => PUBLIC_RELAYS
+                .iter()
+                .enumerate()
+                .map(|(i, host)| {
+                    let relay = Relay {
+                        host: (*host).to_owned(),
+                        port: DEFAULT_PORT,
+                        password: password.clone(),
+                    };
+                    (relay, Some((i, PUBLIC_RELAYS.len())))
+                })
+                .collect(),
+        }
+    }
+}
+
+impl Relay {
     /// A relay at `host:port` with croc's default password, for tests.
     #[cfg(test)]
     pub(super) fn at(host: &str, port: u16, password: &str) -> Relay {
@@ -168,6 +242,9 @@ pub(super) async fn handshake(
             ErrorCode::BadCode,
             "two others are using this code on the relay",
         )),
+        Some(b"rate limited") => Err(network(
+            "the croc relay turns us away for now: too many connections",
+        )),
         _ => Err(not_croc()),
     }
 }
@@ -196,13 +273,15 @@ pub(super) enum Banner {
 
 /// The data ports in a relay's banner, `9010,9011|||203.0.113.9:4000`
 /// (`ok` for none). The address after `|||` is where the relay saw us
-/// come from, and is not used.
+/// come from, and is not used; neither is anything after a second `|||`,
+/// where croc 11's relays put a token for clients that ask for one.
 pub(super) fn parse_banner(plain: &[u8]) -> Result<Vec<u16>, Banner> {
     if plain == b"bad password" {
         return Err(Banner::BadPassword);
     }
     let text = std::str::from_utf8(plain).map_err(|_| Banner::Malformed)?;
-    let (ports, address) = text.split_once("|||").ok_or(Banner::Malformed)?;
+    let (ports, rest) = text.split_once("|||").ok_or(Banner::Malformed)?;
+    let address = rest.split_once("|||").map_or(rest, |(a, _)| a);
     if address.len() > 64 {
         return Err(Banner::Malformed);
     }
@@ -431,6 +510,9 @@ mod tests {
             Ok(vec![9010, 9011, 9012, 9013])
         );
         assert_eq!(parse_banner(b"ok|||[::1]:5"), Ok(vec![]));
+        // croc 11's, to a client that asked for a token.
+        let token = format!("9010|||1.2.3.4:5|||{}", "t".repeat(300));
+        assert_eq!(parse_banner(token.as_bytes()), Ok(vec![9010]));
         assert_eq!(parse_banner(b"bad password"), Err(Banner::BadPassword));
         for bad in [
             &b"9010"[..],
@@ -456,19 +538,37 @@ mod tests {
     }
 
     #[test]
-    fn the_default_relay_is_croc_s() {
-        let r = Relay::from_settings(&CrocSettings::default()).unwrap();
-        assert_eq!((r.host.as_str(), r.port), (DEFAULT_HOST, DEFAULT_PORT));
-        assert_eq!(r.password, DEFAULT_PASSWORD);
+    fn codes_pick_croc_s_public_relays() {
+        let public = Relays::from_settings(&CrocSettings::default()).unwrap();
+        // croc-v11-delta.md §1.1: RelayIndex of these codes is 2, 3, 1.
+        for (typed, host) in [
+            ("acid-acorn-acre", "3.getcroc.com"),
+            ("yo-yo-acid-acorn", "4.getcroc.com"),
+            ("alpha-bravo-charlie-delta", "2.getcroc.com"),
+            // croc 10's own kind goes where croc 10's senders wait.
+            ("8123-alpha-bravo-charlie", CROC10_HOST),
+        ] {
+            let r = public.for_code(&crate::croc::code::parse(typed).unwrap());
+            assert_eq!((r.host.as_str(), r.port), (host, DEFAULT_PORT), "{typed}");
+            assert_eq!(r.password, DEFAULT_PASSWORD);
+        }
+        let sending = public.for_sending();
+        assert_eq!(sending.len(), 4);
+        assert_eq!(sending[0].0.host, "1.getcroc.com");
+        assert_eq!(sending[3].1, Some((3, 4)));
+
         let mut s = CrocSettings::default();
         s.relay = Some("[2001:db8::1]:9100".into());
         s.password = Some("hunter2".into());
-        let r = Relay::from_settings(&s).unwrap();
+        let own = Relays::from_settings(&s).unwrap();
+        let r = own.for_code(&crate::croc::code::parse("acid-acorn-acre").unwrap());
         assert_eq!((r.host.as_str(), r.port), ("2001:db8::1", 9100));
-        assert!(!format!("{r:?}").contains("hunter2"));
+        assert!(!format!("{own:?}").contains("hunter2"));
+        assert_eq!(own.for_sending().len(), 1);
+        assert_eq!(own.for_sending()[0].1, None);
         s.relay = Some("tcp://x".into());
         assert_eq!(
-            Relay::from_settings(&s).unwrap_err().code,
+            Relays::from_settings(&s).unwrap_err().code,
             ErrorCode::BadSettings
         );
     }
