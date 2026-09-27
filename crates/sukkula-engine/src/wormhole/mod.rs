@@ -108,7 +108,7 @@
 //! would have added `futures-rustls` and, in the only variant without the
 //! verifier duplicate, a baked-in root store.
 
-mod code;
+pub(crate) mod code;
 #[doc(hidden)]
 pub mod fuzzing;
 mod mailbox;
@@ -125,7 +125,7 @@ use std::time::Duration;
 
 use sukkula_core::Protocol;
 
-use crate::adapter::{Adapter, BoxFuture, Outgoing};
+use crate::adapter::{Adapter, BoxFuture, CodeReceive, Outgoing};
 use crate::api::{ErrorInfo, SendTarget, TransferId};
 use crate::by_code::{self, ByCode, Inner};
 use crate::ctx::Ctx;
@@ -191,8 +191,8 @@ impl ByCode for Wormhole {
 
     fn receive(
         inner: Arc<Inner>,
-        code: String,
+        request: CodeReceive,
     ) -> BoxFuture<'static, Result<TransferId, ErrorInfo>> {
-        Box::pin(receive::start(inner, code))
+        Box::pin(receive::start(inner, request.code, request.mailbox_url))
     }
 }

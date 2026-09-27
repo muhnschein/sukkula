@@ -19,7 +19,7 @@ use tokio::sync::mpsc;
 
 use super::relay::testing::{self, TestRelay};
 use super::{Tuning, adapter_with};
-use crate::adapter::{Adapter, Outgoing, OutgoingFile};
+use crate::adapter::{Adapter, CodeReceive, Outgoing, OutgoingFile};
 use crate::api::{ErrorCode, ErrorInfo, Event, Outcome, SendTarget, TransferId};
 use crate::ctx::Ctx;
 
@@ -102,7 +102,9 @@ impl Side {
     /// The code a send of ours shows, once it does.
     async fn code(&self, transfer: TransferId) -> String {
         self.event("code", |e| match e {
-            Event::CrocCode { transfer: t, code } if *t == transfer => Some(code.clone()),
+            Event::CrocCode {
+                transfer: t, code, ..
+            } if *t == transfer => Some(code.clone()),
             _ => None,
         })
         .await
@@ -163,7 +165,7 @@ async fn exchange(
     let code = sender.code(id).await;
     let receiving = tokio::spawn({
         let adapter = receiver.adapter.clone();
-        async move { adapter.receive_code(code).await }
+        async move { adapter.receive_code(CodeReceive::typed(code)).await }
     });
     receiver.answer(accept).await;
     (id, receiving.await.unwrap())
@@ -296,7 +298,11 @@ async fn a_wrong_code_is_said_and_nothing_is_offered() {
     // The same room, other words: croc 11 reads three words as the room's
     // and the password's.
     let wrong = format!("{}-wrong-words", code.split('-').next().unwrap());
-    let err = receiver.adapter.receive_code(wrong).await.unwrap_err();
+    let err = receiver
+        .adapter
+        .receive_code(CodeReceive::typed(wrong))
+        .await
+        .unwrap_err();
     assert_eq!(err.code, ErrorCode::BadCode, "{err:?}");
     assert!(
         receiver.offers.try_recv().is_err(),
@@ -309,7 +315,7 @@ async fn a_wrong_code_is_said_and_nothing_is_offered() {
     // A code that is not one at all never reaches the network.
     let err = receiver
         .adapter
-        .receive_code("12345".into())
+        .receive_code(CodeReceive::typed("12345".into()))
         .await
         .unwrap_err();
     assert_eq!(err.code, ErrorCode::BadCode);

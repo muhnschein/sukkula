@@ -3,10 +3,12 @@
 //! Every fenced block marked `json command` must parse as a command, every
 //! `json event` must deserialise into `Event` and serialise back to exactly
 //! the same JSON (so a misspelt or missing field fails, although `Event`
-//! itself ignores unknown fields), and every `json config` must parse as a
-//! start configuration. Then every command, event, error code and enum
-//! value the API has must appear in the page. The lists come from serde
-//! itself, so a new variant without an example fails here.
+//! itself ignores unknown fields), every `json config` must parse as a
+//! start configuration, and every `json scan` must round-trip through
+//! `Scanned` as an event does. Then every command, event, scan result,
+//! error code and enum value the API has must appear in the page. The
+//! lists come from serde itself, so a new variant without an example fails
+//! here.
 
 #![allow(
     clippy::unwrap_used,
@@ -26,7 +28,8 @@ use sukkula_core::consent::Closed;
 use sukkula_core::limits::{MAX_EVENT_BYTES, MAX_MESSAGE_BYTES};
 use sukkula_engine::api::{
     API_VERSION, Command, DeviceType, Direction, ErrorCode, Event, MAX_IN_FLIGHT_COMMANDS,
-    MAX_LISTED_FILES, Outcome, ProtocolState, SendTarget, parse_command, parse_start_config,
+    MAX_LISTED_FILES, Outcome, ProtocolState, Scanned, SendTarget, parse_command,
+    parse_start_config,
 };
 
 const DOC: &str = include_str!("../../../docs/FFI.md");
@@ -120,8 +123,20 @@ fn every_block_is_marked_and_valid() {
                     .unwrap_or_else(|e| panic!("{at}: not a start configuration: {e:?}"));
                 assert!(cfg.data_dir.starts_with('/') && cfg.download_dir.starts_with('/'));
             }
+            "json scan" => {
+                let value: Value =
+                    serde_json::from_str(&b.body).unwrap_or_else(|e| panic!("{at}: not JSON: {e}"));
+                let found: Scanned = serde_json::from_value(value.clone())
+                    .unwrap_or_else(|e| panic!("{at}: not a scan result: {e}"));
+                assert_eq!(
+                    serde_json::to_value(&found).unwrap(),
+                    value,
+                    "{at}: sukkula_scan_qr would report this differently"
+                );
+                assert!(serde_json::to_string(&found).unwrap().len() < 4096, "{at}");
+            }
             other => panic!(
-                "{at}: a JSON block marked {other:?}; mark it json command, json event or json config"
+                "{at}: a JSON block marked {other:?}; mark it json command, json event, json config or json scan"
             ),
         }
     }
@@ -157,7 +172,7 @@ fn check_event_invariants(at: &str, event: &Event) {
                 assert!(sukkula_core::name::is_safe(name), "{at}: {name:?}");
             }
         }
-        Event::WormholeCode { qr, .. } => {
+        Event::WormholeCode { qr, .. } | Event::CrocCode { qr, .. } => {
             let size = usize::try_from(qr.size).unwrap();
             assert_eq!(qr.rows.len(), size, "{at}");
             for row in &qr.rows {
@@ -175,6 +190,7 @@ fn every_command_and_event_has_an_example() {
     let mut commands = BTreeSet::new();
     let mut events = BTreeSet::new();
     let mut targets = BTreeSet::new();
+    let mut scans = BTreeSet::new();
     for b in json_blocks() {
         let v: Value = serde_json::from_str(&b.body).unwrap();
         match b.kind.as_str() {
@@ -187,6 +203,9 @@ fn every_command_and_event_has_an_example() {
             "json event" => {
                 events.insert(v["type"].as_str().unwrap().to_owned());
             }
+            "json scan" => {
+                scans.insert(v["found"].as_str().unwrap().to_owned());
+            }
             _ => {}
         }
     }
@@ -198,6 +217,9 @@ fn every_command_and_event_has_an_example() {
     }
     for t in variants::<SendTarget>(r#"{"protocol":"~"}"#) {
         assert!(targets.contains(&t), "send target {t} has no example");
+    }
+    for s in variants::<Scanned>(r#"{"found":"~"}"#) {
+        assert!(scans.contains(&s), "scan result {s} has no example");
     }
 }
 

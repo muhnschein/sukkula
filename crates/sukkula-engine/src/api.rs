@@ -140,6 +140,12 @@ pub enum Command {
     ReceiveWormhole {
         /// The code the sender's screen shows, e.g. `7-guitarist-revenge`.
         code: String,
+        /// The mailbox server the sender's QR code named
+        /// ([`Scanned::Wormhole`]), for this receive only: the settings'
+        /// otherwise (F-MW4).
+        // CONTRACT: new (additive).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mailbox_url: Option<String>,
     },
     /// Receives with a croc code (spec v0.5). As with
     /// [`Command::ReceiveWormhole`], the offer goes through consent like
@@ -147,6 +153,17 @@ pub enum Command {
     // CONTRACT: new (additive).
     ReceiveCroc {
         /// The code the sender's screen shows, e.g. `gala-tulip-acorn`.
+        code: String,
+    },
+    /// Receives with a code the user typed or pasted, over the protocol
+    /// the code is for (spec v0.6; `crate::scan::typed`): a Magic Wormhole
+    /// code, a croc code, or a pasted `wormhole-transfer:` URI or croc
+    /// link. As with the two above, the offer goes through consent like
+    /// any other, and the reply comes once the user has answered it.
+    // CONTRACT: new (additive).
+    ReceiveCode {
+        /// What the user typed, e.g. `7-guitarist-revenge` or
+        /// `gala-tulip-acorn`.
         code: String,
     },
     /// Cancels a transfer in either direction (F-C5).
@@ -331,14 +348,17 @@ pub enum Event {
         /// The same code as a QR code.
         qr: QrCode,
     },
-    /// The code a croc send is waiting on. croc has no URI to put in a QR
-    /// code.
+    /// The code a croc send is waiting on.
     // CONTRACT: new (additive).
     CrocCode {
         /// The transfer.
         transfer: TransferId,
         /// The code to read out.
         code: String,
+        /// The same code as a QR code: the code itself, as croc 10 put it
+        /// in its QR codes (spec v0.6).
+        // CONTRACT: new (additive).
+        qr: QrCode,
     },
     /// Paired devices that accept Object Push.
     BluetoothDevices {
@@ -538,6 +558,31 @@ pub struct QrCode {
     pub size: u32,
     /// `size` strings of `size` characters.
     pub rows: Vec<String>,
+}
+
+/// What a QR code from the camera holds, as `sukkula_scan_qr` reports it
+/// (spec v0.6; `crate::scan`).
+// CONTRACT: new (additive), with sukkula_scan_qr in sukkula.h.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "found", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Scanned {
+    /// A Magic Wormhole code, from a `wormhole-transfer:` URI.
+    Wormhole {
+        /// The code, as [`Command::ReceiveWormhole`] takes it.
+        code: String,
+        /// The mailbox server the URI named, when it is not the default,
+        /// for [`Command::ReceiveWormhole`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mailbox_url: Option<String>,
+    },
+    /// A croc code, from croc's web link or on its own.
+    Croc {
+        /// The code, as [`Command::ReceiveCroc`] takes it.
+        code: String,
+    },
+    /// A QR code holding something else. What it holds is not said: it is
+    /// never shown, logged or opened.
+    Other,
 }
 
 /// A paired Bluetooth device.

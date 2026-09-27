@@ -34,7 +34,7 @@
 # it into the private shared library the package ships, libsukkula_ffi.so
 # beside it, which is where the qmake project and the spec expect it
 # (docs/FFI.md, Linking, says why a library and not the archive in the
-# binary). Both are then proved: the archive's four C entry points there
+# binary). Both are then proved: the archive's five C entry points there
 # and every native library it needs on Harbour's allowed list; the
 # library's exports, NEEDED libraries, glibc symbol versions, hardening
 # and TLS model, and a probe executable linked against it the way the
@@ -240,7 +240,7 @@ done
 # The C ABI of include/sukkula.h, exported from the archive.
 echo "-- exported entry points --"
 exports=$("$NM" -g --defined-only "$LIB" 2>/dev/null | awk '$2 == "T" {print $3}' | sort -u)
-for sym in sukkula_start sukkula_command sukkula_stop sukkula_version; do
+for sym in sukkula_start sukkula_command sukkula_stop sukkula_version sukkula_scan_qr; do
     if grep -qx "$sym" <<< "$exports"; then
         echo "   ok       $sym"
     else
@@ -276,13 +276,14 @@ if [[ "$mode" = host && "$stub_dbus" = 1 ]]; then
     echo "-- libdbus-1: a stand-in with $(wc -w <<< "$syms") symbol(s); Ubuntu has no arm64 libdbus-1 here"
 fi
 
-# The four entry points are pulled out of the archive with -u and are the
+# The five entry points are pulled out of the archive with -u and are the
 # only exports (crates/sukkula-ffi/exports.map). The link is RELRO,
 # BIND_NOW, as-needed, with a non-executable stack, every symbol resolved
 # (-z defs), and stripped.
 # shellcheck disable=SC2086 # word lists on purpose
 "$CC" $SYSFLAGS $HARDEN -shared -o "$SO" -Wl,-soname,libsukkula_ffi.so \
     -Wl,-u,sukkula_start -Wl,-u,sukkula_command -Wl,-u,sukkula_stop -Wl,-u,sukkula_version \
+    -Wl,-u,sukkula_scan_qr \
     -Wl,--version-script="$ROOT/crates/sukkula-ffi/exports.map" \
     $LINKDIRS -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack -Wl,-z,defs -Wl,--as-needed -s \
     "$LIB" $native || fail "the engine does not link into $SO"
@@ -290,7 +291,7 @@ fi
 echo
 echo "== $SO ($(du -h "$SO" | cut -f1)), as the package ships it =="
 "$ROOT/ci/check-elf.sh" --readelf "$READELF" --glibc-ceiling "$CEILING" --library --stripped \
-    --exports-only "sukkula_start sukkula_command sukkula_stop sukkula_version" "$SO" ||
+    --exports-only "sukkula_start sukkula_command sukkula_stop sukkula_version sukkula_scan_qr" "$SO" ||
     fail "the library needs more than the phone provides, or exports more than the C ABI; see above"
 
 # -- the probe ----------------------------------------------------------------
@@ -311,8 +312,11 @@ cat > "$BINDIR/probe.c" <<'EOF'
 static void on_event(const char *event_json, void *userdata) { (void)event_json; (void)userdata; }
 int main(void) {
     SukkulaEngine *e = sukkula_start("{}", on_event, NULL);
+    unsigned char frame[64] = {0};
+    char out[SUKKULA_SCAN_BYTES];
     (void)sukkula_command(e, "{}");
     sukkula_stop(e);
+    (void)sukkula_scan_qr(frame, 8, 8, 8, out, sizeof out);
     return sukkula_version() == NULL;
 }
 EOF

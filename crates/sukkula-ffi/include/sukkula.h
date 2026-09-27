@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
  *
- * The C ABI between the Qt shell and the Rust engine: four functions, JSON
+ * The C ABI between the Qt shell and the Rust engine: five functions, JSON
  * in and out. The messages are defined in crates/sukkula-engine/src/api.rs
  * and shown with examples in docs/FFI.md.
  *
@@ -43,17 +43,24 @@ typedef struct SukkulaEngine SukkulaEngine;
 /* Receives one event: NUL-terminated UTF-8 JSON, valid only during the call. */
 typedef void (*sukkula_event_cb)(const char *event_json, void *userdata);
 
-/* Return values of sukkula_command(). Treat any value but SUKKULA_OK as
- * "no reply will come"; later versions may add codes. Enumerators rather
- * than macros: constants of type int in C and in C++ alike, which a
- * debugger can name and the preprocessor cannot redefine. */
+/* Return values of sukkula_command() and, below 0, of sukkula_scan_qr().
+ * Treat any value but SUKKULA_OK from sukkula_command() as "no reply will
+ * come"; later versions may add codes. Enumerators rather than macros:
+ * constants of type int in C and in C++ alike, which a debugger can name
+ * and the preprocessor cannot redefine. */
 enum { /* NOSONAR: not an enum class; this header is C as well as C++ */
     SUKKULA_OK = 0,            /* taken; its "reply" event follows */
     SUKKULA_ERR_NULL = -1,     /* engine or command_json was NULL, or the engine was stopped */
     SUKKULA_ERR_UTF8 = -2,     /* command_json is not UTF-8 */
     SUKKULA_ERR_TOO_LONG = -3, /* command_json is over 64 KiB; nothing was parsed */
     SUKKULA_ERR_PANIC = -4,    /* the engine failed internally; see the log (stderr) */
-    SUKKULA_ERR_BUSY = -5      /* 64 commands await their reply; nothing was parsed, try again after one */
+    SUKKULA_ERR_BUSY = -5,     /* 64 commands await their reply; nothing was parsed, try again after one */
+    SUKKULA_ERR_RANGE = -6     /* sukkula_scan_qr(): a size, the stride or out_size is out of range; nothing was read */
+};
+/* CONTRACT: SUKKULA_ERR_RANGE is new (additive), with sukkula_scan_qr(). */
+
+enum { /* NOSONAR: as above */
+    SUKKULA_SCAN_BYTES = 4096 /* a buffer this size always holds sukkula_scan_qr()'s answer, NUL and all */
 };
 /* CONTRACT: SUKKULA_ERR_BUSY is new (additive; covered by the rule above).
  * The codes were #defines before, with the same names and values; nothing
@@ -93,6 +100,36 @@ void sukkula_stop(SukkulaEngine *engine);
 
 /* The engine version, e.g. "0.1.0". A static string; never free it. */
 const char *sukkula_version(void);
+
+/*
+ * Looks for a QR code in one camera frame: `height` rows of `width` grey
+ * (luma) pixels, a byte each, every row `stride` bytes after the last.
+ * Both sides 1 to 1024, the stride `width` to 4096. The frame is read
+ * during the call only, and must not change meanwhile.
+ *
+ * Returns 0 when no QR code in the frame could be read. Otherwise writes
+ * what one holds to `out`, as NUL-terminated UTF-8 JSON, and returns its
+ * length without the NUL, e.g.
+ *
+ *   {"found":"wormhole","code":"7-guitarist-revenge"}
+ *   {"found":"wormhole","code":"7-guitarist-revenge","mailbox_url":"wss://mailbox.example/v1"}
+ *   {"found":"croc","code":"gala-tulip-acorn"}
+ *   {"found":"other"}
+ *
+ * A code is as receive_wormhole and receive_croc take it; "other" is a QR
+ * code with anything else in it, and what that is is not said. `out` has
+ * `out_size` bytes, of which SUKKULA_SCAN_BYTES always suffice.
+ * SUKKULA_ERR_NULL for a NULL `luma` or `out`, SUKKULA_ERR_RANGE for a
+ * size out of range (nothing is read) or an answer longer than `out`,
+ * SUKKULA_ERR_PANIC if the scan failed internally.
+ *
+ * Needs no engine, and touches no network, file or engine state: it may be
+ * called at any time, from any thread, several at once. A frame takes tens
+ * of milliseconds on a phone, and even one made to be slow is bounded, but
+ * not by much less than a second: call it off the UI thread.
+ */
+int32_t sukkula_scan_qr(const uint8_t *luma, uint32_t width, uint32_t height, uint32_t stride,
+                        char *out, uint32_t out_size);
 
 #ifdef __cplusplus
 }

@@ -20,6 +20,11 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 arbitrary = { version = "1", features = ["derive"] }
 serde_json = "1"
+# qr_text reads croc's web links back with the URL parser the engine and
+# magic-wormhole use; the version they use, so nothing new is built.
+url = "2"
+# qr_frame draws QR codes into its seeds' frames; the engine's own.
+qrcode = { version = "0.14", default-features = false }
 sukkula-core = { path = "../crates/sukkula-core" }
 # The four network protocols, for their parsers' targets. Not Bluetooth:
 # its parsers read D-Bus replies, which its own sweeps cover.
@@ -188,6 +193,20 @@ bench = false
 [[bin]]
 name = "croc_file_list"
 path = "fuzz_targets/croc_file_list.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "qr_text"
+path = "fuzz_targets/qr_text.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "qr_frame"
+path = "fuzz_targets/qr_frame.rs"
 test = false
 doc = false
 bench = false

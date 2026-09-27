@@ -44,7 +44,7 @@ use super::{
 };
 use crate::adapter::Outgoing;
 use crate::api::{Direction, ErrorCode, ErrorInfo, Event, SendTarget, TransferId};
-use crate::by_code::{bad_file, open_checked};
+use crate::by_code::{bad_file, open_checked, qr_code};
 use crate::ctx::TransferHandle;
 
 /// What is being sent: files, or one text sent as croc sends one.
@@ -132,9 +132,14 @@ async fn run(
     };
     let (code, relay, mut control) = meet(relays, t.handshake).await?;
     let room = code.room();
+    // The QR code holds the code alone, as croc 10's did, and not croc
+    // 11's getcroc.com link: a camera app would open that, and hand the
+    // code to a web server.
+    let qr = qr_code(code.to_string().as_bytes())?;
     inner.ctx.emit(Event::CrocCode {
         transfer: handle.id(),
         code: code.to_string(),
+        qr,
     });
     wait_for_receiver(&mut control.conn, &code, t.peer_wait, t.idle).await?;
     let cipher = key_exchange(&mut control.conn, &code, t.handshake).await?;

@@ -164,7 +164,7 @@ policy, stricter than Harbour.
 
 ## Sailjail permissions, and why each
 
-`Permissions=Internet;Bluetooth;Downloads;Documents;Music;Pictures;Videos;RemovableMedia`
+`Permissions=Internet;Bluetooth;Camera;Downloads;Documents;Music;Pictures;Videos;RemovableMedia`
 and nothing else (spec §2). P.2 fails a tree that asks for less or for
 more: each one missing is a feature that silently does not work in the
 sandbox, and each one extra is reach nobody reviewed.
@@ -177,6 +177,13 @@ sandbox, and each one extra is reach nobody reviewed.
   the BLE advertisement that makes Android phones reveal their Quick Share
   service (F-QS2). The engine reaches both through the system
   `libdbus-1.so.3`; QtBluetooth is not allowed.
+- **Camera** -- the viewfinder of the page that reads a Magic Wormhole or
+  croc code off the sender's screen (spec v0.6), through QtMultimedia's
+  `Camera` and `VideoOutput` (the `QtMultimedia 5.6` import, on Harbour's
+  list, and `qt5-qtdeclarative-import-multimedia`, which the package
+  requires). The camera runs only while that page is in front; frames go
+  to the engine's QR reader in memory and nothing is recorded or saved.
+  The binary links nothing new: the frames are grabbed through QtQuick.
 - **Downloads** -- received files land in `~/Downloads/Sukkula/`, staged in
   its hidden `.partial/` (S3). Staging there, not in the app's data
   directory, is deliberate: Sailjail's bind mounts make a link or rename

@@ -290,18 +290,6 @@
 <context>
     <name>ReceiveView</name>
     <message>
-        <source>Receive with a code</source>
-        <extracomment>Receive screen, under the cloud: tapping it shows Magic Wormhole and croc.</extracomment>
-        <translation>Ta emot med kod</translation>
-    </message>
-    <message>
-        <source>Type the code</source>
-        <extracomment>Receive screen: under Magic Wormhole&apos;s name on its tile.
-----------
-Receive screen: under croc&apos;s name on its tile.</extracomment>
-        <translation>Skriv koden</translation>
-    </message>
-    <message>
         <source>%1 of %2</source>
         <extracomment>Progress of a transfer: %1 bytes so far, %2 bytes in all, both formatted.</extracomment>
         <translation>%1 av %2</translation>
@@ -355,6 +343,72 @@ Receive screen: under croc&apos;s name on its tile.</extracomment>
         <source>%1 could not start: %2</source>
         <extracomment>A protocol could not start; %1 is its name, %2 why.</extracomment>
         <translation>%1 kunde inte starta: %2</translation>
+    </message>
+    <message>
+        <source>Scan or type a code</source>
+        <extracomment>Receive screen, under the QR code: tapping it opens the camera.</extracomment>
+        <translation>Skanna eller skriv en kod</translation>
+    </message>
+</context>
+<context>
+    <name>ScanPage</name>
+    <message>
+        <source>That is a croc code, and croc is switched off in Settings.</source>
+        <extracomment>A croc QR code was scanned, and croc is off.</extracomment>
+        <translation>Det är en croc-kod, och croc är avstängt i inställningarna.</translation>
+    </message>
+    <message>
+        <source>That is a Magic Wormhole code, and Magic Wormhole is switched off in Settings.</source>
+        <extracomment>A Magic Wormhole QR code was scanned, and Magic Wormhole is off.</extracomment>
+        <translation>Det är en Magic Wormhole-kod, och Magic Wormhole är avstängt i inställningarna.</translation>
+    </message>
+    <message>
+        <source>Receive with a code</source>
+        <extracomment>Page title: receive over Magic Wormhole or croc.</extracomment>
+        <translation>Ta emot med kod</translation>
+    </message>
+    <message>
+        <source>The camera is not available. Type the code instead.</source>
+        <extracomment>This phone has no camera Sukkula can use; the code can still be typed.</extracomment>
+        <translation>Kameran är inte tillgänglig. Skriv koden i stället.</translation>
+    </message>
+    <message>
+        <source>Enter code</source>
+        <extracomment>Opens the field to type or paste the code instead of scanning it.</extracomment>
+        <translation>Ange kod</translation>
+    </message>
+    <message>
+        <source>Code</source>
+        <extracomment>The text field for a Magic Wormhole or croc code.</extracomment>
+        <translation>Kod</translation>
+    </message>
+    <message>
+        <source>Receive</source>
+        <extracomment>Starts receiving with the typed code.</extracomment>
+        <translation>Ta emot</translation>
+    </message>
+</context>
+<context>
+    <name>ScanView</name>
+    <message>
+        <source>The camera is not available.</source>
+        <extracomment>The camera cannot be used (another app has it, or it is missing).</extracomment>
+        <translation>Kameran är inte tillgänglig.</translation>
+    </message>
+    <message>
+        <source>That QR code holds no Magic Wormhole or croc code.</source>
+        <extracomment>A QR code was read, and it is not a Magic Wormhole or croc code.</extracomment>
+        <translation>Den QR-koden innehåller ingen Magic Wormhole- eller croc-kod.</translation>
+    </message>
+    <message>
+        <source>Or point the camera at the code</source>
+        <extracomment>The code is being typed; the camera still reads.</extracomment>
+        <translation>Eller rikta kameran mot koden</translation>
+    </message>
+    <message>
+        <source>Point the camera at the sender&apos;s QR code</source>
+        <extracomment>How to scan.</extracomment>
+        <translation>Rikta kameran mot avsändarens QR-kod</translation>
     </message>
 </context>
 <context>
@@ -769,34 +823,6 @@ Send screen: under croc&apos;s name on its tile.</extracomment>
         <source>Copy code</source>
         <extracomment>Copies the wormhole code to the clipboard.</extracomment>
         <translation>Kopiera koden</translation>
-    </message>
-</context>
-<context>
-    <name>WormholeReceivePage</name>
-    <message>
-        <source>Receive with a code</source>
-        <extracomment>Page title: receive over Magic Wormhole or croc.</extracomment>
-        <translation>Ta emot med kod</translation>
-    </message>
-    <message>
-        <source>Type the code the sender&apos;s screen shows, such as 7-guitarist-revenge. You will see what is offered before anything is saved.</source>
-        <extracomment>How to receive with Magic Wormhole.</extracomment>
-        <translation>Skriv koden som visas på avsändarens skärm, till exempel 7-guitarist-revenge. Du ser vad som erbjuds innan något sparas.</translation>
-    </message>
-    <message>
-        <source>Code</source>
-        <extracomment>The text field for a Magic Wormhole or croc code.</extracomment>
-        <translation>Kod</translation>
-    </message>
-    <message>
-        <source>Receive</source>
-        <extracomment>Starts receiving with the typed code.</extracomment>
-        <translation>Ta emot</translation>
-    </message>
-    <message>
-        <source>Type the code the sender&apos;s croc shows, such as gala-tulip-acorn. You will see what is offered before anything is saved.</source>
-        <extracomment>How to receive with croc.</extracomment>
-        <translation>Skriv koden som avsändarens croc visar, till exempel gala-tulip-acorn. Du ser vad som erbjuds innan något sparas.</translation>
     </message>
 </context>
 <context>

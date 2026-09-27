@@ -26,6 +26,8 @@
 //
 // `bridge` in the root context is a FakeBridge: the Bridge's interface,
 // recording commands and replying to them, plus emitEvent() for tests.
+// `scanner` is a FakeScanner: the Scanner's interface, with answer() for
+// tests to say what a frame held.
 
 #include <cstdio>
 
@@ -237,6 +239,65 @@ private:
     double m_nextTransfer = 100;
 };
 
+// The C++ Scanner's interface, for tests: scan() takes the item and holds
+// the frame until the test answers it, as the real one holds it until the
+// engine has read it.
+class FakeScanner : public QObject
+{
+    Q_OBJECT
+    Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
+    Q_PROPERTY(int scans READ scans NOTIFY scansChanged)
+    Q_PROPERTY(QObject *lastItem READ lastItem NOTIFY scansChanged)
+
+public:
+    bool busy() const { return m_busy; }
+    int scans() const { return m_scans; }
+    QObject *lastItem() const { return m_lastItem; }
+
+    Q_INVOKABLE bool scan(QObject *item)
+    {
+        if (m_busy || !item) {
+            return false;
+        }
+        m_busy = true;
+        m_scans++;
+        m_lastItem = item;
+        emit busyChanged();
+        emit scansChanged();
+        return true;
+    }
+
+    // Answers the frame in hand, later, from the event loop: the engine's
+    // JSON, or "" for a frame in which nothing was read.
+    Q_INVOKABLE void answer(const QString &json)
+    {
+        QMetaObject::invokeMethod(this, "deliver", Qt::QueuedConnection, Q_ARG(QString, json));
+    }
+
+signals:
+    void found(const QString &json);
+    void missed();
+    void busyChanged();
+    void scansChanged();
+
+private slots:
+    void deliver(const QString &json)
+    {
+        m_busy = false;
+        emit busyChanged();
+        if (json.isEmpty()) {
+            emit missed();
+        } else {
+            emit found(json);
+        }
+    }
+
+private:
+    bool m_busy = false;
+    int m_scans = 0;
+    QPointer<QObject> m_lastItem;
+};
+
 // Finding things in the object tree, for tests and for the checks above.
 class Probe : public QObject
 {
@@ -393,8 +454,10 @@ int main(int argc, char *argv[])
     engine.addImportPath(QDir(stubsDir).absolutePath());
     engine.addImageProvider(QStringLiteral("theme"), new ThemeImages);
     FakeBridge bridge;
+    FakeScanner scanner;
     Probe probe(appDir);
     engine.rootContext()->setContextProperty(QStringLiteral("bridge"), &bridge);
+    engine.rootContext()->setContextProperty(QStringLiteral("scanner"), &scanner);
     engine.rootContext()->setContextProperty(QStringLiteral("probe"), &probe);
 
     QStringList failures;

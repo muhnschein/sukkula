@@ -129,7 +129,7 @@ def blocks(code, type_name):
 
 
 # Spec §2, in the order the desktop file lists them.
-PERMISSIONS = "Internet;Bluetooth;Downloads;Documents;Music;Pictures;Videos;RemovableMedia"
+PERMISSIONS = "Internet;Bluetooth;Camera;Downloads;Documents;Music;Pictures;Videos;RemovableMedia"
 
 ALLOWED_IMPORTS = {
     "QtQuick": {"2.0", "2.1", "2.2", "2.3", "2.4", "2.5", "2.6"},
@@ -138,6 +138,7 @@ ALLOWED_IMPORTS = {
     "Sailfish.Pickers": {"1.0"},
     "Nemo.KeepAlive": {"1.2"},
     "Nemo.Notifications": {"1.0"},
+    "QtMultimedia": {"5.6"},
 }
 # Named in one file each, so a fault in the module costs that file only.
 ONLY_IN = {
@@ -145,6 +146,7 @@ ONLY_IN = {
     "Sailfish.Pickers": {"qml/pages/FilePicker.qml", "qml/pages/SingleFilePicker.qml"},
     "Nemo.KeepAlive": {"qml/harbour-sukkula.qml"},
     "Nemo.Notifications": {"qml/harbour-sukkula.qml"},
+    "QtMultimedia": {"qml/components/ScanView.qml"},
 }
 
 NEWER_THAN_QT56 = [

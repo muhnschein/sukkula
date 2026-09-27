@@ -28,10 +28,10 @@ SAILFISHAPP_ICONS = 86x86 108x108 128x128 172x172
 
 CONFIG += c++11
 
-HEADERS += src/bridge.h src/tls_reserve.h
+HEADERS += src/bridge.h src/scanner.h src/tls_reserve.h
 # src/tls_reserve.c: its array has to be the executable's only
 # thread-local, at tp+16, where the phone's graphics stack keeps its own.
-SOURCES += src/tls_reserve.c src/main.cpp src/bridge.cpp
+SOURCES += src/tls_reserve.c src/main.cpp src/bridge.cpp src/scanner.cpp
 
 INCLUDEPATH += $$PWD/crates/sukkula-ffi/include
 DEPENDPATH += $$PWD/crates/sukkula-ffi/include

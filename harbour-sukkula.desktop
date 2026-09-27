@@ -33,13 +33,15 @@ Description[sv]=Skicka text i närheten
 Capabilities=text/*;text/x-url;text/uri-list
 SupportsMultipleFiles=no
 
-# Sailjail (spec §2): exactly Internet;Bluetooth;Downloads;Documents;Music;
-# Pictures;Videos;RemovableMedia.
+# Sailjail (spec §2): exactly Internet;Bluetooth;Camera;Downloads;
+# Documents;Music;Pictures;Videos;RemovableMedia.
 #
 # Internet: LocalSend and Quick Share on the LAN, Magic Wormhole's mailbox
 # and relay, croc's relay. Bluetooth: BlueZ on the system bus and obexd on
 # the session bus, for Bluetooth sending and the Quick Share BLE nudge.
-# Downloads: received files go to ~/Downloads/Sukkula, staged in its
+# Camera: the viewfinder of the page that reads a Magic Wormhole or croc
+# code off the sender's screen, on only while that page is in front
+# (spec v0.6); nothing is recorded or saved. Downloads: received files go to ~/Downloads/Sukkula, staged in its
 # .partial/ (S3), and files there can be sent. Documents, Music, Pictures,
 # Videos and RemovableMedia: files to send, picked in the file browser or
 # handed over through the Share menu (Gallery's photos are in ~/Pictures),
@@ -53,7 +55,7 @@ SupportsMultipleFiles=no
 # name Sailjail lets the app own), and starts the app with this line when
 # it is not running.
 [X-Sailjail]
-Permissions=Internet;Bluetooth;Downloads;Documents;Music;Pictures;Videos;RemovableMedia
+Permissions=Internet;Bluetooth;Camera;Downloads;Documents;Music;Pictures;Videos;RemovableMedia
 OrganizationName=sukkula
 ApplicationName=sukkula
 ExecDBus=harbour-sukkula

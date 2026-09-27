@@ -28,6 +28,7 @@ QtObject {
     property color highlightColor: "#80c0ff"
     property color secondaryHighlightColor: "#6090c0"
     property color highlightBackgroundColor: "#4080c0"
+    property color highlightDimmerColor: "#102030"
     property color errorColor: "#ff4040"
     property string fontFamily: "Sans"
     property string fontFamilyHeading: "Sans"

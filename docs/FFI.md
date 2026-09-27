@@ -1,6 +1,6 @@
 # The engine interface
 
-The Qt shell and the Rust engine talk through four C functions, with JSON in
+The Qt shell and the Rust engine talk through five C functions, with JSON in
 and out. This document shows every message with an example; the
 definitions are `crates/sukkula-engine/src/api.rs`, and the ABI is
 `crates/sukkula-ffi/include/sukkula.h`.
@@ -11,11 +11,13 @@ through `Event` unchanged, the start configuration must parse) and checks
 that every command, event and error code is shown, and
 `crates/sukkula-ffi/tests/header.rs` checks every return code of the header
 against this page and the Rust constants. A JSON block is marked with its
-kind after the language: `json command`, `json event` or `json config`.
+kind after the language: `json command`, `json event`, `json config`, or
+`json scan` for what [`sukkula_scan_qr`](#scanning-a-qr-code) reports.
 
 ## Contents
 
 1. [Functions](#functions)
+   - [Scanning a QR code](#scanning-a-qr-code)
 2. [Threads and lifetimes](#threads-and-lifetimes)
 3. [Limits](#limits)
 4. [Versioning](#versioning)
@@ -35,6 +37,7 @@ SukkulaEngine *sukkula_start(const char *config_json, sukkula_event_cb callback,
 int32_t        sukkula_command(SukkulaEngine *engine, const char *command_json);
 void           sukkula_stop(SukkulaEngine *engine);
 const char    *sukkula_version(void);
+int32_t        sukkula_scan_qr(const uint8_t *luma, uint32_t width, uint32_t height, uint32_t stride, char *out, uint32_t out_size);
 
 typedef void (*sukkula_event_cb)(const char *event_json, void *userdata);
 ```
@@ -57,6 +60,7 @@ and may be called from any thread, including from inside the callback.
 | `SUKKULA_ERR_TOO_LONG` | -3 | `command_json` is over 64 KiB; nothing was parsed. |
 | `SUKKULA_ERR_PANIC` | -4 | The engine failed internally. |
 | `SUKKULA_ERR_BUSY` | -5 | 64 commands are waiting for their replies; nothing was parsed. Try again after a reply. |
+| `SUKKULA_ERR_RANGE` | -6 | `sukkula_scan_qr` only: a size, the stride or `out_size` is out of range, or the answer is longer than `out`; nothing was read. |
 
 Any value but `SUKKULA_OK` means no reply will come, and later versions may
 add values: treat every unknown one that way. A command that is taken but
@@ -71,6 +75,63 @@ delivered first. `NULL`, and a handle already stopped, are ignored.
 
 **`sukkula_version`** returns the engine's version, e.g. `"0.1.0"`, as a
 static string. Never free it.
+
+### Scanning a QR code
+
+**`sukkula_scan_qr`** looks for a QR code in one camera frame, for
+receiving by code (spec v0.6): `height` rows of `width` grey (luma)
+pixels, one byte each, every row `stride` bytes after the last. Both sides
+are 1 to 1024 pixels and the stride `width` to 4096 bytes; the frame is
+read during the call only, and must not change meanwhile. The shell scales
+the viewfinder to 1024 pixels at most.
+
+It returns `0` when no QR code in the frame could be read, which is also
+what a code too blurred to read gives. Otherwise it writes what a code
+holds to `out`, NUL-terminated UTF-8 JSON, and returns its length without
+the NUL. `SUKKULA_SCAN_BYTES` (4096) always suffice for `out_size`.
+`SUKKULA_ERR_NULL` for a NULL `luma` or `out`, `SUKKULA_ERR_RANGE` for a
+size out of range or an answer longer than `out` (nothing is written),
+`SUKKULA_ERR_PANIC` if the scan failed internally.
+
+It needs no engine and touches no network, file or engine state, so it
+may be called at any time, from any thread, several at once. A frame takes
+tens of milliseconds on a phone. rqrr, the decoder, is vendored with its
+work bounded (`third_party/rqrr.patches`): a frame made to be slow costs
+more, but not minutes. Call it off the UI thread.
+
+A Magic Wormhole code, from a `wormhole-transfer:` URI (Warp's, Destiny's
+and ours), with the mailbox server it names when that is not the default:
+pass both to [`receive_wormhole`](#receive_wormhole).
+
+```json scan
+{"found":"wormhole","code":"7-guitarist-revenge"}
+```
+
+```json scan
+{"found":"wormhole","code":"7-guitarist-revenge","mailbox_url":"wss://mailbox.example/v1"}
+```
+
+A croc code, from croc's link for receiving in a browser
+(`https://getcroc.com/?code=...`, which croc 11 prints) or on its own, in
+croc's shape, as croc 10 and Sukkula put it in a QR code: pass it to
+[`receive_croc`](#receive_croc).
+
+```json scan
+{"found":"croc","code":"gala-tulip-acorn"}
+```
+
+Anything else: a QR code this client cannot receive with. What it holds is
+not said, so it can be neither shown nor opened.
+
+```json scan
+{"found":"other"}
+```
+
+Either code was read as strictly as a typed one: a wormhole code as
+`receive_wormhole` checks it, a mailbox as Settings checks one; a croc code
+of 6 to 128 printable characters, taken on its own only as three or more
+words of `a` to `z`, or croc 10's four digits and words. Receiving is the
+next command's, and is still subject to the protocol's switch in Settings.
 
 ## Threads and lifetimes
 
@@ -114,7 +175,7 @@ static string. Never free it.
 | --- | --- | --- |
 | A command, or the start configuration | 64 KiB of UTF-8, not counting the NUL | `SUKKULA_ERR_TOO_LONG`, or a `fatal` event; nothing is parsed |
 | Commands waiting for their reply | 64 | `SUKKULA_ERR_BUSY`; nothing is parsed |
-| One command's work | 60 s; `receive_wormhole` 150 s, `receive_croc` 160 s, since they wait for the user | Answered with `internal` |
+| One command's work | 60 s; `receive_wormhole` 150 s, `receive_croc` and `receive_code` 160 s, since they wait for the user | Answered with `internal` |
 | `set_receiving` and `set_settings` waiting for the receive switch | 60 s; then they run to the end, each protocol bounded as below | Answered with `internal`; nothing was changed |
 | One protocol's start or stop | 15 s | That protocol reports `failed`; the others go on |
 | An event | 256 KiB of JSON | Never happens: events are bounded by construction. A `reply` or `transfer_finished` would be replaced by an `internal` failure, anything else dropped |
@@ -138,9 +199,10 @@ static string. Never free it.
 - The shell and the engine ship in one package, built from one commit, so
   the version is a tripwire for a mismatched build, not a negotiation: no
   engine speaks an older or newer version.
-- **The C ABI** -- the four functions and their types -- does not change
+- **The C ABI** -- the functions and their types -- does not change
   while `API_VERSION` is 1, except that return values may be added to
-  `sukkula_command`. `sukkula_version` is the crate version, semver.
+  `sukkula_command` and functions may be added (`sukkula_scan_qr` was, in
+  spec v0.6). `sukkula_version` is the crate version, semver.
 
 ## Start configuration
 
@@ -299,6 +361,16 @@ offers from the LAN, so a LAN flood cannot make it `busy`.
 {"v":1,"id":12,"cmd":{"type":"receive_wormhole","code":"7-guitarist-revenge"}}
 ```
 
+`mailbox_url` is optional: the mailbox server a scanned QR code named
+([`sukkula_scan_qr`](#scanning-a-qr-code)), used for this receive instead
+of the one in Settings (F-MW4). It is checked as a mailbox in Settings is
+-- `ws://` or `wss://`, a host, no credentials, query or fragment, at most
+256 bytes -- and one that is not usable is the code's fault: `bad_code`.
+
+```json command
+{"v":1,"id":16,"cmd":{"type":"receive_wormhole","code":"7-guitarist-revenge","mailbox_url":"wss://mailbox.example/v1"}}
+```
+
 ### receive_croc
 
 Receives with a croc code the sender's screen shows, e.g.
@@ -318,6 +390,25 @@ to spare.
 
 ```json command
 {"v":1,"id":15,"cmd":{"type":"receive_croc","code":"gala-tulip-acorn"}}
+```
+
+### receive_code
+
+Receives with a code the user typed or pasted, over the protocol the code
+is for (spec v0.6): nobody has to say which. What a QR code would carry
+reads as it would (a `wormhole-transfer:` URI with its mailbox, croc's web
+link, croc's words); croc's words in any case, lowercased, since croc makes
+no capitals; a number, a hyphen and words of letters and digits as a Magic
+Wormhole code; anything else croc takes, 6 to 128 printable characters, as
+a croc code the sender chose, but never a URL. Spaces between words are
+hyphens. A code with a four-digit number and three or more words is croc
+10's. The rest is as for `receive_wormhole` and `receive_croc`, whichever
+it goes to, and it may take as long as the longer of the two, 160 s.
+`bad_code` for text that is nobody's code, before anything is contacted;
+`unavailable` when its protocol is switched off.
+
+```json command
+{"v":1,"id":17,"cmd":{"type":"receive_code","code":"7 guitarist revenge"}}
 ```
 
 ### cancel
@@ -542,11 +633,47 @@ The code a wormhole send waits on (F-MW1), and the same code as a QR code:
 
 ### croc_code
 
-The code a croc send waits on. croc has no URI scheme, so there is no QR
-code to go with it.
+The code a croc send waits on, and the same code as a QR code, shaped as
+`wormhole_code`'s. The QR code holds the code alone, as croc 10's did, and
+not croc 11's `https://getcroc.com/?code=...` link: a camera app would open
+that, and hand the code to a web server. `sukkula_scan_qr` reads both.
 
 ```json event
-{"type":"croc_code","transfer":17,"code":"gala-tulip-acorn"}
+{
+  "type": "croc_code",
+  "transfer": 17,
+  "code": "gala-tulip-acorn",
+  "qr": {
+    "size": 25,
+    "rows": [
+      "1111111001011010001111111",
+      "1000001011111100001000001",
+      "1011101000110001001011101",
+      "1011101000011100001011101",
+      "1011101011011100101011101",
+      "1000001001110011001000001",
+      "1111111010101010101111111",
+      "0000000001111000100000000",
+      "1010101001110001100010010",
+      "0111000001011100101000111",
+      "0111111110101010101110111",
+      "1011100011010110010110000",
+      "1001101110000010001000001",
+      "0101000011010010111001011",
+      "1000001101000100010011111",
+      "0100000010110000100011001",
+      "1001101110001001111110011",
+      "0000000010111101100010111",
+      "1111111001111011101011111",
+      "1000001000001110100010010",
+      "1011101011010010111111001",
+      "1011101001110010100110000",
+      "1011101010000100100110101",
+      "1000001001110001110000010",
+      "1111111010101001111111011"
+    ]
+  }
+}
 ```
 
 ### bluetooth_devices
@@ -622,7 +749,7 @@ installed once by the first engine.
 tests). The package does not link the archive into the binary. Instead,
 `scripts/cross-build-rust.sh` links it into a private shared library,
 `libsukkula_ffi.so`, installed in `/usr/share/harbour-sukkula/lib`, where
-Harbour lets an app keep its own libraries. The four functions above are
+Harbour lets an app keep its own libraries. The five functions above are
 its only exports (`crates/sukkula-ffi/exports.map`). The binary finds the
 library through the RPATH that the SDK's `sailfishapp` feature sets.
 `src/hardening.pri` writes that RPATH as DT_RPATH, the only form Jolla's
@@ -689,7 +816,7 @@ The rules are checked in these places:
   exactly the reserve (`--tls-reserve 4096`: 4096 bytes, none of them
   initialised, aligned to at most 16), and its RPATH must be exactly
   `/usr/share/harbour-sukkula/lib`. On the packaged library: exactly the
-  four exports, and TLS descriptors only.
+  five exports, and TLS descriptors only.
 - `tests/run-cpp-tests.sh`: the same segment for the host build of
   `harbour-sukkula.pro`.
 - `main()` refuses to start if the reserve is not at `tp+16`.

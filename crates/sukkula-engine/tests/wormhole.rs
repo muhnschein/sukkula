@@ -27,12 +27,12 @@ use magic_wormhole::transfer;
 use magic_wormhole::transit::Abilities;
 use serde_json::json;
 use sukkula_core::name;
-use sukkula_engine::adapter::{Outgoing, OutgoingFile};
+use sukkula_engine::adapter::{CodeReceive, Outgoing, OutgoingFile};
 use sukkula_engine::api::{
-    API_VERSION, Direction, ErrorCode, Event, Outcome, SendTarget, StartConfig,
+    API_VERSION, Direction, ErrorCode, Event, Outcome, Scanned, SendTarget, StartConfig,
 };
 use sukkula_engine::ctx::EventSink;
-use sukkula_engine::{Engine, wormhole};
+use sukkula_engine::{Engine, scan, wormhole};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use wormhole_support::*;
 
@@ -55,7 +55,7 @@ fn receive(
     code: String,
 ) -> tokio::task::JoinHandle<Result<u64, sukkula_engine::api::ErrorInfo>> {
     let adapter = side.adapter.clone();
-    tokio::spawn(async move { adapter.receive_code(code).await })
+    tokio::spawn(async move { adapter.receive_code(code.into()).await })
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -232,6 +232,85 @@ async fn a_declined_offer_moves_no_data_and_leaves_no_file() {
     );
 }
 
+/// The QR code of an event, drawn as the code page draws it -- four
+/// pixels a module, four modules of quiet zone -- and read back as the
+/// camera would.
+fn scan_qr(rows: &[String]) -> Option<Scanned> {
+    let size = rows.len();
+    let side = (size + 8) * 4;
+    let mut luma = vec![u8::MAX; side * side];
+    for (y, row) in rows.iter().enumerate() {
+        for (x, c) in row.bytes().enumerate() {
+            if c == b'1' {
+                for d in 0..16 {
+                    luma[((y + 4) * 4 + d / 4) * side + (x + 4) * 4 + d % 4] = 0;
+                }
+            }
+        }
+    }
+    scan::scan(&scan::Frame::new(&luma, side, side, side).unwrap())
+}
+
+/// Spec v0.6: a QR code names its mailbox server when it is not the
+/// default, and a receive by that QR code goes there, whatever the
+/// receiver's settings say.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_scanned_code_is_received_through_the_mailbox_it_names() {
+    let mb = mailbox(Behaviour::default()).await;
+    let rl = relay(RelayMode::Honest).await;
+    let a = Side::new(&mb.url, &rl.url, CONSENT);
+    // Nothing listens on the receiver's own mailbox.
+    let b = Side::new("ws://127.0.0.1:9/v1", &rl.url, CONSENT);
+    let sent = a
+        .adapter
+        .send(
+            SendTarget::Wormhole,
+            vec![file_item(&a, "x.bin", &content(5000))],
+        )
+        .await
+        .unwrap();
+    let (code, qr) = match a.event(|e| matches!(e, Event::WormholeCode { .. })).await {
+        Event::WormholeCode { code, qr, .. } => (code, qr),
+        _ => unreachable!(),
+    };
+    let Some(Scanned::Wormhole {
+        code: scanned,
+        mailbox_url,
+    }) = scan_qr(&qr.rows)
+    else {
+        panic!("the QR code does not scan");
+    };
+    assert_eq!(scanned, code);
+    assert_eq!(mailbox_url.as_deref(), Some(mb.url.as_str()));
+
+    // A mailbox that is no mailbox is the code's fault, found before the
+    // network.
+    let e = b
+        .adapter
+        .receive_code(CodeReceive {
+            code: code.clone(),
+            mailbox_url: Some("http://mailbox.example/v1".into()),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(e.code, ErrorCode::BadCode);
+
+    let adapter = b.adapter.clone();
+    let rx = tokio::spawn(async move {
+        adapter
+            .receive_code(CodeReceive {
+                code: scanned,
+                mailbox_url,
+            })
+            .await
+    });
+    let (offer_id, _) = b.pending().await;
+    b.answer(offer_id, true);
+    let got = rx.await.unwrap().unwrap();
+    assert_eq!(b.finished(got).await.0, Outcome::Done);
+    assert_eq!(a.finished(sent).await.0, Outcome::Done);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_unanswered_offer_times_out() {
     let mb = mailbox(Behaviour::default()).await;
@@ -389,7 +468,11 @@ async fn codes_are_checked_before_the_network() {
         "7-\u{202E}guitarist-revenge",
         &format!("7-{}", "a".repeat(300)),
     ] {
-        let e = b.adapter.receive_code(code.to_owned()).await.unwrap_err();
+        let e = b
+            .adapter
+            .receive_code(code.to_owned().into())
+            .await
+            .unwrap_err();
         assert_eq!(e.code, ErrorCode::BadCode, "{code:?}");
     }
     assert_eq!(mb.connections.load(Ordering::SeqCst), 0);
@@ -419,7 +502,7 @@ async fn a_mistyped_code_fails_on_both_sides() {
     let nameplate = code.split('-').next().unwrap();
     let wrong = format!("{nameplate}-aardvark-adroitness");
     assert_ne!(wrong, code);
-    let e = b.adapter.receive_code(wrong).await.unwrap_err();
+    let e = b.adapter.receive_code(wrong.into()).await.unwrap_err();
     assert_eq!(e.code, ErrorCode::BadCode);
     match a.finished(sent).await.0 {
         Outcome::Failed { error } => assert_eq!(error.code, ErrorCode::BadCode),

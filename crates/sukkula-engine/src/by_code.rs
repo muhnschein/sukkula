@@ -14,8 +14,8 @@ use sukkula_core::consent::Refusal;
 use sukkula_core::limits::{HANDSHAKE_TIMEOUT, NETWORK_IDLE_TIMEOUT};
 use sukkula_core::offer::OfferError;
 
-use crate::adapter::{Adapter, BoxFuture, Outgoing, OutgoingFile};
-use crate::api::{ErrorCode, ErrorInfo, SendTarget, TransferId};
+use crate::adapter::{Adapter, BoxFuture, CodeReceive, Outgoing, OutgoingFile};
+use crate::api::{ErrorCode, ErrorInfo, QrCode, SendTarget, TransferId};
 use crate::ctx::{Ctx, Declined, cancelled};
 
 /// Receives that may be between a typed code and an answered offer at
@@ -112,10 +112,10 @@ pub(crate) trait ByCode: Send + Sync + 'static {
         items: Vec<Outgoing>,
     ) -> Result<TransferId, ErrorInfo>;
 
-    /// Receives with a typed code, up to the offer's answer.
+    /// Receives with a code, up to the offer's answer.
     fn receive(
         inner: Arc<Inner>,
-        code: String,
+        request: CodeReceive,
     ) -> BoxFuture<'static, Result<TransferId, ErrorInfo>>;
 }
 
@@ -163,8 +163,8 @@ impl<P: ByCode> Adapter for CodeAdapter<P> {
         Box::pin(async move { P::send(&self.inner, target, items) })
     }
 
-    fn receive_code(&self, code: String) -> BoxFuture<'_, Result<TransferId, ErrorInfo>> {
-        P::receive(self.inner.clone(), code)
+    fn receive_code(&self, request: CodeReceive) -> BoxFuture<'_, Result<TransferId, ErrorInfo>> {
+        P::receive(self.inner.clone(), request)
     }
 }
 
@@ -191,6 +191,35 @@ pub(crate) fn declined_error(d: &Declined) -> ErrorInfo {
 /// A file to send that cannot be read.
 pub(crate) fn bad_file() -> ErrorInfo {
     ErrorInfo::new(ErrorCode::BadFile, "the file cannot be read")
+}
+
+/// A QR code of `data`, as the code events carry it: rows of `0` and `1`,
+/// dark modules `1` (F-MW1, F-CR1).
+///
+/// # Errors
+///
+/// [`ErrorCode::Internal`] if `data` does not fit a QR code, which a code
+/// of ours never fails to.
+pub(crate) fn qr_code(data: &[u8]) -> Result<QrCode, ErrorInfo> {
+    let failed = || ErrorInfo::new(ErrorCode::Internal, "the QR code could not be made");
+    let q = qrcode::QrCode::new(data).map_err(|_| failed())?;
+    let width = q.width();
+    if width == 0 {
+        return Err(failed());
+    }
+    let rows: Vec<String> = q
+        .to_colors()
+        .chunks(width)
+        .map(|row| {
+            row.iter()
+                .map(|c| if *c == qrcode::Color::Dark { '1' } else { '0' })
+                .collect()
+        })
+        .collect();
+    Ok(QrCode {
+        size: u32::try_from(width).map_err(|_| failed())?,
+        rows,
+    })
 }
 
 /// Opens the file to send, once, and checks the handle rather than the

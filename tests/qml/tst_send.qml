@@ -16,7 +16,7 @@ import "helpers/Events.js" as Ev
  * refusals said and the chosen items kept; Magic Wormhole's one-item
  * rule, its code on the tile and on the code page with the QR (F-MW1);
  * croc's rule for texts, its code on the tile and on the code page with
- * no QR (F-CR1); Bluetooth's files-only rule (F-BT1); more peers than the rings hold, as
+ * its QR (F-CR1, spec v0.6); Bluetooth's files-only rule (F-BT1); more peers than the rings hold, as
  * a list; and each protocol switched off in Settings gone from the radar
  * (F-C1).
  */
@@ -438,7 +438,9 @@ Script {
         },
         function () {
             test.compare(probe.find(test.page, "wormholeCode").text, "gala-tulip-acorn")
-            test.verify(!probe.find(test.page, "wormholeQr").visible, "croc has no QR code")
+            var qr = probe.find(test.page, "wormholeQr")
+            test.verify(qr.valid && qr.visible, "croc's QR code is drawn")
+            test.compare(qr.size, 21)
             test.compare(probe.find(test.page, "pageHeaderTitle").text, "croc")
             window.pageStack.pop()
             bridge.emitEvent(Ev.progress(91, 2, 4))

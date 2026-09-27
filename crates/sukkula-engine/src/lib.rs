@@ -14,6 +14,9 @@
 //! [`api::Event::Reply`], and at most [`api::MAX_IN_FLIGHT_COMMANDS`] are
 //! held at once. `hub.rs` has the details.
 //!
+//! Beside the hub, [`scan`] reads a Magic Wormhole or croc code off a
+//! camera frame, with no engine running (spec v0.6).
+//!
 //! Each engine has a log of its own, to standard error, off by default and
 //! switched by `Settings::logging` ([`logging`], S9).
 
@@ -26,6 +29,7 @@ mod by_code;
 pub mod ctx;
 mod hub;
 pub mod logging;
+pub mod scan;
 mod slots;
 
 #[cfg(feature = "bluetooth")]

@@ -86,6 +86,18 @@ library's own types -- and asserts the adapter kept it.
 | `croc_control` | every control message: raw DEFLATE of JSON, sealed after the key; the LAN probe's JSON | nothing read from over 1 MiB nor inflated past it; a stream inflated only whole and under its cap; an unsealed message is exactly its JSON (kind, PAKE version, text, base64 bytes); nothing opens without the key; sealing and opening changes nothing; a probe only under 16 KiB, as its JSON says, version and all |
 | `croc_file_list` | the sender's file list and the offer made of it; the receiver's request for a file of ours | a list only with XXH64 or no hash, then exactly the sender's files in its order, links left out, at least one; a text is one file ≤ 64 KiB offered as `text.txt`; the offer from "croc" with those names and sizes, S-clean once validated; a request is for a file with bytes, its chunks in order, none twice, none past the end, and exactly those asked for |
 
+### The camera
+
+A QR code is anyone's to print, and the camera reads whatever it is
+pointed at (spec v0.6). Both targets go through `sukkula_engine::scan`, the
+code `sukkula_scan_qr` runs, and hold every code that comes out to the
+shape a typed one has (`sukkula_fuzz::assert_scanned`).
+
+| Target | Surface | Properties asserted |
+| --- | --- | --- |
+| `qr_text` | what a QR code says, `scan::read` | a wormhole code only from a `wormhole-transfer:` URI, in any case, and exactly its path percent-decoded and lowercased; a mailbox only with a `rendezvous` parameter, a plain `ws://` or `wss://` URL that is not the default; a croc code either the text itself, in croc's shape (restated), or the one `code` parameter of an `https://getcroc.com/` link with nothing else in it; croc's words of 6 to 128 bytes always read as a code; white space around the text changes nothing |
+| `qr_frame` | a camera frame, `scan::scan`: rqrr's detection and decoding, then `read` | the scan ends within libFuzzer's timeout -- rqrr's grouping is bounded (`third_party/rqrr.patches/0002`); what it reads keeps a code's shape; the same frame reads the same twice |
+
 The two Quick Share targets play the sender (`src/quickshare.rs`): rqs_lib's
 `InboundRequest` reads real frames from a socket that never waits, and the
 harness seals what the input asks for under keys it shares with the
@@ -129,6 +141,7 @@ in `scripts/fuzz-smoke.sh` (`max_len_for`); `scripts/fuzz-smoke.sh
 | --- | ---: | --- |
 | `text_message`, `command_json`, `start_config`, `localsend_prepare_upload` | 69632 | `MAX_MESSAGE_BYTES` (64 KiB) + 4 KiB: the cap on a received text, an FFI command, `sukkula_start`'s JSON and a prepare-upload body, and the room to go past it |
 | `settings_json` | 16384 | `MAX_SETTINGS_BYTES`: every size of settings file the store reads |
+| `qr_frame` | 16384 | a frame big enough for a QR code a few pixels a module; its seeds are up to 120 x 120 |
 | every other target | 4096 | its caps are reached by a short input, or built by the harness from one (`offer_validate`'s 500 files and 64 KiB text, the Quick Share scripts' sizes) |
 
 Both caps are read from `sukkula-core`'s source, so a changed limit moves
@@ -241,6 +254,13 @@ folded into `fuzz/seeds/<target>/` after `cargo fuzz cmin`, keeping the
 committed seed small and reviewable.
 
 ## Seeds
+
+`qr_frame`'s seeds are frames with QR codes drawn in them -- croc's words,
+croc 10's code, croc's web link, wormhole URIs with and without a mailbox,
+a web address, one light on dark -- a blank frame and one tiled with finder
+patterns, generated in `src/seeds.rs` with what the engine reads in each,
+which `every_qr_frame_seed_scans_as_it_says` checks. `qr_text`'s are the
+texts those QR codes hold, and some that are no code.
 
 The JSON, code and mDNS targets' seeds are what a real peer sends plus the
 hostile variants each target exists for, written out as they are. The two
@@ -369,3 +389,23 @@ multiplication now works in Jacobian coordinates with one inversion at
 the end, and a SIEC handshake costs about what a P-256 one does: 30 s of
 `croc_pake` since ran at 191 executions a second, from 36.
 
+## The camera targets' first runs (2026-09-27)
+
+Each 60 s with its dictionary, from the committed seeds, one core, ASan, on
+the development container.
+
+| Target | Executions (per second) | Coverage, start -> end | Findings |
+| --- | ---: | ---: | --- |
+| `qr_text` | 30,148 (494) | 8964 -> 11621 | none in the engine; one in the harness, below |
+| `qr_frame` | 3,975 (65) | 9151 -> 9523 | none |
+
+The first `qr_text` run stopped within a hundred inputs on a wormhole URI
+with NUL bytes after the code: the engine read the code without them, and
+the harness, restating the URI's path, kept them. The URL parser drops C0
+controls and spaces at either end of what it parses, as the WHATWG URL
+standard says; the engine taking the code is that parser's behaviour, not
+a bug, and the harness now drops them too. `qr_text` is slower than the
+other text targets for `wormhole_code`'s reason: every code that passes the
+grammar goes to magic-wormhole's entropy estimate. `qr_frame` runs rqrr
+over frames of up to 16 KiB under ASan: tens of executions a second, the
+slowest well under a second.

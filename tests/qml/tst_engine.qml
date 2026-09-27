@@ -57,6 +57,12 @@ Script {
                 test.pending = { ok: ok, code: error ? error.code : "", transfer: transfer }
             })
             test.compare(last().cmd, { type: "receive_wormhole", code: "7-guitarist-revenge" })
+            // A scanned QR code's mailbox goes along; an empty one does not.
+            engine.receiveWormhole("7-guitarist-revenge", null, "wss://mailbox.example/v1")
+            test.compare(last().cmd, { type: "receive_wormhole", code: "7-guitarist-revenge",
+                                       mailbox_url: "wss://mailbox.example/v1" })
+            engine.receiveWormhole("7-guitarist-revenge", null, "")
+            test.compare(last().cmd, { type: "receive_wormhole", code: "7-guitarist-revenge" })
             engine.receiveCroc("1234-Alpha-bravo-charlie")
             test.compare(last().cmd, { type: "receive_croc", code: "1234-Alpha-bravo-charlie" })
             bridge.emitEvent(Ev.reply(id, false, "bad_code"))
@@ -264,11 +270,11 @@ Script {
             var bad = Ev.qr21()
             bad.rows[3] = bad.rows[3].substring(0, 20) + "2"
             bridge.emitEvent(Ev.wormholeCode(8, "10-e-f", bad))
-            // croc's code: no QR, and a QR a croc event carries is ignored.
+            // croc's code and its QR (spec v0.6), checked alike.
             test.announced = []
             engine.codeArrived.connect(test.noteCode)
             bridge.emitEvent(Ev.crocCode(9, "gala-tulip-acorn"))
-            bridge.emitEvent(JSON.stringify({ type: "croc_code", transfer: 10, code: "x-y-z-w", qr: Ev.qr21() }))
+            bridge.emitEvent(Ev.crocCode(10, "x-y-z-w", bad))
             bridge.emitEvent(JSON.stringify({ type: "croc_code", transfer: 11, code: 7 }))
         },
         function () {
@@ -278,11 +284,32 @@ Script {
             test.compare(engine.sendCode(7).qr, null)
             test.compare(engine.sendCode(8).qr, null)
             test.compare(engine.sendCode(8).code, "10-e-f", "the code stands without its QR")
-            test.compare(engine.sendCode(9), { code: "gala-tulip-acorn", qr: null })
-            test.compare(engine.sendCode(10).qr, null, "croc has no QR, whatever the event says")
+            test.compare(engine.sendCode(9).code, "gala-tulip-acorn")
+            test.compare(engine.sendCode(9).qr.size, 21, "croc's QR code")
+            test.compare(engine.sendCode(10).qr, null, "a bad one dropped, as Magic Wormhole's")
+            test.compare(engine.sendCode(10).code, "x-y-z-w")
             test.compare(engine.sendCode(11), null, "a code that is not a string")
             test.compare(test.announced, [5, 6, 7, 8, 9, 10], "every code said, the bad one not")
             engine.codeArrived.disconnect(test.noteCode)
+            // What the scanner read, checked for shape (docs/FFI.md).
+            test.compare(engine.readScan('{"found":"croc","code":"gala-tulip-acorn"}'),
+                         { protocol: "croc", code: "gala-tulip-acorn", mailboxUrl: "" })
+            test.compare(engine.readScan('{"found":"wormhole","code":"7-guitarist-revenge","mailbox_url":"wss://m.example/v1"}'),
+                         { protocol: "wormhole", code: "7-guitarist-revenge", mailboxUrl: "wss://m.example/v1" })
+            test.compare(engine.readScan('{"found":"other"}'), { protocol: "", code: "", mailboxUrl: "" })
+            var garbage = ["", "nope", "[]", "null", "7", '{"found":"croc"}', '{"found":"croc","code":7}',
+                           '{"found":"croc","code":"abc"}', '{"found":"croc","code":"gala tulip acorn"}',
+                           '{"found":"croc","code":"gala-tulip-\u202eacorn"}',
+                           '{"found":"croc","code":"' + new Array(130).join("a") + '"}',
+                           '{"found":"local_send","code":"gala-tulip-acorn"}',
+                           '{"found":"wormhole","code":"7-guitarist-revenge","mailbox_url":"http://m.example/v1"}',
+                           '{"found":"wormhole","code":"7-guitarist-revenge","mailbox_url":5}',
+                           '{"found":"wormhole","code":"7-guitarist-revenge","mailbox_url":"wss://m.example/ v1"}']
+            for (var g = 0; g < garbage.length; g++) {
+                test.compare(engine.readScan(garbage[g]), null, "refused: " + garbage[g])
+            }
+            test.compare(engine.readScan('{"found":"croc","code":"gala-tulip-acorn","mailbox_url":"wss://m.example/v1"}').mailboxUrl,
+                         "", "croc has no mailbox")
             test.compare(engine.protocolName("croc"), "croc")
             test.verify(engine.protocolEnabled("croc"), "on by default")
             // Bluetooth: bad addresses are dropped, the list replaced.

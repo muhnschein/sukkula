@@ -1,7 +1,7 @@
 # Sukkula
 
-Send and receive files and text over LocalSend, Quick Share, Magic Wormhole
-and Bluetooth, from one Sailfish OS app.
+Send and receive files and text over LocalSend, Quick Share, Magic Wormhole,
+croc and Bluetooth, from one Sailfish OS app.
 
 > 🤖 **This project was developed using AI.** If that provenance troubles
 > you, feel free to use something else. That being said, Sukkula writes
@@ -27,7 +27,11 @@ carries things back and forth, which is the whole app.
 | LocalSend v2 | yes | yes | the LocalSend app, same LAN |
 | Quick Share | yes | yes | stock Android, same LAN |
 | Magic Wormhole v1 | yes | yes | any wormhole client, internet |
+| croc 11 and 10 | yes | yes | any croc client, internet |
 | Bluetooth OBEX Object Push | yes | no (the system handles it) | Bluetooth |
+
+A Magic Wormhole or croc code can be typed, or scanned off the sender's
+screen with the camera; a send shows its code as text and as a QR code.
 
 Every incoming offer is shown before a byte is written -- sender, protocol,
 file names, sizes -- and there is no auto-accept. Received files go to
@@ -91,5 +95,9 @@ Sukkula is GPL-3.0-or-later; see [`LICENSE`](LICENSE). The package links:
 * [magic-wormhole.rs](https://github.com/magic-wormhole/magic-wormhole.rs),
   for Magic Wormhole -- EUPL-1.2, conveyed under the GPL by its
   compatibility appendix.
+* [rqrr](https://github.com/WanzenBug/rqrr), a Rust port of quirc, for
+  reading QR codes -- MIT or Apache-2.0, and ISC; vendored in
+  `third_party/` with its patches kept separate.
 
-Thanks to all three projects for the protocols this app only carries.
+Thanks to all these projects for the protocols this app only carries, and
+the codes it reads.

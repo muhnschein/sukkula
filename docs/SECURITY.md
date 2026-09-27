@@ -233,13 +233,32 @@ These are enforced in the code and checked in CI, not merely intended.
   to prove it.
 - **`unsafe` lives in one crate.** `sukkula-core` and `sukkula-engine` are
   `#![forbid(unsafe_code)]`. `sukkula-ffi` has `unsafe` only to export
-  the four C functions, read the command string and call the callback,
-  each with a `SAFETY:` comment; handles are registry ids, never
+  the five C functions, read the command string, call the callback, read
+  a camera frame and write what was read in it, each with a `SAFETY:`
+  comment; a frame is read only once its size, stride and height are
+  checked, and exactly the bytes they span, and the answer is written
+  only once it is known to fit; handles are registry ids, never
   dereferenced; no panic crosses the C boundary.
-- **Minimal sandbox.** Sailjail grants `Internet;Bluetooth` and the
-  folders files are sent from and received into (`Downloads`, `Documents`,
-  `Music`, `Pictures`, `Videos`, `RemovableMedia`), and nothing else; the
-  Harbour gate fails on any other permission. Files are written only
+- **A QR code is read, never followed** (spec v0.6). What the camera
+  sees is a stranger's input: rqrr, pure Rust with no `unsafe`, decodes
+  it, vendored with its grouping bounded (`third_party/rqrr.patches`) so a
+  frame printed to be slow cannot keep it busy for minutes, and inside
+  `catch_unwind`. Only a Magic Wormhole or croc code comes out of a QR
+  code (`crates/sukkula-engine/src/scan.rs`), checked as a typed code is,
+  and a wormhole mailbox server only as one in Settings is checked; what
+  any other QR code holds is dropped where it is read -- never shown,
+  logged or opened -- and the UI says only that it is no code. The code
+  goes through the receive command like a typed one, so consent (S5)
+  and the protocol's switch (F-C1) still decide. A typed code's protocol
+  is told by the engine from its shape (`receive_code`), never guessed
+  in the UI, and a code for a protocol switched off is refused there.
+  The camera runs only while the scan page is on top, the app in front
+  and no receive under way, and no frame is kept.
+- **Minimal sandbox.** Sailjail grants `Internet;Bluetooth`, `Camera`
+  for scanning a code (spec v0.6), and the folders files are sent from
+  and received into (`Downloads`, `Documents`, `Music`, `Pictures`,
+  `Videos`, `RemovableMedia`), and nothing else; the Harbour gate fails on
+  any other permission. Files are written only
   under `~/Downloads/Sukkula/`.
 - **The log keeps quiet.** The engine logs to standard error (the
   journal), never to a file. Off by default, it says only what Sukkula's
@@ -277,8 +296,9 @@ built RPM (`rpm.yml`). When a row changes, change the code or test it names.
 | F-C1: a protocol switched off in the settings is used by nothing; a settings file that does not read is never more permissive than it was | `hub.rs` `a_protocol_switched_off_in_the_settings_is_used_by_no_command` (each of the four off in turn: receive, discovery, sends, a receive by code, the device list), `a_settings_file_that_does_not_read_fails_closed_and_the_ui_is_told`; `config.rs` `one_bad_part_costs_only_that_part`, `a_bad_section_is_switched_off_not_reset_to_its_defaults`, `an_unknown_key_switches_every_protocol_off`, `a_file_that_cannot_be_read_one_way_is_locked_down`, `damage_never_opens_anything_up` |
 | The UI's interface is strict and bounded | `api.rs` `unknown_fields_and_versions_are_refused`, `variants_without_fields_refuse_fields` (every command and target, field-less ones included); `hub.rs` `a_flood_of_commands_is_refused_not_queued`, `the_queue_is_bounded_and_waits_for_room`, `every_command_has_its_time_limit`, `a_switch_that_waited_long_still_finishes_and_says_so` (a receive switch is never cut off half-way), `receive_wormhole_may_wait_for_the_user_as_long_as_the_offer_does`; `ctx::tests::empty_chunks_cost_nothing_and_each_value_is_reported_once` (a peer's empty chunks put nothing on the event path) |
 | S10: `unsafe` only in `sukkula-ffi`; lints | `#![forbid(unsafe_code)]` in core and engine; workspace lints in `Cargo.toml` (`-D warnings`, no `unwrap`/`expect`/`panic`/indexing/unchecked arithmetic); overflow checks in release |
-| The C boundary cannot be misused into memory unsafety | `crates/sukkula-ffi/tests/ffi.rs` (NULLs, stale handles, bad UTF-8, oversized commands, stop from the callback, hammering while stopping); `ci/ffi-harness/run.sh` under ASan, UBSan and LSan with no suppressions |
-| Parsers survive hostile input | Deterministic mutation sweeps on every push: `sukkula-core/tests/hostile.rs`, `localsend_hostile::a_mutation_sweep_of_offers_breaks_nothing`, the wormhole `sweep` module, the Bluetooth reply sweeps; cargo-fuzz targets with seeds and dictionaries (`ci/check-dicts.sh`, with its self-test, fails a target without either and a dictionary libFuzzer cannot parse) and compiled on every pull request, fuzzed 300 s each every night on `main` (`fuzz.yml`, the corpus carried from night to night) at each target's own `-max_len`, the 64 KiB-capped ones from inputs at the cap and one byte past it (`scripts/fuzz-smoke.sh`, with its self-test; `fuzz/README.md`), each asserting the S-rules on what it accepts rather than only survival: the core's `name_sanitize`, `text_display`, `text_message`, `offer_validate`, `settings_json`, `hex`, `command_json`, `start_config`, and every protocol parser that reads a peer's or a server's bytes, through the adapter's own code: `localsend_prepare_upload`, `localsend_discovery`, `wormhole_wire`, `wormhole_code`, `wormhole_mailbox`, `quickshare_handshake`, `quickshare_frame` (no payload byte before consent, S5), `quickshare_mdns`, `croc_code`, `croc_pake`, `croc_banner`, `croc_control`, `croc_file_list` |
+| The C boundary cannot be misused into memory unsafety | `crates/sukkula-ffi/tests/ffi.rs` (NULLs, stale handles, bad UTF-8, oversized commands, stop from the callback, hammering while stopping); `crates/sukkula-ffi/tests/scan.rs` (frames of every wrong shape refused unread, an answer written only when it fits, scans side by side); `ci/ffi-harness/run.sh` under ASan, UBSan and LSan with no suppressions, its frames and answer buffers allocated to exactly their size; `tests/cpp/scanner_test` under ASan and UBSan (a scanner destroyed with a frame in hand) |
+| A QR code is read, never followed (spec v0.6) | `crates/sukkula-engine/src/scan.rs` tests (every shape of wormhole URI and croc link and word taken or refused, codes among other codes and light on dark, our own QR codes read back, a frame of finder patterns skipped in milliseconds); `tests/wormhole.rs` `a_scanned_code_is_received_through_the_mailbox_it_names`; fuzz targets `qr_text` (what a code gives restated, croc's words always read) and `qr_frame`; `tests/qml/tst_scan.qml` (no code shown, the camera off in the background and without a camera, a scanned code refused with its protocol off, a scanned mailbox kept, a typed code's protocol left to the engine, the clipboard pasted only when it holds a code); `hub.rs` `a_typed_code_that_is_nobodys_is_refused_before_any_adapter`, each guarded by a planted fault in `tests/qml/selftest.py`; `ci/vendor-check.sh` for rqrr's patches |
+| Parsers survive hostile input | Deterministic mutation sweeps on every push: `sukkula-core/tests/hostile.rs`, `localsend_hostile::a_mutation_sweep_of_offers_breaks_nothing`, the wormhole `sweep` module, the Bluetooth reply sweeps; cargo-fuzz targets with seeds and dictionaries (`ci/check-dicts.sh`, with its self-test, fails a target without either and a dictionary libFuzzer cannot parse) and compiled on every pull request, fuzzed 300 s each every night on `main` (`fuzz.yml`, the corpus carried from night to night) at each target's own `-max_len`, the 64 KiB-capped ones from inputs at the cap and one byte past it (`scripts/fuzz-smoke.sh`, with its self-test; `fuzz/README.md`), each asserting the S-rules on what it accepts rather than only survival: the core's `name_sanitize`, `text_display`, `text_message`, `offer_validate`, `settings_json`, `hex`, `command_json`, `start_config`, and every protocol parser that reads a peer's or a server's bytes, through the adapter's own code: `localsend_prepare_upload`, `localsend_discovery`, `wormhole_wire`, `wormhole_code`, `wormhole_mailbox`, `quickshare_handshake`, `quickshare_frame` (no payload byte before consent, S5), `quickshare_mdns`, `croc_code`, `croc_pake`, `croc_banner`, `croc_control`, `croc_file_list`, and the camera's `qr_frame` and `qr_text` |
 | Harbour, sandbox and linking | `ci/harbour-check.sh` (with a 133-case selftest) on every pull request; Jolla's `rpmvalidation.sh` on the built RPM (`ci/harbour-validate-rpm.sh`), on every push to `main` and on every pull request that changes the packaging (P.6); one waiver file with a namespace per check, every field matched (`ci/harbour-waivers.sh`); `ci/check-elf.sh` (stripped, only `main` exported (`--only-main`, on the packaged binary and on every pull request's probe link), RELRO/BIND_NOW/PIE, allowed libraries only; with its selftest); the SDK image pulled only by the digest `ci/sdk-image.digests` pins, and published only from `main` (`ci/packaging-lint.sh`) |
 | Dependencies | `cargo deny` (licences, advisories, sources, bans including a vendored libdbus); `ci/check-deps.sh` (no OpenSSL, no second TLS or D-Bus stack, no process-spawning or opening crate, `dbus` for the engine alone); `ci/check-lockfile.sh`; `ci/vendor-check.sh` (the vendored Quick Share library and the mdns-sd under it are upstream -- open-quickshare at its commit, mdns-sd's published archive by its sha256 -- plus their reviewed patches, byte for byte) |
 

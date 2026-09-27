@@ -26,6 +26,10 @@ QtObject {
     /// The C++ Bridge (src/bridge.h), or a test's stand-in: `start()`,
     /// `command(json)`, `stop()`, `version`, and the signal `event(json)`.
     property QtObject backend: null
+    /// The C++ Scanner (src/scanner.h), or a test's stand-in: `busy`,
+    /// `scan(item)`, and the signals `found(json)` and `missed()`. Null
+    /// when there is none, and then nothing offers to scan.
+    property QtObject scanner: null
 
     /// Started and not failed.
     property bool running: false
@@ -233,11 +237,21 @@ QtObject {
     function send(target, items, callback) {
         return engine.command({ type: "send", target: target, items: items }, callback)
     }
-    function receiveWormhole(code, callback) {
-        return engine.command({ type: "receive_wormhole", code: code }, callback)
+    /// `mailboxUrl` is the mailbox server a scanned QR code named, or
+    /// empty for the one in Settings.
+    function receiveWormhole(code, callback, mailboxUrl) {
+        var cmd = { type: "receive_wormhole", code: code }
+        if (typeof mailboxUrl === "string" && mailboxUrl !== "") {
+            cmd.mailbox_url = mailboxUrl
+        }
+        return engine.command(cmd, callback)
     }
     function receiveCroc(code, callback) {
         return engine.command({ type: "receive_croc", code: code }, callback)
+    }
+    /// A typed or pasted code, whose protocol the engine tells from it.
+    function receiveCode(code, callback) {
+        return engine.command({ type: "receive_code", code: code }, callback)
     }
     function cancel(transferId, callback) {
         return engine.command({ type: "cancel", transfer: transferId },
@@ -259,7 +273,7 @@ QtObject {
         return engine.offers.count > 0 ? engine.offer(engine.offers.get(0).offerId) : null
     }
     /// {code, qr} for a Magic Wormhole or croc send, or null; `qr` is
-    /// {size, rows}, or null for croc and when the engine's was unusable.
+    /// {size, rows}, or null when the engine's was unusable.
     function sendCode(transferId) {
         var c = engine._codes[transferId]
         return c ? c : null
@@ -427,8 +441,8 @@ QtObject {
         case "transfer_progress": engine._onTransferProgress(e); break
         case "transfer_finished": engine._onTransferFinished(e); break
         case "text_received": engine._onTextReceived(e); break
-        case "wormhole_code": engine._onCode(e, true); break
-        case "croc_code": engine._onCode(e, false); break
+        case "wormhole_code":
+        case "croc_code": engine._onCode(e); break
         case "bluetooth_devices": engine._onBluetoothDevices(e); break
         default: break // A newer engine's event: not ours to guess at.
         }
@@ -726,14 +740,14 @@ QtObject {
         }
     }
 
-    /// A send's code; only Magic Wormhole's comes with a QR code.
-    function _onCode(e, withQr) {
+    /// A send's code, and its QR code.
+    function _onCode(e) {
         var id = engine._key(e.transfer)
         var code = engine._str(e.code, 128)
         if (id < 0 || code === "") {
             return
         }
-        engine._codes[id] = { code: code, qr: withQr ? engine._qr(e.qr) : null }
+        engine._codes[id] = { code: code, qr: engine._qr(e.qr) }
         engine.codeArrived(id)
     }
 
@@ -801,6 +815,41 @@ QtObject {
         }
         return { code: "internal", message: "command refused: " + rc }
     }
+    /// What the scanner read (src/scanner.h, docs/FFI.md "Scanning a QR
+    /// code"): {protocol: "wormhole" | "croc", code, mailboxUrl} for a code
+    /// to receive with, {protocol: "", ...} for a QR code with anything
+    /// else in it, and null for JSON that is none of these. The code and
+    /// the URL are checked for shape again, the engine checks both once
+    /// more on receiving, and neither is shown but in the code field.
+    function readScan(json) {
+        var v = null
+        try {
+            v = JSON.parse(json)
+        } catch (err) {
+            return null
+        }
+        if (!v || typeof v !== "object" || Array.isArray(v)) {
+            return null
+        }
+        if (v.found === "other") {
+            return { protocol: "", code: "", mailboxUrl: "" }
+        }
+        var printable = /^[\x21-\x7e]+$/
+        if ((v.found !== "wormhole" && v.found !== "croc") || typeof v.code !== "string"
+                || v.code.length < 6 || v.code.length > 128 || !printable.test(v.code)) {
+            return null
+        }
+        var mailbox = ""
+        if (v.found === "wormhole" && v.mailbox_url !== undefined) {
+            if (typeof v.mailbox_url !== "string" || v.mailbox_url.length > 256
+                    || !printable.test(v.mailbox_url) || !/^wss?:\/\//.test(v.mailbox_url)) {
+                return null
+            }
+            mailbox = v.mailbox_url
+        }
+        return { protocol: v.found, code: v.code, mailboxUrl: mailbox }
+    }
+
     /// A QR code of `size` rows of `size` characters, `0` or `1`, or null.
     /// 177 modules is version 40, the largest there is.
     function _qr(v) {

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Sukkula's start-up shim (spec §3): boot Silica through libsailfishapp,
-// hand QML the one bridge to the Rust engine, and stop the engine before
-// anything it could call back into is gone.
+// hand QML the bridge to the Rust engine and the scanner that reads codes
+// off the camera, and stop the engine before anything it could call back
+// into is gone.
 
 #include <QGuiApplication>
 #include <QLocale>
@@ -17,6 +18,7 @@
 #include <sailfishapp.h>
 
 #include "bridge.h"
+#include "scanner.h"
 #include "tls_reserve.h"
 
 // Exported: the silica-qt5 booster dlopen()s this binary and looks main()
@@ -56,9 +58,12 @@ Q_DECL_EXPORT int main(int argc, char *argv[])
     // dangling bridge. Engine.qml calls start() once it is listening.
     Bridge bridge;
     QObject::connect(app.data(), &QCoreApplication::aboutToQuit, &bridge, &Bridge::stop);
+    // Likewise; it waits for a frame in hand when it goes (spec v0.6).
+    Scanner scanner;
 
     QScopedPointer<QQuickView> view(SailfishApp::createView());
     view->rootContext()->setContextProperty(QStringLiteral("bridge"), &bridge);
+    view->rootContext()->setContextProperty(QStringLiteral("scanner"), &scanner);
     view->setSource(SailfishApp::pathTo(QStringLiteral("qml/harbour-sukkula.qml")));
     view->show();
 

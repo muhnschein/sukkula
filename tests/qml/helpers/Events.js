@@ -121,8 +121,8 @@ function wormholeCode(id, code, qr) {
     return json({ type: "wormhole_code", transfer: id, code: code, qr: qr ? qr : qr21() })
 }
 
-function crocCode(id, code) {
-    return json({ type: "croc_code", transfer: id, code: code })
+function crocCode(id, code, qr) {
+    return json({ type: "croc_code", transfer: id, code: code, qr: qr === undefined ? qr21() : qr })
 }
 
 function bluetoothDevices(devices) {

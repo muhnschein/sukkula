@@ -309,6 +309,27 @@ impl Servers {
         })
     }
 
+    /// These servers with the mailbox a scanned QR code named instead
+    /// (spec v0.6), checked as a setting's is.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorCode::BadCode`]: the URL is not usable. It came with the
+    /// code, so it is the code that is refused.
+    pub(crate) fn with_mailbox(self, raw: &str) -> Result<Servers, ErrorInfo> {
+        let mailbox = check_mailbox_url(raw.trim()).map_err(|_| {
+            ErrorInfo::new(
+                ErrorCode::BadCode,
+                "the code's mailbox server is not usable",
+            )
+        })?;
+        Ok(Servers {
+            mailbox,
+            custom_mailbox: true,
+            ..self
+        })
+    }
+
     /// Our relay as the hint the peer is sent.
     pub(crate) fn relay_hint(&self) -> RelayHint {
         RelayHint::new(

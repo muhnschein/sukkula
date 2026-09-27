@@ -2,7 +2,7 @@
 import QtQuick 2.6
 
 /*
- * A QR code from the engine's rows of "0" and "1" (F-MW1), drawn dark on
+ * A QR code from the engine's rows of "0" and "1" (F-MW1, F-CR1), drawn dark on
  * white with the four-module quiet zone scanners need, whatever the
  * ambience. Engine.qml has already checked the shape: `size` rows of `size`
  * characters, 21 to 177.

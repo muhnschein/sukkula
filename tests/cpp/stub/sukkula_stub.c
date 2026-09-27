@@ -9,7 +9,9 @@
  *    returns, or one "fatal" and returns NULL;
  *  - every command taken is answered by one "reply" with its id;
  *  - after sukkula_stop() returns the callback is never called again;
- *  - NULL, over-long and non-UTF-8 input is refused with the header's codes.
+ *  - NULL, over-long and non-UTF-8 input is refused with the header's codes;
+ *  - sukkula_scan_qr() checks its arguments as the engine does, but reads
+ *    no QR code (sukkula_stub.h says what it answers).
  *
  * Never linked into the app.
  */
@@ -86,6 +88,59 @@ void sukkula_stub_fail_next_start(int fail)
 const char *sukkula_version(void)
 {
     return "0.0.0-stub";
+}
+
+static unsigned g_scan_width, g_scan_height, g_scan_stride;
+static int g_scans;
+static long g_scan_delay_ms;
+
+void sukkula_stub_last_scan(unsigned *width, unsigned *height, unsigned *stride, int *scans)
+{
+    pthread_mutex_lock(&g_lock);
+    *width = g_scan_width;
+    *height = g_scan_height;
+    *stride = g_scan_stride;
+    *scans = g_scans;
+    pthread_mutex_unlock(&g_lock);
+}
+
+void sukkula_stub_scan_delay_ms(long ms)
+{
+    pthread_mutex_lock(&g_lock);
+    g_scan_delay_ms = ms;
+    pthread_mutex_unlock(&g_lock);
+}
+
+static void sleep_ms(long ms);
+
+int32_t sukkula_scan_qr(const uint8_t *luma, uint32_t width, uint32_t height, uint32_t stride,
+                        char *out, uint32_t out_size)
+{
+    if (luma == NULL || out == NULL)
+        return SUKKULA_ERR_NULL;
+    if (width < 1 || width > 1024 || height < 1 || height > 1024 || stride < width ||
+        stride > 4096 || out_size < 1)
+        return SUKKULA_ERR_RANGE;
+    pthread_mutex_lock(&g_lock);
+    g_scan_width = width;
+    g_scan_height = height;
+    g_scan_stride = stride;
+    g_scans++;
+    long delay = g_scan_delay_ms;
+    pthread_mutex_unlock(&g_lock);
+    if (delay > 0)
+        sleep_ms(delay);
+    int dark = 0;
+    for (uint32_t y = 0; y < height && !dark; y++)
+        for (uint32_t x = 0; x < width && !dark; x++)
+            dark = luma[(size_t)y * stride + x] < 128;
+    if (!dark)
+        return 0;
+    size_t n = strlen(SUKKULA_STUB_SCANNED);
+    if (n + 1 > out_size)
+        return SUKKULA_ERR_RANGE;
+    memcpy(out, SUKKULA_STUB_SCANNED, n + 1);
+    return (int32_t)n;
 }
 
 static void sleep_ms(long ms)

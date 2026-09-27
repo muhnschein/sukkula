@@ -1,12 +1,19 @@
 //! Wormhole codes: the one the user types (F-MW2), checked before anything
-//! touches the network, and the one we allocate, as a QR code (F-MW1).
+//! touches the network, the one we allocate, as a QR code (F-MW1), and the
+//! one a scanned QR code holds (spec v0.6).
 
 use magic_wormhole::Code;
+use magic_wormhole::rendezvous::DEFAULT_RENDEZVOUS_SERVER;
 use magic_wormhole::uri::WormholeTransferUri;
-use qrcode::Color;
 use url::Url;
 
-use crate::api::{ErrorCode, ErrorInfo, QrCode};
+use super::session::check_mailbox_url;
+use crate::api::{ErrorCode, ErrorInfo, QrCode, Scanned};
+use crate::by_code::qr_code;
+
+/// The scheme of the URI in a wormhole QR code, ours and the reference
+/// clients' alike.
+const URI_SCHEME: &str = "wormhole-transfer:";
 
 /// Longest code accepted, after trimming.
 pub(crate) const MAX_CODE_BYTES: usize = 128;
@@ -93,29 +100,44 @@ pub(crate) fn qr(code: &Code, custom_mailbox: Option<&Url>) -> Result<QrCode, Er
         is_leader: false,
     }
     .to_string();
-    qr_of(uri.as_bytes())
+    qr_code(uri.as_bytes())
 }
 
-/// Rows of `0` and `1`, dark modules `1`.
-fn qr_of(data: &[u8]) -> Result<QrCode, ErrorInfo> {
-    let failed = || ErrorInfo::new(ErrorCode::Internal, "the QR code could not be made");
-    let q = qrcode::QrCode::new(data).map_err(|_| failed())?;
-    let width = q.width();
-    if width == 0 {
-        return Err(failed());
+/// The wormhole code in a QR code's text (spec v0.6), or `None` when the
+/// text is not a `wormhole-transfer:` URI: [`Scanned::Wormhole`] for one
+/// this client can receive with, [`Scanned::Other`] for one it cannot.
+///
+/// magic-wormhole's `uri` module reads the URI; its code must then pass
+/// [`parse`], as a typed one does, and a mailbox server it names the check
+/// a mailbox in Settings passes. A URI with `role=leader` asks the scanner
+/// to send to the code rather than receive with it, which this client
+/// does not do.
+pub(crate) fn from_qr(text: &str) -> Option<Scanned> {
+    let head = text.get(..URI_SCHEME.len())?;
+    if !head.eq_ignore_ascii_case(URI_SCHEME) {
+        return None;
     }
-    let rows: Vec<String> = q
-        .to_colors()
-        .chunks(width)
-        .map(|row| {
-            row.iter()
-                .map(|c| if *c == Color::Dark { '1' } else { '0' })
-                .collect()
-        })
-        .collect();
-    Ok(QrCode {
-        size: u32::try_from(width).map_err(|_| failed())?,
-        rows,
+    Some(receivable(text).unwrap_or(Scanned::Other))
+}
+
+/// The code and mailbox of a `wormhole-transfer:` URI to receive with.
+fn receivable(text: &str) -> Option<Scanned> {
+    let uri: WormholeTransferUri = text.parse().ok()?;
+    if uri.is_leader {
+        return None;
+    }
+    let code = parse(&uri.code.to_string()).ok()?;
+    let mailbox_url = match uri.rendezvous_server {
+        None => None,
+        Some(url) => {
+            let theirs = check_mailbox_url(url.as_str()).ok()?;
+            let default = check_mailbox_url(DEFAULT_RENDEZVOUS_SERVER).ok()?;
+            (theirs != default).then(|| theirs.to_string())
+        }
+    };
+    Some(Scanned::Wormhole {
+        code: code.to_string(),
+        mailbox_url,
     })
 }
 

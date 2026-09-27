@@ -70,6 +70,7 @@ Page {
                     "croc's protocol – MIT",
                     "The EFF's short word list – CC BY 4.0",
                     "RustCrypto (p256, aes-gcm, hkdf), miniz_oxide – MIT / Apache-2.0",
+                    "rqrr (after quirc), qrcode – MIT / Apache-2.0, ISC",
                     "dbus-rs – MIT / Apache-2.0",
                     "tokio, serde – MIT / Apache-2.0",
                     "Qt – LGPL-3.0, Sailfish Silica"

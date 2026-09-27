@@ -3,15 +3,20 @@ import QtQuick 2.6
 import Sailfish.Silica 1.0
 
 /*
- * The radar's cloud: the internet, which Magic Wormhole and croc go
- * through. Tapping it shows or hides their tiles; the label under it says
- * what a tap does.
+ * The radar's way to the internet, which Magic Wormhole and croc go
+ * through: the Send tab's cloud, whose tap shows or hides their tiles, or
+ * the Receive tab's QR code, whose tap opens the camera to read the
+ * sender's code (spec v0.6). The label under it says what a tap does.
  */
 Item {
     id: cloud
 
-    /// Under the cloud; empty for none.
+    /// Under the drawing; empty for none.
     property string label: ""
+    /// What is drawn: Glyph's "cloud" or "qr".
+    property string kind: "cloud"
+    /// Its stroke, in pixels.
+    property real lineWidth: Math.max(2, Theme.paddingSmall / 2)
     /// Drawn faint: a send or receive nearby is the picture now.
     property bool faint: false
     property real cloudHeight: cloud.width * 0.6
@@ -30,9 +35,9 @@ Item {
         objectName: "cloudGlyph"
         width: parent.width
         height: cloud.cloudHeight
-        kind: "cloud"
+        kind: cloud.kind
         color: cloud.ink
-        lineWidth: Math.max(2, Theme.paddingSmall / 2)
+        lineWidth: cloud.lineWidth
     }
 
     Label {

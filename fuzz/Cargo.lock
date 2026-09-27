@@ -1208,6 +1208,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "g2gen"
+version = "1.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c5a7e0eb46f83a20260b850117d204366674e85d3a908d90865c78df9a6b1dfc"
+dependencies = [
+ "g2poly",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "g2p"
+version = "1.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "539e2644c030d3bf4cd208cb842d2ce2f80e82e6e8472390bcef83ceba0d80ad"
+dependencies = [
+ "g2gen",
+ "g2poly",
+]
+
+[[package]]
+name = "g2poly"
+version = "1.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "312d2295c7302019c395cfb90dacd00a82a2eabd700429bba9c7a3f38dbbe11b"
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2593,6 +2621,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rqrr"
+version = "0.11.0"
+dependencies = [
+ "g2p",
+ "lru",
+]
+
+[[package]]
 name = "rqs_lib"
 version = "0.11.5"
 dependencies = [
@@ -3132,6 +3168,7 @@ dependencies = [
  "miniz_oxide",
  "p256",
  "qrcode",
+ "rqrr",
  "rqs_lib",
  "rustix",
  "rustls",
@@ -3160,6 +3197,7 @@ dependencies = [
  "libfuzzer-sys",
  "p256",
  "prost",
+ "qrcode",
  "rqs_lib",
  "serde",
  "serde_json",
@@ -3167,6 +3205,7 @@ dependencies = [
  "sukkula-core",
  "sukkula-engine",
  "tokio",
+ "url",
 ]
 
 [[package]]

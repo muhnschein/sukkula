@@ -75,6 +75,10 @@ CAP64K=("${CAP64K_JSON[@]}" "${CAP64K_TEXT[@]}")
 # Every size of settings file the store will read; the target returns
 # early past it, as the store does.
 CAP_SETTINGS=(settings_json)
+# Camera frames: a byte of width and up to 16 KiB of grey, room for a QR
+# code of a few pixels a module (the committed seeds are up to 120 x 120).
+CAP_FRAME=(qr_frame)
+FRAME_LEN=16384
 in_list() { # word list...
     local w=$1 x
     shift
@@ -87,6 +91,8 @@ max_len_for() {
         echo $((MSG_CAP + 4096))
     elif in_list "$target" "${CAP_SETTINGS[@]}"; then
         echo "$SETTINGS_CAP"
+    elif in_list "$target" "${CAP_FRAME[@]}"; then
+        echo "$FRAME_LEN"
     else
         # Everything else asserts caps a 4 KiB input reaches, or that the
         # harness builds from a small input itself (offer_validate's 500
@@ -193,7 +199,7 @@ self_test() {
     local -a targets
     mapfile -t targets < <(cargo_targets)
     check "fuzz/Cargo.toml lists targets" test "${#targets[@]}" -gt 0
-    for t in "${CAP64K[@]}" "${CAP_SETTINGS[@]}"; do
+    for t in "${CAP64K[@]}" "${CAP_SETTINGS[@]}" "${CAP_FRAME[@]}"; do
         check "$t, capped here, is a target" in_list "$t" "${targets[@]}"
     done
     for t in "${targets[@]}"; do
@@ -216,6 +222,11 @@ self_test() {
     done
     check "settings_json runs at the store's read limit" test "$(max_len_for settings_json)" -eq "$SETTINGS_CAP"
     check "an uncapped target runs at $MAX_LEN_DEFAULT" test "$(max_len_for hex)" -eq "$MAX_LEN_DEFAULT"
+    for t in "${CAP_FRAME[@]}"; do
+        local longest
+        longest=$(find "fuzz/seeds/$t" -type f -exec stat -c %s {} + | sort -n | tail -1)
+        check "$t's longest seed fits its -max_len" test "$longest" -le "$(max_len_for "$t")"
+    done
     mkdir -p "$work/artifacts"
     : > "$work/artifacts/old"
     before=$(find "$work/artifacts" -type f | sort)

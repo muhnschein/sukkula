@@ -73,7 +73,7 @@
 //! the user has said yes, beyond the PAKE and croc's `externalip`, which
 //! carries nothing.
 
-mod code;
+pub(crate) mod code;
 mod conn;
 mod crypt;
 #[doc(hidden)]
@@ -92,7 +92,7 @@ use std::time::Duration;
 
 use sukkula_core::Protocol;
 
-use crate::adapter::{Adapter, BoxFuture, Outgoing};
+use crate::adapter::{Adapter, BoxFuture, CodeReceive, Outgoing};
 use crate::api::{ErrorCode, ErrorInfo, SendTarget, TransferId};
 use crate::by_code::{self, ByCode, Inner};
 use crate::ctx::Ctx;
@@ -134,11 +134,12 @@ impl ByCode for Croc {
         send::start(inner, target, items)
     }
 
+    /// croc's servers are the settings' alone: its QR codes name none.
     fn receive(
         inner: Arc<Inner>,
-        code: String,
+        request: CodeReceive,
     ) -> BoxFuture<'static, Result<TransferId, ErrorInfo>> {
-        Box::pin(receive::start(inner, code))
+        Box::pin(receive::start(inner, request.code))
     }
 }
 

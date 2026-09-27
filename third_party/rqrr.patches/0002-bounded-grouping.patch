@@ -1,0 +1,58 @@
+Bounded work: at most 32 capstones are grouped
+
+`detect_grids` finds every capstone in one pass over the image, then
+groups them: for each capstone, every pair of plausible neighbours is
+tried as a code's other two corners, each on a copy of the whole image
+(`find_groupings`). The cost grows with the count squared times the
+image's size, and the count is the image's to choose. A 640x480 frame
+tiled with 7-pixel finder patterns, 1600 of them, took 25 s on a desktop
+CPU; 3500 did not finish in two minutes. A phone scans such a frame from
+the camera, whatever it is pointed at.
+
+A frame with more than MAX_CAPSTONES (32, quirc's own QUIRC_MAX_CAPSTONES)
+now gives no grids, and the capstone pass itself, a few milliseconds for
+those same frames, is all it costs. A camera frame with one or two codes
+in it has three capstones each and seldom a false one; a frame over the
+limit is skipped, and the next frame is another try.
+---
+--- a/src/prepare.rs
++++ b/src/prepare.rs
+@@ -175,6 +175,11 @@
+     }
+ }
+ 
++/// The most capstones [`PreparedImage::detect_grids`] groups. An image
++/// with more gives no grids at all: quirc's own limit, which is ten codes'
++/// worth and a few false ones besides. (Sukkula.)
++pub const MAX_CAPSTONES: usize = 32;
++
+ impl<S> PreparedImage<S>
+ where
+     S: ImageBuffer,
+@@ -234,6 +239,15 @@
+     {
+         let mut res = Vec::new();
+         let stones = crate::capstones_from_image(self);
++        // Sukkula: a frame with more capstones than a scene of a few codes
++        // holds is skipped, not grouped. Grouping tries every plausible
++        // pair around each capstone, each on a copy of the whole image, so
++        // its cost grows with the count squared times the image: a frame
++        // tiled with a few thousand finder patterns kept it busy for
++        // minutes. Finding the capstones is one pass, and stays.
++        if stones.len() > MAX_CAPSTONES {
++            return res;
++        }
+         let groups = self.find_groupings(stones);
+         let locations: Vec<_> = groups
+             .into_iter()
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -38,7 +38,7 @@
+ pub(crate) use self::detect::{capstones_from_image, CapStone};
+ pub use self::identify::Point;
+ pub(crate) use self::identify::SkewedGridLocation;
+-pub use self::prepare::PreparedImage;
++pub use self::prepare::{PreparedImage, MAX_CAPSTONES};
+ use std::error::Error;
+ use std::io::Write;
+ 

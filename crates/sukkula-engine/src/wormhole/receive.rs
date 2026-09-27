@@ -40,10 +40,18 @@ use crate::ctx::{Accepted, Declined, TransferHandle, cancelled};
 const REJECTED: &str = "transfer rejected";
 
 /// Receives with `code`: returns once the user has accepted the offer, with
-/// the transfer the rest runs as.
-pub(super) async fn start(inner: Arc<Inner>, raw_code: String) -> Result<TransferId, ErrorInfo> {
+/// the transfer the rest runs as. `mailbox_url` is the mailbox server the
+/// sender's QR code named, used instead of the settings' one.
+pub(super) async fn start(
+    inner: Arc<Inner>,
+    raw_code: String,
+    mailbox_url: Option<String>,
+) -> Result<TransferId, ErrorInfo> {
     let code = code::parse(&raw_code)?;
-    let servers = Servers::from_settings(&inner.ctx.settings().wormhole)?;
+    let mut servers = Servers::from_settings(&inner.ctx.settings().wormhole)?;
+    if let Some(url) = mailbox_url {
+        servers = servers.with_mailbox(&url)?;
+    }
     let shutdown = inner.ctx.shutdown_token().clone();
     let (accepted, session, their) = {
         let _slot = inner.connecting.slot().ok_or_else(|| {
