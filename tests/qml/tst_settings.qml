@@ -7,7 +7,9 @@ import "helpers/Events.js" as Ev
 
 /*
  * Settings (F-C1, F-C7, F-LS4, F-QS4, F-QS2, F-MW4, F-CR3, S9): loaded
- * from the engine, checked as sukkula-core checks them, saved when the
+ * from the engine, each way named by who it reaches, an option under a
+ * switch greyed while the switch is off, one's own servers folded away
+ * until set or wrong; checked as sukkula-core checks them, saved when the
  * page is left -- not when a page is pushed over it -- and only when
  * something changed, with every field the page does not know kept. Then
  * the About page. Receiving by code is tst_scan.qml's.
@@ -57,8 +59,28 @@ Script {
             test.compare(test.field("crocRelayField").text, "", "croc's own relay by default (F-CR3)")
             test.compare(test.field("crocPasswordField").text, "")
             test.compare(test.field("nudgeSwitch").description,
-                         "While Send mode looks for devices, a Bluetooth signal prompts Android phones nearby to show up.",
+                         "Helps Android phones nearby notice this one while you send",
                          "the nudge said as what it is: a sending aid (F-QS2)")
+            test.compare(test.field("quickShareSwitch").text, "Android phones", "Quick Share by who it reaches")
+            test.compare(test.field("localSendSwitch").text, "Computers and other phones", "LocalSend too")
+            test.compare(test.field("localSendSwitch").description, "LocalSend, on the same Wi-Fi",
+                         "the protocol only in the grey line")
+            // An option under a switch is greyed while the switch is off.
+            test.verify(test.field("pinField").enabled && test.field("nudgeSwitch").enabled)
+            test.field("localSendSwitch").click()
+            test.field("quickShareSwitch").click()
+            test.verify(!test.field("pinField").enabled, "no PIN without LocalSend")
+            test.verify(!test.field("nudgeSwitch").enabled && !test.field("visibilityBox").enabled,
+                        "no nudge or visibility without Quick Share")
+            test.field("localSendSwitch").click()
+            test.field("quickShareSwitch").click()
+            // One's own servers are folded away until asked for.
+            test.verify(!test.page.serversOpen && !test.field("mailboxField").visible
+                        && !test.field("crocRelayField").visible, "the servers folded away")
+            probe.find(test.page, "serversToggle").clicked()
+            test.verify(test.field("mailboxField").visible && test.field("relayField").visible
+                        && test.field("crocRelayField").visible && test.field("crocPasswordField").visible,
+                        "and unfolded with a tap")
             // Leaving unchanged saves nothing.
             window.pageStack.pop()
             return 50
@@ -141,11 +163,31 @@ Script {
                 logging: true
             })
             // Fields this page does not know are kept, not reset.
-            bridge.emitEvent(Ev.settings({ future_field: { x: 1 } }))
             test.page = null
         },
         function () {
-            test.page = window.pageStack.push(Qt.resolvedUrl("../../qml/pages/SettingsPage.qml"), { engine: engine })
+            // A server set is shown: the fields come unfolded.
+            test.verify(test.page === null)
+            var s = JSON.parse(JSON.stringify(engine.settings))
+            test.compare(s.croc.relay, null, "the engine's copy: nothing saved went back to it")
+            bridge.emitEvent(Ev.settings({ croc: { enabled: true, relay: "croc.example.org:9009", password: null } }))
+        },
+        function () {
+            var page = window.pageStack.push(Qt.resolvedUrl("../../qml/pages/SettingsPage.qml"), { engine: engine })
+            test.verify(page.serversOpen && probe.find(page, "crocRelayField").visible, "a relay set is in view")
+            window.pageStack.pop()
+            bridge.emitEvent(Ev.settings({ future_field: { x: 1 } }))
+            return 50
+        },
+        function () {
+            test.compare(test.commandsOfType("set_settings").length, 1, "an unchanged page saved nothing")
+            // A wrong server unfolds them, so it can be seen.
+            var page = window.pageStack.push(Qt.resolvedUrl("../../qml/pages/SettingsPage.qml"), { engine: engine })
+            test.verify(!page.serversOpen)
+            probe.find(page, "mailboxField").text = "http://x"
+            test.verify(page.serversOpen, "a wrong server unfolds them")
+            probe.find(page, "mailboxField").text = ""
+            test.page = page
             test.field("deviceNameField").text = "Other"
             window.pageStack.pop()
             return 50

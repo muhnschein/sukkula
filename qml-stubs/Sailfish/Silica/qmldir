@@ -23,6 +23,7 @@ SectionHeader 1.0 SectionHeader.qml
 SilicaFlickable 1.0 SilicaFlickable.qml
 PagedView 1.0 PagedView.qml
 PullDownMenu 1.0 PullDownMenu.qml
+RemorsePopup 1.0 RemorsePopup.qml
 MenuItem 1.0 MenuItem.qml
 ContextMenu 1.0 ContextMenu.qml
 Label 1.0 Label.qml
@@ -35,6 +36,7 @@ ComboBox 1.0 ComboBox.qml
 ListItem 1.0 ListItem.qml
 BackgroundItem 1.0 BackgroundItem.qml
 BusyIndicator 1.0 BusyIndicator.qml
+ProgressCircle 1.0 ProgressCircle.qml
 VerticalScrollDecorator 1.0 VerticalScrollDecorator.qml
 CoverBackground 1.0 CoverBackground.qml
 CoverActionList 1.0 CoverActionList.qml

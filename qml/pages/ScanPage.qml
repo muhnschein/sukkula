@@ -5,7 +5,7 @@ import "../components"
 
 /*
  * Receive with a code (spec v0.6, F-MW2, F-CR2), from the Receive tab's
- * QR code: the camera, to read the code off the sender's screen, and under
+ * "Scan a code": the camera, to read the code off the sender's screen, and under
  * it a button to type or paste the code instead. Nobody says whether it
  * is a Magic Wormhole or a croc code: a QR code says, and a typed one is
  * told by its shape (receive_code, docs/FFI.md). The offer then comes up
@@ -35,6 +35,8 @@ Page {
     property bool leaving: false
     /// The typed code's panel is open.
     property bool typing: false
+    /// The code field holds what the clipboard did, untouched since.
+    property bool fromClipboard: false
 
     readonly property Item view: scanLoader.item
     readonly property bool cameraOn: page.status === PageStatus.Active && page.foreground
@@ -109,6 +111,7 @@ Page {
         var clip = Clipboard.text
         if (codeField.text.length === 0 && typeof clip === "string" && page.looksLikeCode(clip)) {
             codeField.text = clip.replace(/^\s+|\s+$/g, "")
+            page.fromClipboard = true
         }
     }
 
@@ -258,11 +261,19 @@ Page {
                     top: parent.top
                     topMargin: Theme.paddingMedium
                 }
-                //: The text field for a Magic Wormhole or croc code.
-                label: qsTr("Code")
+                label: page.fromClipboard
+                       //: The code field, filled in from the clipboard.
+                       ? qsTr("Code, from the clipboard")
+                       //: The text field for a Magic Wormhole or croc code.
+                       : qsTr("Code")
                 placeholderText: "7-guitarist-revenge"
                 inputMethodHints: Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase | Qt.ImhPreferLowercase
                 maximumLength: 1024
+                onTextChanged: {
+                    if (page.fromClipboard && codeField.text !== String(Clipboard.text).replace(/^\s+|\s+$/g, "")) {
+                        page.fromClipboard = false
+                    }
+                }
                 Keys.onReturnPressed: page.followTyped()
                 Keys.onEnterPressed: page.followTyped()
             }

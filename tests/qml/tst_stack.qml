@@ -134,13 +134,13 @@ Script {
             // A share while the History page is over the main page.
             test.find("mainPage").openHistory()
             test.compare(test.top(), "historyPage")
-            test.find("shareText").triggered([{ data: "second" }])
+            test.find("shareFiles").triggered([{ filePath: "/home/defaultuser/Downloads/second.txt" }])
             return 200
         },
         function () {
             var main = test.find("mainPage")
             test.compare(test.names(), ["mainPage"], "the share goes to the main page")
-            test.compare(main.payload.texts, ["second"])
+            test.compare(main.payload.files[0].path, "/home/defaultuser/Downloads/second.txt")
             var d = test.discovery()
             test.compare(d, ["start_discovery"], "discovery kept running: " + d)
             test.compare(test.engine.discoveryUsers, 1)
@@ -148,10 +148,10 @@ Script {
             test.compare(test.engine.quickSharePeers.count, 1)
             // A send whose reply comes while an offer's dialog is up.
             bridge.autoReply = false
-            var bubbles = probe.findAll(main, "peerBubble")
-            for (var i = 0; i < bubbles.length; i++) {
-                if (bubbles[i].visible && bubbles[i].name === "Android") {
-                    bubbles[i].clicked()
+            var rows = probe.findAll(main, "deviceRow")
+            for (var i = 0; i < rows.length; i++) {
+                if (rows[i].visible && rows[i].title === "Android") {
+                    rows[i].clicked()
                 }
             }
             test.pendingId = test.lastId("send")
@@ -169,20 +169,23 @@ Script {
             test.compare(test.stack.currentPage.offer.offerId, 2)
             test.compare(test.answers(), [[1, false]], "and nothing answers the offer for the user")
             test.compare(probe.find(test.find("mainPage"), "sendView").outgoing.transferId, 40,
-                         "the send is on the radar underneath")
+                         "the send is on the Send tab underneath")
             test.stack.currentPage.reject()
             return 400
         },
         function () {
             test.compare(test.answers(), [[1, false], [2, false]])
             test.compare(test.names(), ["mainPage"])
-            // Receive mode gives discovery back.
+            // The Receive tab gives discovery back.
+            bridge.autoReply = true
+            probe.find(test.find("mainPage"), "modeTabs").tabClicked(1)
+            bridge.autoReply = false
             bridge.emitEvent(Ev.receiving(true))
             return 50
         },
         function () {
             var d = test.discovery()
-            test.compare(d[d.length - 1], "stop_discovery", "Receive mode stops discovery")
+            test.compare(d[d.length - 1], "stop_discovery", "the Receive tab stops discovery")
             test.compare(test.engine.discoveryUsers, 0)
             test.compare(test.engine.localSendPeers.count, 0, "and the peers are forgotten")
             // Receiving with a code: its reply pops its own page only.

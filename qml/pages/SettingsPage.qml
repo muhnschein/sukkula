@@ -4,11 +4,13 @@ import Sailfish.Silica 1.0
 import "../components"
 
 /*
- * Settings, saved when the page is left: the device name (F-C7), each
- * protocol on or off (F-C1), the LocalSend PIN (F-LS4), Quick Share
- * visibility and the BLE nudge (F-QS4, F-QS2), Magic Wormhole and its
- * servers (F-MW4), croc and its relay (F-CR3), and debug logging, off by
- * default (S9).
+ * Settings, saved when the page is left: the name other devices see
+ * (F-C7); under "Nearby", each way on or off by who it reaches -- Android
+ * phones (Quick Share, with its visibility and the BLE nudge, F-QS4,
+ * F-QS2), computers and other phones (LocalSend, with its PIN, F-LS4),
+ * Bluetooth -- and under "Far away" Magic Wormhole and croc, with their
+ * servers folded away (F-MW4, F-CR3) (F-C1, spec v0.7); and debug logging,
+ * off by default (S9).
  *
  * The fields are checked here the way sukkula-core checks them
  * (config.rs), so a bad value is caught while it can still be fixed; the
@@ -29,6 +31,18 @@ Page {
     readonly property bool crocPasswordValid: /^[\x20-\x7e]{0,64}$/.test(page.trimmed(crocPasswordField.text))
     readonly property bool valid: page.pinValid && page.mailboxValid && page.relayValid
                                   && page.crocRelayValid && page.crocPasswordValid
+    readonly property bool serversValid: page.mailboxValid && page.relayValid
+                                         && page.crocRelayValid && page.crocPasswordValid
+    /// The fields for one's own servers are unfolded: on a tap, and
+    /// whenever one is wrong, so it can be seen.
+    property bool serversOpen: false
+    onServersValidChanged: {
+        if (!page.serversValid) {
+            page.serversOpen = true
+        }
+    }
+    /// How far the options under a switch are indented.
+    readonly property real indent: Theme.paddingLarge * 2
 
     // A bad value keeps the page open, highlighted, rather than being
     // thrown away on the way out.
@@ -97,6 +111,8 @@ Page {
         crocPasswordField.text = typeof cr.password === "string" ? cr.password : ""
         bluetoothSwitch.checked = bt.enabled !== false
         loggingSwitch.checked = s.logging === true
+        page.serversOpen = mailboxField.text.length > 0 || relayField.text.length > 0
+                           || crocRelayField.text.length > 0 || crocPasswordField.text.length > 0
         page.loaded = true
     }
 
@@ -211,67 +227,43 @@ Page {
                 }
             }
 
+            SectionHeader {
+                //: Settings: over the name other devices see (F-C7).
+                text: qsTr("Name shown to other devices")
+            }
             TextField {
                 id: nameField
                 objectName: "deviceNameField"
                 width: parent.width
-                //: Settings: the name other devices see (F-C7).
-                label: qsTr("Device name")
                 // The name used when this is empty: the phone's model.
                 placeholderText: page.engine.effectiveDeviceName
                 maximumLength: 64
             }
 
             SectionHeader {
-                text: "LocalSend"
-                visible: page.engine.hasProtocol("local_send")
-            }
-            TextSwitch {
-                id: localSendSwitch
-                visible: page.engine.hasProtocol("local_send")
-                //: Settings: switch a protocol on or off.
-                text: qsTr("Use LocalSend")
-                //: Settings: what the LocalSend switch covers.
-                description: qsTr("Send to and receive from LocalSend apps on the same Wi-Fi.")
-            }
-            TextField {
-                id: pinField
-                objectName: "pinField"
-                width: parent.width
-                visible: page.engine.hasProtocol("local_send")
-                //: Settings: the PIN LocalSend senders must type (F-LS4).
-                label: page.pinValid
-                       ? qsTr("Receive PIN (optional)")
-                       //: Settings: the PIN field holds something else than 1 to 16 letters and digits.
-                       : qsTr("Up to 16 letters and digits")
-                //: Settings: the PIN field when no PIN is set.
-                placeholderText: qsTr("No PIN")
-                inputMethodHints: Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
-                maximumLength: 16
-                errorHighlight: !page.pinValid
-            }
-
-            SectionHeader {
-                text: "Quick Share"
-                visible: page.engine.hasProtocol("quick_share")
+                visible: page.engine.hasProtocol("quick_share") || page.engine.hasProtocol("local_send")
+                         || page.engine.hasProtocol("bluetooth")
+                //: Settings section: sending and receiving on the same Wi-Fi, or over Bluetooth.
+                text: qsTr("Nearby")
             }
             TextSwitch {
                 id: quickShareSwitch
+                objectName: "quickShareSwitch"
                 visible: page.engine.hasProtocol("quick_share")
-                //: Settings: switch a protocol on or off.
-                text: qsTr("Use Quick Share")
-                //: Settings: what the Quick Share switch covers.
-                description: qsTr("Send to and receive from Android phones on the same Wi-Fi.")
+                //: Settings: the Quick Share switch, by who it reaches.
+                text: qsTr("Android phones")
+                //: Settings: under "Android phones".
+                description: qsTr("Quick Share, on the same Wi-Fi")
             }
             ComboBox {
                 id: visibilityBox
                 objectName: "visibilityBox"
-                width: parent.width
+                x: page.indent
+                width: parent.width - page.indent
                 visible: page.engine.hasProtocol("quick_share")
+                enabled: quickShareSwitch.checked
                 //: Settings: who can see this phone over Quick Share (F-QS4).
                 label: qsTr("Visible to")
-                //: Settings: Quick Share visibility; contacts-only is impossible without a Google account.
-                description: qsTr("Contacts only needs a Google account, so it is not offered.")
                 menu: ContextMenu {
                     MenuItem {
                         //: Quick Share visibility: anyone nearby while receiving is on.
@@ -286,33 +278,109 @@ Page {
             TextSwitch {
                 id: nudgeSwitch
                 objectName: "nudgeSwitch"
+                x: page.indent
+                width: parent.width - page.indent
                 visible: page.engine.hasProtocol("quick_share")
+                enabled: quickShareSwitch.checked
                 //: Settings: while sending, a Bluetooth LE signal makes nearby Android phones announce themselves on the Wi-Fi (F-QS2).
                 text: qsTr("Bluetooth nudge")
-                //: Settings: what the Bluetooth nudge does. It works only while Send mode looks for devices; it does not make this phone visible.
-                description: qsTr("While Send mode looks for devices, a Bluetooth signal prompts Android phones nearby to show up.")
+                //: Settings: what the Bluetooth nudge does. It works only while the Send tab looks for devices; it does not make this phone visible.
+                description: qsTr("Helps Android phones nearby notice this one while you send")
+            }
+            TextSwitch {
+                id: localSendSwitch
+                objectName: "localSendSwitch"
+                visible: page.engine.hasProtocol("local_send")
+                //: Settings: the LocalSend switch, by who it reaches.
+                text: qsTr("Computers and other phones")
+                //: Settings: under "Computers and other phones".
+                description: qsTr("LocalSend, on the same Wi-Fi")
+            }
+            TextField {
+                id: pinField
+                objectName: "pinField"
+                x: page.indent
+                width: parent.width - page.indent
+                visible: page.engine.hasProtocol("local_send")
+                enabled: localSendSwitch.checked
+                //: Settings: the PIN LocalSend senders must type (F-LS4).
+                label: page.pinValid
+                       ? qsTr("PIN to receive (optional)")
+                       //: Settings: the PIN field holds something else than 1 to 16 letters and digits.
+                       : qsTr("Up to 16 letters and digits")
+                //: Settings: the PIN field when no PIN is set.
+                placeholderText: qsTr("No PIN")
+                inputMethodHints: Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
+                maximumLength: 16
+                errorHighlight: !page.pinValid
+            }
+            TextSwitch {
+                id: bluetoothSwitch
+                objectName: "bluetoothSwitch"
+                visible: page.engine.hasProtocol("bluetooth")
+                text: "Bluetooth"
+                //: Settings: what the Bluetooth switch covers, and why it only sends (F-BT2).
+                description: qsTr("Send to paired devices. Receiving goes through the phone's own Bluetooth settings.")
             }
 
             SectionHeader {
-                text: "Magic Wormhole"
-                visible: page.engine.hasProtocol("wormhole")
+                visible: page.engine.hasProtocol("wormhole") || page.engine.hasProtocol("croc")
+                //: Settings section: sending and receiving over the internet with a code.
+                text: qsTr("Far away")
             }
             TextSwitch {
                 id: wormholeSwitch
                 objectName: "wormholeSwitch"
                 visible: page.engine.hasProtocol("wormhole")
-                //: Settings: switch a protocol on or off.
-                text: qsTr("Use Magic Wormhole")
-                //: Settings: what the Magic Wormhole switch covers (F-C1): sending to a code and receiving with one.
-                description: qsTr("Send and receive with a code, through a server on the internet.")
+                text: "Magic Wormhole"
+                //: Settings: what the Magic Wormhole and croc switches cover (F-C1): sending to a code and receiving with one.
+                description: qsTr("Send and receive with a code, over the internet")
+            }
+            TextSwitch {
+                id: crocSwitch
+                objectName: "crocSwitch"
+                visible: page.engine.hasProtocol("croc")
+                text: "croc"
+                description: qsTr("Send and receive with a code, over the internet")
+            }
+
+            // The servers, folded away: most never change them.
+            BackgroundItem {
+                objectName: "serversToggle"
+                width: parent.width
+                height: Theme.itemSizeSmall
+                visible: page.engine.hasProtocol("wormhole") || page.engine.hasProtocol("croc")
+                onClicked: page.serversOpen = !page.serversOpen
+
+                Label {
+                    anchors {
+                        right: serversArrow.left
+                        rightMargin: Theme.paddingSmall
+                        verticalCenter: parent.verticalCenter
+                    }
+                    //: Settings: unfolds the fields for one's own Magic Wormhole and croc servers.
+                    text: qsTr("Your own servers")
+                    textFormat: Text.PlainText
+                    color: Theme.highlightColor
+                }
+                Image {
+                    id: serversArrow
+                    anchors {
+                        right: parent.right
+                        rightMargin: Theme.horizontalPageMargin
+                        verticalCenter: parent.verticalCenter
+                    }
+                    source: "image://theme/icon-m-down?" + Theme.highlightColor
+                    rotation: page.serversOpen ? 180 : 0
+                }
             }
             TextField {
                 id: mailboxField
                 objectName: "mailboxField"
                 width: parent.width
-                visible: page.engine.hasProtocol("wormhole")
+                visible: page.serversOpen && page.engine.hasProtocol("wormhole")
                 //: Settings: the Magic Wormhole mailbox server (F-MW4).
-                label: page.mailboxValid ? qsTr("Mailbox server")
+                label: page.mailboxValid ? qsTr("Magic Wormhole mailbox server")
                                          //: Settings: the mailbox URL is not usable.
                                          : qsTr("Must start with ws:// or wss://")
                 //: Settings: an empty server field means the built-in default.
@@ -325,9 +393,9 @@ Page {
                 id: relayField
                 objectName: "relayField"
                 width: parent.width
-                visible: page.engine.hasProtocol("wormhole")
+                visible: page.serversOpen && page.engine.hasProtocol("wormhole")
                 //: Settings: the Magic Wormhole transit relay (F-MW4).
-                label: page.relayValid ? qsTr("Transit relay")
+                label: page.relayValid ? qsTr("Magic Wormhole transit relay")
                                        //: Settings: the relay URL is not usable.
                                        : qsTr("Must look like tcp://host:port")
                 //: Settings: an empty server field means the built-in default.
@@ -336,27 +404,13 @@ Page {
                 maximumLength: 256
                 errorHighlight: !page.relayValid
             }
-
-            SectionHeader {
-                text: "croc"
-                visible: page.engine.hasProtocol("croc")
-            }
-            TextSwitch {
-                id: crocSwitch
-                objectName: "crocSwitch"
-                visible: page.engine.hasProtocol("croc")
-                //: Settings: switch a protocol on or off.
-                text: qsTr("Use croc")
-                //: Settings: what the croc switch covers (F-C1): sending to a code and receiving with one.
-                description: qsTr("Send and receive with a code, through a croc relay on the internet.")
-            }
             TextField {
                 id: crocRelayField
                 objectName: "crocRelayField"
                 width: parent.width
-                visible: page.engine.hasProtocol("croc")
+                visible: page.serversOpen && page.engine.hasProtocol("croc")
                 //: Settings: the croc relay (F-CR3).
-                label: page.crocRelayValid ? qsTr("Relay")
+                label: page.crocRelayValid ? qsTr("croc relay")
                                            //: Settings: the croc relay is not usable.
                                            : qsTr("Must look like host or host:port")
                 //: Settings: an empty server field means the built-in default.
@@ -369,9 +423,9 @@ Page {
                 id: crocPasswordField
                 objectName: "crocPasswordField"
                 width: parent.width
-                visible: page.engine.hasProtocol("croc")
+                visible: page.serversOpen && page.engine.hasProtocol("croc")
                 //: Settings: the croc relay's password (F-CR3).
-                label: page.crocPasswordValid ? qsTr("Relay password")
+                label: page.crocPasswordValid ? qsTr("croc relay password")
                                               //: Settings: the croc relay password is not usable.
                                               : qsTr("Up to 64 plain letters, digits and signs")
                 //: Settings: an empty croc relay password means croc's own.
@@ -379,19 +433,6 @@ Page {
                 inputMethodHints: Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
                 maximumLength: 64
                 errorHighlight: !page.crocPasswordValid
-            }
-
-            SectionHeader {
-                text: "Bluetooth"
-                visible: page.engine.hasProtocol("bluetooth")
-            }
-            TextSwitch {
-                id: bluetoothSwitch
-                visible: page.engine.hasProtocol("bluetooth")
-                //: Settings: switch a protocol on or off.
-                text: qsTr("Send over Bluetooth")
-                //: Settings: why Bluetooth only sends (F-BT2).
-                description: qsTr("To paired devices. Receiving over Bluetooth is up to the phone's own Bluetooth settings.")
             }
 
             SectionHeader {

@@ -35,14 +35,6 @@
     </message>
 </context>
 <context>
-    <name>CodeTile</name>
-    <message>
-        <source>Tap for the QR code</source>
-        <extracomment>Under a code on the send screen: tapping shows it big, with a QR code.</extracomment>
-        <translation>Tryck för QR-koden</translation>
-    </message>
-</context>
-<context>
     <name>ConsentDialog</name>
     <message>
         <source>Accept</source>
@@ -53,16 +45,6 @@
         <source>Decline</source>
         <extracomment>Consent dialog: refuse the offered files.</extracomment>
         <translation>Avböj</translation>
-    </message>
-    <message>
-        <source>wants to send you files over %1</source>
-        <extracomment>Consent dialog: how the offer came, e.g. &quot;wants to send you files over LocalSend&quot;.</extracomment>
-        <translation>vill skicka filer till dig via %1</translation>
-    </message>
-    <message>
-        <source>Check that the other device shows this PIN:</source>
-        <extracomment>Consent dialog: above the Quick Share PIN.</extracomment>
-        <translation>Kontrollera att den andra enheten visar den här PIN-koden:</translation>
     </message>
     <message>
         <source>Includes a text message.</source>
@@ -85,47 +67,112 @@
             <numerusform>%n filer, totalt %1</numerusform>
         </translation>
     </message>
+    <message>
+        <source>a message</source>
+        <extracomment>Consent dialog: an offer of a text message only, as in &quot;wants to send you a message&quot;.</extracomment>
+        <translation>ett meddelande</translation>
+    </message>
+    <message>
+        <source>a file</source>
+        <extracomment>Consent dialog: an offer of one file, as in &quot;wants to send you a file&quot;.</extracomment>
+        <translation>en fil</translation>
+    </message>
     <message numerus="yes">
-        <source>Declined automatically in %n second(s).</source>
+        <source>Declined by itself in %n s</source>
         <extracomment>Consent dialog: time left before the offer is declined on its own.</extracomment>
         <translation>
-            <numerusform>Avböjs automatiskt om %n sekund.</numerusform>
-            <numerusform>Avböjs automatiskt om %n sekunder.</numerusform>
+            <numerusform>Avböjs av sig själv om %n s</numerusform>
+            <numerusform>Avböjs av sig själv om %n s</numerusform>
         </translation>
     </message>
     <message>
-        <source>Nothing is saved unless you accept. Files go to Downloads/Sukkula.</source>
-        <extracomment>Consent dialog: what accepting does.</extracomment>
-        <translation>Inget sparas om du inte godkänner. Filerna hamnar i Downloads/Sukkula.</translation>
+        <source>wants to send you %1 over %2</source>
+        <extracomment>Consent dialog, under the sender&apos;s name: what and how, e.g. &quot;wants to send you 3 photos over Quick Share&quot;; %1 is what, %2 the protocol.</extracomment>
+        <translation>vill skicka %1 till dig via %2</translation>
+    </message>
+    <message>
+        <source>Check that %1 shows the same number:</source>
+        <extracomment>Consent dialog: above the Quick Share PIN; %1 is the sender&apos;s name.</extracomment>
+        <translation>Kontrollera att %1 visar samma nummer:</translation>
     </message>
 </context>
 <context>
     <name>CoverPage</name>
     <message>
         <source>Receiving</source>
-        <extracomment>Cover: receiving is on.</extracomment>
+        <extracomment>Cover: files are coming in.</extracomment>
         <translation>Tar emot</translation>
     </message>
     <message>
-        <source>Not receiving</source>
-        <extracomment>Cover: receiving is off.</extracomment>
-        <translation>Tar inte emot</translation>
+        <source>Send</source>
+        <extracomment>Cover, with nothing going on: over the action that opens the Send tab.</extracomment>
+        <translation>Skicka</translation>
+    </message>
+    <message>
+        <source>Receive</source>
+        <extracomment>Cover, with nothing going on: over the action that opens the Receive tab.</extracomment>
+        <translation>Ta emot</translation>
+    </message>
+    <message>
+        <source>Offer waiting</source>
+        <extracomment>Cover: someone offers files and waits for Accept or Decline.</extracomment>
+        <translation>Erbjudande väntar</translation>
+    </message>
+    <message>
+        <source>Tap to see it</source>
+        <extracomment>Cover, under &quot;Offer waiting&quot;.</extracomment>
+        <translation>Tryck för att se det</translation>
     </message>
     <message numerus="yes">
-        <source>%n offer(s) waiting</source>
-        <extracomment>Cover: offers waiting for Accept or Decline.</extracomment>
+        <source>Declined in %n s</source>
+        <extracomment>Cover: time left before a waiting offer is declined on its own.</extracomment>
         <translation>
-            <numerusform>%n erbjudande väntar</numerusform>
-            <numerusform>%n erbjudanden väntar</numerusform>
+            <numerusform>Avböjs om %n s</numerusform>
+            <numerusform>Avböjs om %n s</numerusform>
         </translation>
     </message>
-    <message numerus="yes">
-        <source>%n transfer(s), %1%</source>
-        <extracomment>Cover: transfers running; %1 is the percentage done.</extracomment>
-        <translation>
-            <numerusform>%n överföring, %1 %</numerusform>
-            <numerusform>%n överföringar, %1 %</numerusform>
-        </translation>
+    <message>
+        <source>Sending</source>
+        <extracomment>Cover: files are going out.</extracomment>
+        <translation>Skickar</translation>
+    </message>
+</context>
+<context>
+    <name>DevicePage</name>
+    <message>
+        <source>Model</source>
+        <extracomment>About this device: the model it says it is.</extracomment>
+        <translation>Modell</translation>
+    </message>
+    <message>
+        <source>Kind</source>
+        <extracomment>About this device: phone, tablet or computer, as it says.</extracomment>
+        <translation>Typ</translation>
+    </message>
+    <message>
+        <source>Address</source>
+        <extracomment>About this device: its network address, or its Bluetooth address.</extracomment>
+        <translation>Adress</translation>
+    </message>
+    <message>
+        <source>Certificate</source>
+        <extracomment>About this device: the fingerprint of its LocalSend certificate.</extracomment>
+        <translation>Certifikat</translation>
+    </message>
+    <message>
+        <source>About this device</source>
+        <extracomment>Page title: what Sukkula knows about a device to send to.</extracomment>
+        <translation>Om den här enheten</translation>
+    </message>
+    <message>
+        <source>Sukkula checks this certificate on every LocalSend send, and stops if it has changed. The name and model are what the device says about itself.</source>
+        <extracomment>About this device, at the foot, when it was found over LocalSend.</extracomment>
+        <translation>Sukkula kontrollerar det här certifikatet vid varje sändning med LocalSend och avbryter om det har ändrats. Namn och modell är vad enheten själv uppger.</translation>
+    </message>
+    <message>
+        <source>The name and model are what the device says about itself.</source>
+        <extracomment>About this device, at the foot.</extracomment>
+        <translation>Namn och modell är vad enheten själv uppger.</translation>
     </message>
 </context>
 <context>
@@ -203,6 +250,45 @@
         <source>A file could not be read. Sukkula can send files from Downloads, Documents, Music, Pictures, Videos and memory cards only.</source>
         <translation>En fil kunde inte läsas. Sukkula kan bara skicka filer från Hämtningar, Dokument, Musik, Bilder och Videor och från minneskort.</translation>
     </message>
+    <message numerus="yes">
+        <source>%n photo(s)</source>
+        <extracomment>How many photos, e.g. in &quot;3 photos&quot;.</extracomment>
+        <translation>
+            <numerusform>%n foto</numerusform>
+            <numerusform>%n foton</numerusform>
+        </translation>
+    </message>
+    <message numerus="yes">
+        <source>%n video(s)</source>
+        <extracomment>How many videos, e.g. in &quot;2 videos&quot;.</extracomment>
+        <translation>
+            <numerusform>%n video</numerusform>
+            <numerusform>%n videor</numerusform>
+        </translation>
+    </message>
+    <message numerus="yes">
+        <source>%n file(s)</source>
+        <extracomment>How many files, e.g. in &quot;4 files&quot;.</extracomment>
+        <translation>
+            <numerusform>%n fil</numerusform>
+            <numerusform>%n filer</numerusform>
+        </translation>
+    </message>
+    <message>
+        <source>Phone</source>
+        <extracomment>What kind of device a peer says it is.</extracomment>
+        <translation>Telefon</translation>
+    </message>
+    <message>
+        <source>Tablet</source>
+        <extracomment>What kind of device a peer says it is.</extracomment>
+        <translation>Surfplatta</translation>
+    </message>
+    <message>
+        <source>Computer</source>
+        <extracomment>What kind of device a peer says it is.</extracomment>
+        <translation>Dator</translation>
+    </message>
 </context>
 <context>
     <name>HistoryPage</name>
@@ -255,11 +341,6 @@
         <translation>Sukkula kunde inte starta: %1</translation>
     </message>
     <message>
-        <source>Cancel sending</source>
-        <extracomment>Pulley menu in Send mode: stop the send that is running.</extracomment>
-        <translation>Avbryt sändningen</translation>
-    </message>
-    <message>
         <source>History</source>
         <extracomment>Pulley menu: the page with what was sent and received.</extracomment>
         <translation>Historik</translation>
@@ -273,35 +354,46 @@
         <source>Receive</source>
         <translation>Ta emot</translation>
     </message>
-</context>
-<context>
-    <name>PeerListPage</name>
     <message>
-        <source>Devices nearby</source>
-        <extracomment>Page title: every device the send screen found.</extracomment>
-        <translation>Enheter i närheten</translation>
+        <source>Add more</source>
+        <extracomment>Pulley menu on the Send tab: choose more files.</extracomment>
+        <translation>Lägg till fler</translation>
     </message>
     <message>
-        <source>%1 · %2</source>
-        <extracomment>A peer in the device list: its protocol (%1), then its model or address (%2).</extracomment>
-        <translation>%1 · %2</translation>
+        <source>Start over</source>
+        <extracomment>Pulley menu on the Send tab: clear what is chosen.</extracomment>
+        <translation>Börja om</translation>
+    </message>
+</context>
+<context>
+    <name>ProgressRow</name>
+    <message>
+        <source>%1 of %2</source>
+        <extracomment>Progress: %1 bytes so far, %2 bytes in all, both formatted.</extracomment>
+        <translation>%1 av %2</translation>
+    </message>
+    <message numerus="yes">
+        <source>%1 · about %n second(s) left</source>
+        <extracomment>Progress: how long is left, after how much is done; %1 is that, e.g. &quot;4.3 MB of 8.2 MB&quot;.</extracomment>
+        <translation>
+            <numerusform>%1 · ungefär %n sekund kvar</numerusform>
+            <numerusform>%1 · ungefär %n sekunder kvar</numerusform>
+        </translation>
+    </message>
+    <message numerus="yes">
+        <source>%1 · about %n minute(s) left</source>
+        <extracomment>Progress: how long is left, after how much is done; %1 is that.</extracomment>
+        <translation>
+            <numerusform>%1 · ungefär %n minut kvar</numerusform>
+            <numerusform>%1 · ungefär %n minuter kvar</numerusform>
+        </translation>
     </message>
 </context>
 <context>
     <name>ReceiveView</name>
     <message>
-        <source>%1 of %2</source>
-        <extracomment>Progress of a transfer: %1 bytes so far, %2 bytes in all, both formatted.</extracomment>
-        <translation>%1 av %2</translation>
-    </message>
-    <message>
-        <source>Saved in Downloads/Sukkula</source>
-        <extracomment>Receive screen: files arrived.</extracomment>
-        <translation>Sparat i Downloads/Sukkula</translation>
-    </message>
-    <message>
         <source>Received. It is in History.</source>
-        <extracomment>Receive screen: a text arrived; it is on the History page.</extracomment>
+        <extracomment>Receive tab: a text arrived; it is on the History page.</extracomment>
         <translation>Mottaget. Det finns i historiken.</translation>
     </message>
     <message>
@@ -316,38 +408,156 @@
     </message>
     <message>
         <source>Switching on…</source>
-        <extracomment>Receive screen: Receive mode was asked for and is not on yet.</extracomment>
+        <extracomment>Receive tab: receiving was asked for and is not on yet.</extracomment>
         <translation>Slås på…</translation>
     </message>
     <message>
-        <source>Waiting for offers. Nothing is saved until you accept it.</source>
-        <extracomment>Receive screen with nothing coming yet.</extracomment>
-        <translation>Väntar på erbjudanden. Inget sparas förrän du godkänner det.</translation>
-    </message>
-    <message>
-        <source>Nobody nearby can see this phone.</source>
-        <extracomment>Receive screen: no protocol could start.</extracomment>
-        <translation>Ingen i närheten kan se den här telefonen.</translation>
-    </message>
-    <message>
         <source>Starting…</source>
-        <extracomment>Receive screen: the protocols are starting.</extracomment>
+        <extracomment>Receive tab: the protocols are starting.</extracomment>
         <translation>Startar…</translation>
     </message>
     <message>
-        <source>Visible over %1</source>
-        <extracomment>Receive screen: the protocols this phone can be found over; %1 lists them.</extracomment>
-        <translation>Synlig via %1</translation>
-    </message>
-    <message>
         <source>%1 could not start: %2</source>
-        <extracomment>A protocol could not start; %1 is its name, %2 why.</extracomment>
         <translation>%1 kunde inte starta: %2</translation>
     </message>
     <message>
-        <source>Scan or type a code</source>
-        <extracomment>Receive screen, under the QR code: tapping it opens the camera.</extracomment>
-        <translation>Skanna eller skriv en kod</translation>
+        <source>Receiving %1…</source>
+        <extracomment>Receive tab: files are coming; %1 is what, e.g. &quot;3 photos&quot; or a file&apos;s name.</extracomment>
+        <translation>Tar emot %1…</translation>
+    </message>
+    <message>
+        <source>Saved in Downloads › Sukkula</source>
+        <extracomment>Receive tab: files arrived.
+----------
+Receive tab: where received files are.</extracomment>
+        <translation>Sparat i Downloads › Sukkula</translation>
+    </message>
+    <message>
+        <source>From %2 · %1</source>
+        <extracomment>Receive tab: who files came from, then how much; %1 is the formatted size, %2 the sender&apos;s name.</extracomment>
+        <translation>Från %2 · %1</translation>
+    </message>
+    <message>
+        <source>Ready for codes</source>
+        <extracomment>Receive tab: Quick Share and LocalSend are switched off; only codes can be received.</extracomment>
+        <translation>Redo för koder</translation>
+    </message>
+    <message>
+        <source>Receiving is switched off in Settings.</source>
+        <translation>Mottagning är avstängd i inställningarna.</translation>
+    </message>
+    <message>
+        <source>Ready to receive</source>
+        <extracomment>Receive tab: this phone can be found and sent to.</extracomment>
+        <translation>Redo att ta emot</translation>
+    </message>
+    <message>
+        <source>Nobody nearby can see this phone</source>
+        <extracomment>Receive tab: no protocol could start.</extracomment>
+        <translation>Ingen i närheten kan se den här telefonen</translation>
+    </message>
+    <message>
+        <source>Android phones nearby</source>
+        <extracomment>Receive tab, how others can reach this phone: Quick Share&apos;s row.</extracomment>
+        <translation>Android-telefoner i närheten</translation>
+    </message>
+    <message>
+        <source>Quick Share, hidden</source>
+        <extracomment>Receive tab, Quick Share&apos;s row: nobody can find this phone.</extracomment>
+        <translation>Quick Share, dold</translation>
+    </message>
+    <message>
+        <source>Quick Share, visible to everyone</source>
+        <extracomment>Receive tab, Quick Share&apos;s row: anyone nearby can find this phone.</extracomment>
+        <translation>Quick Share, synlig för alla</translation>
+    </message>
+    <message>
+        <source>Computers and other phones nearby</source>
+        <extracomment>Receive tab, how others can reach this phone: LocalSend&apos;s row.</extracomment>
+        <translation>Datorer och andra telefoner i närheten</translation>
+    </message>
+    <message>
+        <source>LocalSend, with a PIN</source>
+        <extracomment>Receive tab, LocalSend&apos;s row: senders must type a PIN.</extracomment>
+        <translation>LocalSend, med PIN-kod</translation>
+    </message>
+    <message>
+        <source>LocalSend, no PIN</source>
+        <extracomment>Receive tab, LocalSend&apos;s row: no PIN is asked for.</extracomment>
+        <translation>LocalSend, ingen PIN-kod</translation>
+    </message>
+    <message>
+        <source>Anyone with a code</source>
+        <extracomment>Receive tab, how others can reach this phone: receiving with a code.</extracomment>
+        <translation>Alla med en kod</translation>
+    </message>
+    <message>
+        <source>%1 and %2</source>
+        <extracomment>Two protocols&apos; names, e.g. &quot;Magic Wormhole and croc&quot;.</extracomment>
+        <translation>%1 och %2</translation>
+    </message>
+    <message>
+        <source>In the phone&apos;s own Bluetooth settings</source>
+        <extracomment>Receive tab, Bluetooth&apos;s row: Sukkula does not receive over Bluetooth, the phone does.</extracomment>
+        <translation>I telefonens egna Bluetooth-inställningar</translation>
+    </message>
+    <message>
+        <source>Nearby, this phone shows up as</source>
+        <extracomment>Receive tab, over this phone&apos;s name.</extracomment>
+        <translation>I närheten syns den här telefonen som</translation>
+    </message>
+    <message>
+        <source>Receiving</source>
+        <extracomment>Receive tab: the section of transfers coming in.</extracomment>
+        <translation>Tar emot</translation>
+    </message>
+    <message>
+        <source>From far away</source>
+        <extracomment>Receive tab: the section for receiving over the internet with a code.</extracomment>
+        <translation>På avstånd</translation>
+    </message>
+    <message>
+        <source>Scan a code</source>
+        <extracomment>Receive tab: opens the camera to read the sender&apos;s QR code.</extracomment>
+        <translation>Skanna en kod</translation>
+    </message>
+    <message>
+        <source>Or type the one you were given</source>
+        <extracomment>Receive tab: under &quot;Scan a code&quot;.</extracomment>
+        <translation>Eller skriv den du fått</translation>
+    </message>
+    <message>
+        <source>Received today</source>
+        <extracomment>Receive tab: the section of what arrived today.</extracomment>
+        <translation>Mottaget i dag</translation>
+    </message>
+    <message>
+        <source>Text message</source>
+        <extracomment>Receive tab: a text message arrived.</extracomment>
+        <translation>Textmeddelande</translation>
+    </message>
+    <message>
+        <source>How others can reach this phone</source>
+        <extracomment>Receive tab, at the foot: unfolds one row per way others can send to this phone.</extracomment>
+        <translation>Hur andra når den här telefonen</translation>
+    </message>
+    <message>
+        <source>Tap one to change it in Settings.</source>
+        <extracomment>Receive tab, under how others can reach this phone.</extracomment>
+        <translation>Tryck på en rad för att ändra den i inställningarna.</translation>
+    </message>
+</context>
+<context>
+    <name>ReceivedPage</name>
+    <message>
+        <source>From %2 · %1</source>
+        <extracomment>A page of received files, under its title: who sent them, and how much; %1 is the formatted size, %2 the sender&apos;s name.</extracomment>
+        <translation>Från %2 · %1</translation>
+    </message>
+    <message>
+        <source>Saved in Downloads › Sukkula</source>
+        <extracomment>Where received files are.</extracomment>
+        <translation>Sparat i Downloads › Sukkula</translation>
     </message>
 </context>
 <context>
@@ -387,6 +597,11 @@
         <extracomment>Starts receiving with the typed code.</extracomment>
         <translation>Ta emot</translation>
     </message>
+    <message>
+        <source>Code, from the clipboard</source>
+        <extracomment>The code field, filled in from the clipboard.</extracomment>
+        <translation>Kod, från urklipp</translation>
+    </message>
 </context>
 <context>
     <name>ScanView</name>
@@ -412,30 +627,118 @@
     </message>
 </context>
 <context>
+    <name>SendCodePage</name>
+    <message>
+        <source>Copied</source>
+        <extracomment>Shown after the code was copied to the clipboard.</extracomment>
+        <translation>Kopierat</translation>
+    </message>
+    <message>
+        <source>Getting a code…</source>
+        <extracomment>Send with a code: waiting for the server to hand out a code.</extracomment>
+        <translation>Hämtar en kod…</translation>
+    </message>
+    <message>
+        <source>Waiting for them to type the code…</source>
+        <extracomment>Send with a code: the code is shown, nobody has used it yet.</extracomment>
+        <translation>Väntar på att koden skrivs in…</translation>
+    </message>
+    <message>
+        <source>Sending…</source>
+        <extracomment>Send with a code: the files are going.</extracomment>
+        <translation>Skickar…</translation>
+    </message>
+    <message>
+        <source>Sent</source>
+        <extracomment>A send arrived.</extracomment>
+        <translation>Skickat</translation>
+    </message>
+    <message>
+        <source>Cancelled</source>
+        <extracomment>A send was stopped by one of the two sides.</extracomment>
+        <translation>Avbrutet</translation>
+    </message>
+    <message>
+        <source>Failed: %1</source>
+        <extracomment>A send failed; %1 says why.</extracomment>
+        <translation>Misslyckades: %1</translation>
+    </message>
+    <message>
+        <source>Goes through your own croc relay, set in Settings.</source>
+        <extracomment>Send with a code, at the foot: croc goes through the user&apos;s own relay.</extracomment>
+        <translation>Går via ditt eget croc-relä, inställt i inställningarna.</translation>
+    </message>
+    <message>
+        <source>Goes through croc&apos;s public relay on the internet. Your own relay can be set in Settings.</source>
+        <extracomment>Send with a code, at the foot: croc goes through croc&apos;s public relay.</extracomment>
+        <translation>Går via crocs offentliga relä på internet. Ett eget relä kan ställas in i inställningarna.</translation>
+    </message>
+    <message>
+        <source>Goes through your own Magic Wormhole server, set in Settings.</source>
+        <extracomment>Send with a code, at the foot: Magic Wormhole goes through the user&apos;s own server.</extracomment>
+        <translation>Går via din egen Magic Wormhole-server, inställd i inställningarna.</translation>
+    </message>
+    <message>
+        <source>Goes through Magic Wormhole&apos;s server on the internet. Your own servers can be set in Settings.</source>
+        <extracomment>Send with a code, at the foot: Magic Wormhole goes through its public server.</extracomment>
+        <translation>Går via Magic Wormholes server på internet. Egna servrar kan ställas in i inställningarna.</translation>
+    </message>
+    <message>
+        <source>Send with a code</source>
+        <extracomment>Page title: sending over the internet with a code.</extracomment>
+        <translation>Skicka med kod</translation>
+    </message>
+    <message>
+        <source>Let the other person scan the QR code, or tell them the code to type into their app.</source>
+        <extracomment>Send with a code: what to do with the code.</extracomment>
+        <translation>Låt den andra personen skanna QR-koden, eller säg koden som hen skriver in i sin app.</translation>
+    </message>
+    <message>
+        <source>Sending</source>
+        <extracomment>Send with a code: the row of the send once its receiver has come.</extracomment>
+        <translation>Skickar</translation>
+    </message>
+    <message>
+        <source>Copy</source>
+        <extracomment>Copies the code to the clipboard.</extracomment>
+        <translation>Kopiera</translation>
+    </message>
+    <message>
+        <source>Share…</source>
+        <extracomment>Opens the system share sheet with the code.</extracomment>
+        <translation>Dela…</translation>
+    </message>
+    <message>
+        <source>Their app</source>
+        <extracomment>Send with a code: which app the other person has, which decides the code.</extracomment>
+        <translation>Deras app</translation>
+    </message>
+    <message>
+        <source>Sukkula, or the croc app or command, can take it.</source>
+        <extracomment>Send with a code: who can take a croc code.</extracomment>
+        <translation>Sukkula, eller croc-appen eller kommandot, kan ta emot den.</translation>
+    </message>
+    <message>
+        <source>Magic Wormhole takes one file at a time, so several go with croc.</source>
+        <extracomment>Send with a code: Magic Wormhole cannot take several files.</extracomment>
+        <translation>Magic Wormhole tar en fil i taget, så flera skickas med croc.</translation>
+    </message>
+    <message>
+        <source>Sukkula, Warp or the wormhole command can take it.</source>
+        <extracomment>Send with a code: who can take a Magic Wormhole code.</extracomment>
+        <translation>Sukkula, Warp eller wormhole-kommandot kan ta emot den.</translation>
+    </message>
+</context>
+<context>
     <name>SendView</name>
     <message>
-        <source>Magic Wormhole sends one file or one text at a time.</source>
-        <extracomment>Send screen: Magic Wormhole tapped with more than one item chosen.</extracomment>
-        <translation>Magic Wormhole skickar en fil eller en text åt gången.</translation>
-    </message>
-    <message>
-        <source>Bluetooth sends files only.</source>
-        <extracomment>Send screen: a Bluetooth device tapped with a text chosen.</extracomment>
-        <translation>Bluetooth skickar bara filer.</translation>
-    </message>
-    <message>
         <source>Connecting…</source>
-        <extracomment>Send screen: a send was asked for, the engine has not answered yet.</extracomment>
+        <extracomment>Send tab: a send was asked for, the engine has not answered yet.</extracomment>
         <translation>Ansluter…</translation>
     </message>
     <message>
-        <source>%1 of %2</source>
-        <extracomment>Progress of a send: %1 bytes so far, %2 bytes in all, both formatted.</extracomment>
-        <translation>%1 av %2</translation>
-    </message>
-    <message>
         <source>Waiting for an answer…</source>
-        <extracomment>Send screen: the peer has been asked and has not answered yet.</extracomment>
+        <extracomment>Send tab: the other device has been asked and has not answered yet.</extracomment>
         <translation>Väntar på svar…</translation>
     </message>
     <message>
@@ -454,62 +757,139 @@
         <translation>Misslyckades: %1</translation>
     </message>
     <message>
-        <source>Tap to choose what to send</source>
-        <extracomment>Send screen, under the centre of the radar with nothing chosen yet.</extracomment>
-        <translation>Tryck för att välja vad som ska skickas</translation>
-    </message>
-    <message numerus="yes">
-        <source>%n text(s)</source>
-        <extracomment>Send screen, under the centre of the radar: only texts are chosen.</extracomment>
-        <translation>
-            <numerusform>%n text</numerusform>
-            <numerusform>%n texter</numerusform>
-        </translation>
-    </message>
-    <message numerus="yes">
-        <source>%n item(s)</source>
-        <extracomment>Send screen, under the centre of the radar: files, or files and texts.</extracomment>
-        <translation>
-            <numerusform>%n objekt</numerusform>
-            <numerusform>%n objekt</numerusform>
-        </translation>
-    </message>
-    <message>
-        <source>Every way of sending is switched off in Settings.</source>
-        <extracomment>Send screen when every protocol is off.</extracomment>
-        <translation>Alla sätt att skicka är avstängda i inställningarna.</translation>
-    </message>
-    <message>
         <source>Looking for devices nearby…</source>
-        <extracomment>Send screen: discovery is running and has found nobody yet.</extracomment>
+        <extracomment>Send tab: discovery is running and has found nobody yet.</extracomment>
         <translation>Letar efter enheter i närheten…</translation>
     </message>
     <message>
-        <source>No devices nearby.</source>
-        <extracomment>Send screen: nobody found and discovery is not running.</extracomment>
-        <translation>Inga enheter i närheten.</translation>
-    </message>
-    <message>
-        <source>croc sends files, or one text on its own.</source>
-        <extracomment>Send screen: croc tapped with a text and something else chosen.</extracomment>
-        <translation>croc skickar filer, eller en text för sig.</translation>
-    </message>
-    <message>
         <source>That is as many files as one send can take.</source>
-        <extracomment>Send screen: the most files one send can carry are chosen already.</extracomment>
+        <extracomment>Send tab: the most files one send can carry are chosen already.</extracomment>
         <translation>Fler filer ryms inte i en sändning.</translation>
     </message>
     <message>
-        <source>More options</source>
-        <extracomment>Send screen, under the cloud: tapping it shows Magic Wormhole and croc.</extracomment>
-        <translation>Fler alternativ</translation>
+        <source>Send with a code</source>
+        <extracomment>Send tab: sending over the internet with a code.
+----------
+Send tab: the row of a send with a code once its receiver has come.</extracomment>
+        <translation>Skicka med kod</translation>
     </message>
     <message>
-        <source>Send with a code</source>
-        <extracomment>Send screen: under Magic Wormhole&apos;s name on its tile.
-----------
-Send screen: under croc&apos;s name on its tile.</extracomment>
-        <translation>Skicka med kod</translation>
+        <source>Paired device</source>
+        <extracomment>Send tab: a paired Bluetooth device, whose kind Sukkula cannot tell.</extracomment>
+        <translation>Parkopplad enhet</translation>
+    </message>
+    <message>
+        <source>Magic Wormhole sends one file at a time. Choose croc to send several.</source>
+        <extracomment>Send with a code: Magic Wormhole chosen with several files.</extracomment>
+        <translation>Magic Wormhole skickar en fil i taget. Välj croc för att skicka flera.</translation>
+    </message>
+    <message>
+        <source>Sending…</source>
+        <extracomment>Send tab: the files are going.</extracomment>
+        <translation>Skickar…</translation>
+    </message>
+    <message>
+        <source>Clearing</source>
+        <extracomment>Remorse: the chosen files are about to be cleared.</extracomment>
+        <translation>Rensar</translation>
+    </message>
+    <message>
+        <source>What would you like to send?</source>
+        <extracomment>Send tab with nothing chosen yet.</extracomment>
+        <translation>Vad vill du skicka?</translation>
+    </message>
+    <message>
+        <source>Photos</source>
+        <extracomment>Send tab: the tile that opens Gallery&apos;s photos.</extracomment>
+        <translation>Foton</translation>
+    </message>
+    <message>
+        <source>From Gallery</source>
+        <extracomment>Send tab: under the Photos and Videos tiles.</extracomment>
+        <translation>Från Galleri</translation>
+    </message>
+    <message>
+        <source>Videos</source>
+        <extracomment>Send tab: the tile that opens Gallery&apos;s videos.</extracomment>
+        <translation>Videor</translation>
+    </message>
+    <message>
+        <source>Documents</source>
+        <extracomment>Send tab: the tile that opens the documents list.</extracomment>
+        <translation>Dokument</translation>
+    </message>
+    <message>
+        <source>PDFs, notes, sheets</source>
+        <extracomment>Send tab: under the Documents tile.</extracomment>
+        <translation>PDF:er, anteckningar, kalkylblad</translation>
+    </message>
+    <message>
+        <source>Any file</source>
+        <extracomment>Send tab: the tile that opens the file browser.</extracomment>
+        <translation>Valfri fil</translation>
+    </message>
+    <message>
+        <source>Browse your folders</source>
+        <extracomment>Send tab: under the Any file tile.</extracomment>
+        <translation>Bläddra i dina mappar</translation>
+    </message>
+    <message>
+        <source>Looking for more</source>
+        <extracomment>Send tab, beside &quot;Nearby&quot;: discovery is still running.</extracomment>
+        <translation>Letar efter fler</translation>
+    </message>
+    <message>
+        <source>Nearby</source>
+        <extracomment>Send tab: the section of devices to send to on the same network or paired.</extracomment>
+        <translation>I närheten</translation>
+    </message>
+    <message>
+        <source>Send with %1</source>
+        <extracomment>A device&apos;s menu: send to it over this protocol; %1 is its name, e.g. &quot;Quick Share&quot;.</extracomment>
+        <translation>Skicka med %1</translation>
+    </message>
+    <message>
+        <source>About this device</source>
+        <extracomment>A device&apos;s menu: the page with what Sukkula knows about it.</extracomment>
+        <translation>Om den här enheten</translation>
+    </message>
+    <message>
+        <source>Sending nearby is switched off in Settings.</source>
+        <extracomment>Send tab: Quick Share, LocalSend and Bluetooth are all switched off.</extracomment>
+        <translation>Att skicka i närheten är avstängt i inställningarna.</translation>
+    </message>
+    <message>
+        <source>Someone missing? They need to be on the same Wi-Fi, with their device ready to receive.</source>
+        <extracomment>Send tab, under the devices nearby.</extracomment>
+        <translation>Saknas någon? Enheten måste vara på samma Wi-Fi och redo att ta emot.</translation>
+    </message>
+    <message>
+        <source>Far away</source>
+        <extracomment>Send tab: the section for sending over the internet with a code.</extracomment>
+        <translation>På avstånd</translation>
+    </message>
+    <message>
+        <source>Waiting for them to type the code…</source>
+        <extracomment>Send tab: a send with a code waits for the other side.</extracomment>
+        <translation>Väntar på att koden skrivs in…</translation>
+    </message>
+    <message>
+        <source>They scan it, or type it into their app</source>
+        <extracomment>Send tab: under &quot;Send with a code&quot;.</extracomment>
+        <translation>De skannar den eller skriver in den i sin app</translation>
+    </message>
+    <message>
+        <source>%1 is nearby</source>
+        <extracomment>Send tab, at the foot: one device nearby; %1 is its name.</extracomment>
+        <translation>%1 är i närheten</translation>
+    </message>
+    <message numerus="yes">
+        <source>%1 and %n more nearby</source>
+        <extracomment>Send tab, at the foot: devices nearby; %1 is one&apos;s name, %n how many more.</extracomment>
+        <translation>
+            <numerusform>%1 och %n till i närheten</numerusform>
+            <numerusform>%1 och %n till i närheten</numerusform>
+        </translation>
     </message>
 </context>
 <context>
@@ -535,26 +915,6 @@ Send screen: under croc&apos;s name on its tile.</extracomment>
         <translation>%1 kunde inte starta: %2</translation>
     </message>
     <message>
-        <source>Device name</source>
-        <extracomment>Settings: the name other devices see (F-C7).</extracomment>
-        <translation>Enhetsnamn</translation>
-    </message>
-    <message>
-        <source>Use LocalSend</source>
-        <extracomment>Settings: switch a protocol on or off.</extracomment>
-        <translation>Använd LocalSend</translation>
-    </message>
-    <message>
-        <source>Send to and receive from LocalSend apps on the same Wi-Fi.</source>
-        <extracomment>Settings: what the LocalSend switch covers.</extracomment>
-        <translation>Skicka till och ta emot från LocalSend-appar i samma wifi-nätverk.</translation>
-    </message>
-    <message>
-        <source>Receive PIN (optional)</source>
-        <extracomment>Settings: the PIN LocalSend senders must type (F-LS4).</extracomment>
-        <translation>PIN-kod för mottagning (valfritt)</translation>
-    </message>
-    <message>
         <source>Up to 16 letters and digits</source>
         <extracomment>Settings: the PIN field holds something else than 1 to 16 letters and digits.</extracomment>
         <translation>Upp till 16 bokstäver och siffror</translation>
@@ -565,24 +925,9 @@ Send screen: under croc&apos;s name on its tile.</extracomment>
         <translation>Ingen PIN-kod</translation>
     </message>
     <message>
-        <source>Use Quick Share</source>
-        <extracomment>Settings: switch a protocol on or off.</extracomment>
-        <translation>Använd Quick Share</translation>
-    </message>
-    <message>
-        <source>Send to and receive from Android phones on the same Wi-Fi.</source>
-        <extracomment>Settings: what the Quick Share switch covers.</extracomment>
-        <translation>Skicka till och ta emot från Android-telefoner i samma wifi-nätverk.</translation>
-    </message>
-    <message>
         <source>Visible to</source>
         <extracomment>Settings: who can see this phone over Quick Share (F-QS4).</extracomment>
         <translation>Synlig för</translation>
-    </message>
-    <message>
-        <source>Contacts only needs a Google account, so it is not offered.</source>
-        <extracomment>Settings: Quick Share visibility; contacts-only is impossible without a Google account.</extracomment>
-        <translation>Endast kontakter kräver ett Google-konto och erbjuds därför inte.</translation>
     </message>
     <message>
         <source>Everyone</source>
@@ -600,11 +945,6 @@ Send screen: under croc&apos;s name on its tile.</extracomment>
         <translation>Bluetooth-knuff</translation>
     </message>
     <message>
-        <source>Mailbox server</source>
-        <extracomment>Settings: the Magic Wormhole mailbox server (F-MW4).</extracomment>
-        <translation>Brevlådeserver</translation>
-    </message>
-    <message>
         <source>Must start with ws:// or wss://</source>
         <extracomment>Settings: the mailbox URL is not usable.</extracomment>
         <translation>Måste börja med ws:// eller wss://</translation>
@@ -615,24 +955,9 @@ Send screen: under croc&apos;s name on its tile.</extracomment>
         <translation>Standardserver</translation>
     </message>
     <message>
-        <source>Transit relay</source>
-        <extracomment>Settings: the Magic Wormhole transit relay (F-MW4).</extracomment>
-        <translation>Reläserver</translation>
-    </message>
-    <message>
         <source>Must look like tcp://host:port</source>
         <extracomment>Settings: the relay URL is not usable.</extracomment>
         <translation>Måste se ut som tcp://host:port</translation>
-    </message>
-    <message>
-        <source>Send over Bluetooth</source>
-        <extracomment>Settings: switch a protocol on or off.</extracomment>
-        <translation>Skicka via Bluetooth</translation>
-    </message>
-    <message>
-        <source>To paired devices. Receiving over Bluetooth is up to the phone&apos;s own Bluetooth settings.</source>
-        <extracomment>Settings: why Bluetooth only sends (F-BT2).</extracomment>
-        <translation>Till parkopplade enheter. Mottagning via Bluetooth sköts av telefonens egna Bluetooth-inställningar.</translation>
     </message>
     <message>
         <source>Troubleshooting</source>
@@ -650,44 +975,9 @@ Send screen: under croc&apos;s name on its tile.</extracomment>
         <translation>Bara för felsökning. Låt den annars vara av.</translation>
     </message>
     <message>
-        <source>Use Magic Wormhole</source>
-        <extracomment>Settings: switch a protocol on or off.</extracomment>
-        <translation>Använd Magic Wormhole</translation>
-    </message>
-    <message>
-        <source>Send and receive with a code, through a server on the internet.</source>
-        <extracomment>Settings: what the Magic Wormhole switch covers (F-C1): sending to a code and receiving with one.</extracomment>
-        <translation>Skicka och ta emot med en kod, via en server på internet.</translation>
-    </message>
-    <message>
-        <source>While Send mode looks for devices, a Bluetooth signal prompts Android phones nearby to show up.</source>
-        <extracomment>Settings: what the Bluetooth nudge does. It works only while Send mode looks for devices; it does not make this phone visible.</extracomment>
-        <translation>Medan Skicka-läget letar efter enheter får en Bluetooth-signal Android-telefoner i närheten att visa sig.</translation>
-    </message>
-    <message>
-        <source>Use croc</source>
-        <extracomment>Settings: switch a protocol on or off.</extracomment>
-        <translation>Använd croc</translation>
-    </message>
-    <message>
-        <source>Send and receive with a code, through a croc relay on the internet.</source>
-        <extracomment>Settings: what the croc switch covers (F-C1): sending to a code and receiving with one.</extracomment>
-        <translation>Skicka och ta emot med en kod, via ett croc-relä på internet.</translation>
-    </message>
-    <message>
-        <source>Relay</source>
-        <extracomment>Settings: the croc relay (F-CR3).</extracomment>
-        <translation>Relä</translation>
-    </message>
-    <message>
         <source>Must look like host or host:port</source>
         <extracomment>Settings: the croc relay is not usable.</extracomment>
         <translation>Måste se ut som värd eller värd:port</translation>
-    </message>
-    <message>
-        <source>Relay password</source>
-        <extracomment>Settings: the croc relay&apos;s password (F-CR3).</extracomment>
-        <translation>Reläets lösenord</translation>
     </message>
     <message>
         <source>Up to 64 plain letters, digits and signs</source>
@@ -699,6 +989,94 @@ Send screen: under croc&apos;s name on its tile.</extracomment>
         <extracomment>Settings: an empty croc relay password means croc&apos;s own.</extracomment>
         <translation>Standardlösenord</translation>
     </message>
+    <message>
+        <source>Name shown to other devices</source>
+        <extracomment>Settings: over the name other devices see (F-C7).</extracomment>
+        <translation>Namn som visas för andra enheter</translation>
+    </message>
+    <message>
+        <source>Nearby</source>
+        <extracomment>Settings section: sending and receiving on the same Wi-Fi, or over Bluetooth.</extracomment>
+        <translation>I närheten</translation>
+    </message>
+    <message>
+        <source>Android phones</source>
+        <extracomment>Settings: the Quick Share switch, by who it reaches.</extracomment>
+        <translation>Android-telefoner</translation>
+    </message>
+    <message>
+        <source>Quick Share, on the same Wi-Fi</source>
+        <extracomment>Settings: under &quot;Android phones&quot;.</extracomment>
+        <translation>Quick Share, på samma Wi-Fi</translation>
+    </message>
+    <message>
+        <source>Helps Android phones nearby notice this one while you send</source>
+        <extracomment>Settings: what the Bluetooth nudge does. It works only while the Send tab looks for devices; it does not make this phone visible.</extracomment>
+        <translation>Hjälper Android-telefoner i närheten att märka den här när du skickar</translation>
+    </message>
+    <message>
+        <source>Computers and other phones</source>
+        <extracomment>Settings: the LocalSend switch, by who it reaches.</extracomment>
+        <translation>Datorer och andra telefoner</translation>
+    </message>
+    <message>
+        <source>LocalSend, on the same Wi-Fi</source>
+        <extracomment>Settings: under &quot;Computers and other phones&quot;.</extracomment>
+        <translation>LocalSend, på samma Wi-Fi</translation>
+    </message>
+    <message>
+        <source>PIN to receive (optional)</source>
+        <extracomment>Settings: the PIN LocalSend senders must type (F-LS4).</extracomment>
+        <translation>PIN-kod för mottagning (valfri)</translation>
+    </message>
+    <message>
+        <source>Send to paired devices. Receiving goes through the phone&apos;s own Bluetooth settings.</source>
+        <extracomment>Settings: what the Bluetooth switch covers, and why it only sends (F-BT2).</extracomment>
+        <translation>Skicka till parkopplade enheter. Mottagning sker via telefonens egna Bluetooth-inställningar.</translation>
+    </message>
+    <message>
+        <source>Far away</source>
+        <extracomment>Settings section: sending and receiving over the internet with a code.</extracomment>
+        <translation>På avstånd</translation>
+    </message>
+    <message>
+        <source>Send and receive with a code, over the internet</source>
+        <extracomment>Settings: what the Magic Wormhole and croc switches cover (F-C1): sending to a code and receiving with one.</extracomment>
+        <translation>Skicka och ta emot med en kod, över internet</translation>
+    </message>
+    <message>
+        <source>Your own servers</source>
+        <extracomment>Settings: unfolds the fields for one&apos;s own Magic Wormhole and croc servers.</extracomment>
+        <translation>Egna servrar</translation>
+    </message>
+    <message>
+        <source>Magic Wormhole mailbox server</source>
+        <extracomment>Settings: the Magic Wormhole mailbox server (F-MW4).</extracomment>
+        <translation>Magic Wormhole-brevlådeserver</translation>
+    </message>
+    <message>
+        <source>Magic Wormhole transit relay</source>
+        <extracomment>Settings: the Magic Wormhole transit relay (F-MW4).</extracomment>
+        <translation>Magic Wormhole-transitrelä</translation>
+    </message>
+    <message>
+        <source>croc relay</source>
+        <extracomment>Settings: the croc relay (F-CR3).</extracomment>
+        <translation>croc-relä</translation>
+    </message>
+    <message>
+        <source>croc relay password</source>
+        <extracomment>Settings: the croc relay&apos;s password (F-CR3).</extracomment>
+        <translation>croc-reläns lösenord</translation>
+    </message>
+</context>
+<context>
+    <name>ShareCode</name>
+    <message>
+        <source>Share code</source>
+        <extracomment>Title of the share sheet for a code to send with.</extracomment>
+        <translation>Dela kod</translation>
+    </message>
 </context>
 <context>
     <name>ShareTarget</name>
@@ -706,11 +1084,6 @@ Send screen: under croc&apos;s name on its tile.</extracomment>
         <source>Send nearby</source>
         <extracomment>Shown in the phone&apos;s share sheet, for files shared to Sukkula.</extracomment>
         <translation>Skicka i närheten</translation>
-    </message>
-    <message>
-        <source>Send text nearby</source>
-        <extracomment>Shown in the phone&apos;s share sheet, for text or a link shared to Sukkula.</extracomment>
-        <translation>Skicka text i närheten</translation>
     </message>
 </context>
 <context>
@@ -780,49 +1153,6 @@ Send screen: under croc&apos;s name on its tile.</extracomment>
         <source>Failed: %1</source>
         <extracomment>A transfer failed; %1 says why.</extracomment>
         <translation>Misslyckades: %1</translation>
-    </message>
-</context>
-<context>
-    <name>WormholeCodePage</name>
-    <message>
-        <source>%1 of %2</source>
-        <extracomment>Progress of a transfer: %1 bytes so far, %2 bytes in all, both formatted.</extracomment>
-        <translation>%1 av %2</translation>
-    </message>
-    <message>
-        <source>Waiting for the receiver…</source>
-        <extracomment>Wormhole send: the code is shown, nobody has used it yet.</extracomment>
-        <translation>Väntar på mottagaren…</translation>
-    </message>
-    <message>
-        <source>Sent</source>
-        <extracomment>A transfer from this phone arrived.</extracomment>
-        <translation>Skickat</translation>
-    </message>
-    <message>
-        <source>Cancelled</source>
-        <extracomment>A transfer was stopped by one of the two sides.</extracomment>
-        <translation>Avbrutet</translation>
-    </message>
-    <message>
-        <source>Failed: %1</source>
-        <extracomment>A transfer failed; %1 says why.</extracomment>
-        <translation>Misslyckades: %1</translation>
-    </message>
-    <message>
-        <source>Cancel transfer</source>
-        <extracomment>Pulley menu: stop the running transfer.</extracomment>
-        <translation>Avbryt överföringen</translation>
-    </message>
-    <message>
-        <source>Getting a code…</source>
-        <extracomment>Wormhole send: waiting for the mailbox server to hand out a code.</extracomment>
-        <translation>Hämtar en kod…</translation>
-    </message>
-    <message>
-        <source>Copy code</source>
-        <extracomment>Copies the wormhole code to the clipboard.</extracomment>
-        <translation>Kopiera koden</translation>
     </message>
 </context>
 <context>

@@ -11,8 +11,9 @@ import "cover"
  * The window: the engine, the pages, and the three things that belong to
  * the app rather than to any page -- the consent dialog, which comes up
  * over whatever is showing whenever an offer waits (F-C2); the Share menu,
- * whose files go to the main page's send radar (F-C6); and keeping the CPU
- * awake while, and only while, a transfer runs (spec §2).
+ * whose files go to the main page's Send tab (F-C6); the cover's actions,
+ * which open the app on a tab; and keeping the CPU awake while, and only
+ * while, a transfer runs (spec §2).
  *
  * `bridge` is the C++ Bridge main.cpp puts in the root context, and
  * `scanner` the C++ Scanner beside it.
@@ -29,6 +30,7 @@ ApplicationWindow {
     cover: Component {
         CoverPage {
             engine: sukkula
+            onOpenTab: appWindow.openTab(index)
         }
     }
     allowedOrientations: defaultAllowedOrientations
@@ -95,8 +97,8 @@ ApplicationWindow {
             }
             var items = appWindow.pendingShare
             appWindow.pendingShare = null
-            // Whatever was above the main page goes: the share lands at
-            // the centre of its send radar.
+            // Whatever was above the main page goes: the share lands on
+            // its Send tab.
             if (pageStack.currentPage !== main) {
                 pageStack.pop(main)
             }
@@ -115,6 +117,21 @@ ApplicationWindow {
     function consentGone() {
         appWindow.consentPage = null
         navigation.restart()
+    }
+
+    /// A cover action: the app, on the Send tab (0) or the Receive tab
+    /// (1). Whatever was above the main page goes, but never a consent
+    /// dialog, which waits for its answer.
+    function openTab(index) {
+        appWindow.activate()
+        var main = pageStack.find(function (page) { return page.objectName === "mainPage" })
+        if (!main) {
+            return
+        }
+        if (appWindow.consentPage === null && pageStack.currentPage !== main && !pageStack.busy) {
+            pageStack.pop(main)
+        }
+        main.openTab(index)
     }
 
     function openShare(items) {

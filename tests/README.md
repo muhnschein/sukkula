@@ -67,17 +67,17 @@ tst_consent.qml` runs single QML tests without the other stages.
 
    | Test | Covers |
    | --- | --- |
-   | `tst_engine.qml` | Engine.qml against api.rs: command envelopes and ids, callbacks, bridge return codes, every event type, caps and bounds, garbage events |
-   | `tst_consent.qml` | the consent dialog: sanitised values verbatim as plain text, PIN, "and N more", total, countdown; Accept, Decline, leaving, timeout and engine-closed paths (F-C2, F-C3, F-QS3, S5) |
-   | `tst_main.qml` | main page, History page, text page, cover: Send \| Receive tabs as the engine's state, tapped or swiped, a swipe back mid-switch switched back, a refused switch taking the tab back, discovery on the Send tab only, portrait only, what receiving is doing, transfers, cancel, texts with Copy, About at the foot of Settings (F-C1, F-C4, F-C5) |
-   | `tst_send.qml` | the send radar with every protocol: only the plus until a file is chosen, several files from the browser, more added and all cleared; peers in stable places on round rings, none covering another; the cloud and its tiles; a send's line, progress, cancel and end, refusals, the wormhole and croc tiles' codes and code pages with their QR codes, "+N" and the device list, protocols switched off in Settings (F-C1, F-C6, F-MW1, F-BT1) |
-   | `tst_receive.qml` | the receive radar: offers on the rings as plain text, a transfer taking its offer's place whichever event comes first, its line, progress, cancel and the moment it stays, internet protocols through the QR code, which opens the scan page and is gone with every internet protocol switched off (F-C1, F-C2, F-C5, F-MW2) |
+   | `tst_engine.qml` | Engine.qml against api.rs: command envelopes and ids, callbacks, bridge return codes, every event type, caps and bounds, garbage events, a peer's address and certificate of the right shape or nothing, the words for what files are |
+   | `tst_consent.qml` | the consent dialog: sanitised values verbatim as plain text, what and how in Sukkula's words, PIN, one file big or several with "and N more" and the total, countdown; Accept, Decline, leaving, timeout and engine-closed paths (F-C2, F-C3, F-QS3, S5) |
+   | `tst_main.qml` | main page, History page, text page, cover: Send \| Receive tabs as the engine's state, tapped or swiped, a swipe back mid-switch switched back, a refused switch taking the tab back, discovery on the Send tab only, receiving stopped in the background but not while an offer waits, portrait only, what receiving is doing, transfers, cancel, texts with Copy, About at the foot of Settings; the cover's halves and actions, its offer and its ring, naming nobody (F-C1, F-C4, F-C5, spec v0.7) |
+   | `tst_send.qml` | the Send tab with every protocol: the question and a picker per tile, who is nearby at the foot; files summed up with their size, more added, all cleared behind a remorse; the devices by name as plain text, one row for a device found two ways with a menu to choose, About this device with its pinned certificate; a send's row with progress, cancel and end, the files kept after it, refusals; sending with a code, Magic Wormhole or croc by the number of files, its QR code, Copy and Share, "Their app" giving the old code up, a code given up when its page is left unused; protocols switched off in Settings (F-C1, F-C6, F-MW1, F-CR1, F-BT1) |
+   | `tst_receive.qml` | the Receive tab: ready with the name others see, a transfer coming in as plain text with its progress, cancel and the moment it stays, what came today with files that came together as one row and their own page, one file by its name, a text, a failure not among them; scanning a code, gone with both code protocols off; how others can reach this phone, a failure in red (F-C1, F-C5, F-MW2) |
    | `tst_scan.qml` | receiving with a code (spec v0.6): the viewfinder handed over a frame at a time and only while the page is on top, in front and with a camera, asked for a big enough picture and to focus; nothing read and non-engine JSON ignored, a QR code of anything else said to be no code and never shown, the code received over its own protocol with its QR code's mailbox, a protocol switched off refusing it; the typed code sent as typed for the engine to tell its protocol (`receive_code`), a failure said and read again, the clipboard offered only when it holds a code, typing without a camera or a scanner (F-C1, F-MW2, F-CR2) |
-   | `tst_settings.qml` | settings validation, saving on leaving and not when covered, the Magic Wormhole switch, About (F-C1, F-C7, F-LS4, F-QS2, F-QS4, F-MW4, S9) |
-   | `tst_app.qml` | the whole window: start-up, discovery paused after a while in the background, consent queueing over any page and around transitions, the Share menu, KeepAlive, notifications (§2, F-C6) |
-   | `tst_stack.qml` | the whole window while pages cover each other: a consent dialog over Settings saves nothing, a share over another page keeps discovery and its peers, Receive mode gives them back, send and code replies never pop a consent dialog, a closed offer's dialog never stays under the next one and is not answered (F-C2, F-C3, F-C6, F-LS1, F-QS1, S5) |
+   | `tst_settings.qml` | settings validation, the switches named by who they reach, options greyed under a switch that is off, one's own servers folded away until set or wrong, saving on leaving and not when covered, the Magic Wormhole switch, About (F-C1, F-C7, F-LS4, F-QS2, F-QS4, F-MW4, S9) |
+   | `tst_app.qml` | the whole window: start-up, discovery paused after a while in the background, consent queueing over any page and around transitions, the Share menu's files (and not its texts), the cover's actions opening their tab, KeepAlive, notifications (§2, F-C6) |
+   | `tst_stack.qml` | the whole window while pages cover each other: a consent dialog over Settings saves nothing, a share over another page keeps discovery and its peers, the Receive tab gives them back, send and code replies never pop a consent dialog, a closed offer's dialog never stays under the next one and is not answered (F-C2, F-C3, F-C6, F-LS1, F-QS1, S5) |
 4. **`tests/qml/selftest.py`** first requires every check to pass on an
-   untouched copy of the tree, then plants 55 faults one at a time -- a
+   untouched copy of the tree, then plants 61 faults one at a time -- a
    label without `PlainText`, the sender in a Silica header, a misspelt
    `Text.Plaintext`, rich text, a clickable link, an Accept that does not
    accept, a countdown that never declines, KeepAlive held forever, a peer
@@ -85,9 +85,10 @@ tst_consent.qml` runs single QML tests without the other stages.
    nothing answers, an extra Sailjail permission, an unbounded queue,
    Settings saved whenever a page covers them, a reply that pops whatever
    is on top, a closed offer answered, a Magic Wormhole that cannot be
-   switched off, peers shown before anything is chosen, a transfer that
-   does not take its offer's place, ... -- and requires the check named
-   for each to fail.
+   switched off, devices listed before anything is chosen, receiving kept
+   on in the background, a code left running when its page is left, a
+   peer's words on the cover, ... -- and requires the check named for
+   each to fail.
 
 ## What `run-cpp-tests.sh` checks
 
@@ -140,7 +141,8 @@ consent dialog comes up over other pages. The stub's page stack also
 assumes what Silica's does: a page it pops is destroyed, and the page
 below turns Active once a transition is over. Settings are saved on that
 destruction, the next consent dialog waits for it, and a share pops back
-to the main page; M-6 and M-17 check them on the phone. The radars'
-drawings (Canvas, rotated and scaled rectangles) and the tabs' swipe
-(Silica's PagedView, a stub here) are only laid out here, never looked
-at or dragged: M-18 and M-19 are where they are seen.
+to the main page; M-6 and M-17 check them on the phone. The line
+drawings (Canvas), the pickers (Sailfish.Pickers, stubs here), the cover
+and the tabs' swipe (Silica's PagedView, a stub here) are only laid out
+here, never looked at or dragged: M-18, M-19 and M-70 to M-74 are where
+they are seen.

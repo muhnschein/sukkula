@@ -104,7 +104,7 @@ consent.**
   printable characters, as croc does.
 - **mDNS announcements are unauthenticated.** Any host on the link can
   announce a Quick Share device under any name, or send a goodbye for
-  another device's announcement and take it off the send radar until it
+  another device's announcement and take it off the Send tab until it
   next announces. Sukkula bounds what one source can take (four peers, a
   fair share of a full list, a rate per source) but cannot tell a phone
   from a claim to be one; the PIN both screens show is what does (F-QS3).
@@ -231,6 +231,12 @@ These are enforced in the code and checked in CI, not merely intended.
 - **Plain text only.** Every QML text item showing peer data sets
   `textFormat: Text.PlainText`, and the QML tests walk the live item tree
   to prove it.
+- **Nothing a peer sends is drawn** (spec v0.7). A file's kind is told by
+  its name's extension alone and drawn as one of Sukkula's own line
+  icons: no image, thumbnail or preview of anything offered or received
+  is decoded, before consent or after. The cover, which anyone can read
+  on the home screen, shows no peer's name and no file's name, only
+  counts in Sukkula's own words.
 - **`unsafe` lives in one crate.** `sukkula-core` and `sukkula-engine` are
   `#![forbid(unsafe_code)]`. `sukkula-ffi` has `unsafe` only to export
   the five C functions, read the command string, call the callback, read
@@ -255,10 +261,11 @@ These are enforced in the code and checked in CI, not merely intended.
   The camera runs only while the scan page is on top, the app in front
   and no receive under way, and no frame is kept.
 - **Minimal sandbox.** Sailjail grants `Internet;Bluetooth`, `Camera`
-  for scanning a code (spec v0.6), and the folders files are sent from
+  for scanning a code (spec v0.6), the folders files are sent from
   and received into (`Downloads`, `Documents`, `Music`, `Pictures`,
-  `Videos`, `RemovableMedia`), and nothing else; the Harbour gate fails on
-  any other permission. Files are written only
+  `Videos`, `RemovableMedia`), and `MediaIndexing` for the pickers of
+  photos, videos and documents (spec v0.7), and nothing else; the Harbour
+  gate fails on any other permission. Files are written only
   under `~/Downloads/Sukkula/`.
 - **The log keeps quiet.** The engine logs to standard error (the
   journal), never to a file. Off by default, it says only what Sukkula's
@@ -299,6 +306,7 @@ built RPM (`rpm.yml`). When a row changes, change the code or test it names.
 | The C boundary cannot be misused into memory unsafety | `crates/sukkula-ffi/tests/ffi.rs` (NULLs, stale handles, bad UTF-8, oversized commands, stop from the callback, hammering while stopping); `crates/sukkula-ffi/tests/scan.rs` (frames of every wrong shape refused unread, an answer written only when it fits, scans side by side); `ci/ffi-harness/run.sh` under ASan, UBSan and LSan with no suppressions, its frames and answer buffers allocated to exactly their size; `tests/cpp/scanner_test` under ASan and UBSan (a scanner destroyed with a frame in hand) |
 | A QR code is read, never followed (spec v0.6) | `crates/sukkula-engine/src/scan.rs` tests (every shape of wormhole URI and croc link and word taken or refused, codes among other codes and light on dark, our own QR codes read back, a frame of finder patterns skipped in milliseconds); `tests/wormhole.rs` `a_scanned_code_is_received_through_the_mailbox_it_names`; fuzz targets `qr_text` (what a code gives restated, croc's words always read) and `qr_frame`; `tests/qml/tst_scan.qml` (no code shown, the camera off in the background and without a camera, a scanned code refused with its protocol off, a scanned mailbox kept, a typed code's protocol left to the engine, the clipboard pasted only when it holds a code); `hub.rs` `a_typed_code_that_is_nobodys_is_refused_before_any_adapter`, each guarded by a planted fault in `tests/qml/selftest.py`; `ci/vendor-check.sh` for rqrr's patches |
 | Parsers survive hostile input | Deterministic mutation sweeps on every push: `sukkula-core/tests/hostile.rs`, `localsend_hostile::a_mutation_sweep_of_offers_breaks_nothing`, the wormhole `sweep` module, the Bluetooth reply sweeps; cargo-fuzz targets with seeds and dictionaries (`ci/check-dicts.sh`, with its self-test, fails a target without either and a dictionary libFuzzer cannot parse) and compiled on every pull request, fuzzed 300 s each every night on `main` (`fuzz.yml`, the corpus carried from night to night) at each target's own `-max_len`, the 64 KiB-capped ones from inputs at the cap and one byte past it (`scripts/fuzz-smoke.sh`, with its self-test; `fuzz/README.md`), each asserting the S-rules on what it accepts rather than only survival: the core's `name_sanitize`, `text_display`, `text_message`, `offer_validate`, `settings_json`, `hex`, `command_json`, `start_config`, and every protocol parser that reads a peer's or a server's bytes, through the adapter's own code: `localsend_prepare_upload`, `localsend_discovery`, `wormhole_wire`, `wormhole_code`, `wormhole_mailbox`, `quickshare_handshake`, `quickshare_frame` (no payload byte before consent, S5), `quickshare_mdns`, `croc_code`, `croc_pake`, `croc_banner`, `croc_control`, `croc_file_list`, and the camera's `qr_frame` and `qr_text` |
+| Nothing a peer sends is drawn; the cover names nobody (spec v0.7) | `tests/qml/tst_consent.qml`, `tst_receive.qml`, `tst_send.qml` (icons by extension, names as plain text); `tst_main.qml` (the cover's counts); `tst_engine.qml` (`kindOf`, `countWords`); guarded by a planted fault in `tests/qml/selftest.py` |
 | Harbour, sandbox and linking | `ci/harbour-check.sh` (with a 133-case selftest) on every pull request; Jolla's `rpmvalidation.sh` on the built RPM (`ci/harbour-validate-rpm.sh`), on every push to `main` and on every pull request that changes the packaging (P.6); one waiver file with a namespace per check, every field matched (`ci/harbour-waivers.sh`); `ci/check-elf.sh` (stripped, only `main` exported (`--only-main`, on the packaged binary and on every pull request's probe link), RELRO/BIND_NOW/PIE, allowed libraries only; with its selftest); the SDK image pulled only by the digest `ci/sdk-image.digests` pins, and published only from `main` (`ci/packaging-lint.sh`) |
 | Dependencies | `cargo deny` (licences, advisories, sources, bans including a vendored libdbus); `ci/check-deps.sh` (no OpenSSL, no second TLS or D-Bus stack, no process-spawning or opening crate, `dbus` for the engine alone); `ci/check-lockfile.sh`; `ci/vendor-check.sh` (the vendored Quick Share library and the mdns-sd under it are upstream -- open-quickshare at its commit, mdns-sd's published archive by its sha256 -- plus their reviewed patches, byte for byte) |
 

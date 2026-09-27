@@ -20,9 +20,14 @@ QtObject {
     property real itemSizeMedium: 100
     property real itemSizeLarge: 120
     property real itemSizeExtraLarge: 160
+    property real iconSizeExtraSmall: 24
     property real iconSizeSmall: 32
     property real iconSizeMedium: 64
     property real iconSizeLarge: 96
+    property real opacityFaint: 0.2
+    property real opacityLow: 0.4
+    property real opacityHigh: 0.6
+    property real opacityOverlay: 0.8
     property color primaryColor: "#ffffff"
     property color secondaryColor: "#b0ffffff"
     property color highlightColor: "#80c0ff"

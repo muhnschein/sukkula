@@ -1,7 +1,7 @@
 # Sukkula
 
-Send and receive files and text over LocalSend, Quick Share, Magic Wormhole,
-croc and Bluetooth, from one Sailfish OS app.
+Send files, and receive files and text, over LocalSend, Quick Share, Magic
+Wormhole, croc and Bluetooth, from one Sailfish OS app.
 
 > 🤖 **This project was developed using AI.** If that provenance troubles
 > you, feel free to use something else. That being said, Sukkula writes
@@ -30,12 +30,19 @@ carries things back and forth, which is the whole app.
 | croc 11 and 10 | yes | yes | any croc client, internet |
 | Bluetooth OBEX Object Push | yes | no (the system handles it) | Bluetooth |
 
+Nobody has to know any of these names. Send asks what to send and then to
+whom: the devices nearby by name, or anyone far away with a code, which
+they scan off the screen or type. Receive shows whether the phone is
+ready, what comes in and what came today. The protocols are in the small
+grey print, and in Settings, for whoever wants them.
+
 A Magic Wormhole or croc code can be typed, or scanned off the sender's
 screen with the camera; a send shows its code as text and as a QR code.
 
 Every incoming offer is shown before a byte is written -- sender, protocol,
 file names, sizes -- and there is no auto-accept. Received files go to
-`~/Downloads/Sukkula/`. Nothing runs while the app is closed. Every peer is
+`~/Downloads/Sukkula/`. Nothing runs while the app is closed, and nothing
+announces or listens a few seconds after it leaves the front. Every peer is
 treated as hostile: names are sanitised, sizes range-checked, every read
 bounded and timed out. The specification, with its security rules, is
 [`docs/SPEC.md`](docs/SPEC.md).

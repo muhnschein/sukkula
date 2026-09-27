@@ -105,6 +105,8 @@ impl Peers {
             name: wire::alias(s.alias),
             model: wire::model(s.model),
             device_type: s.device_type,
+            address: Some(s.addr.to_string()),
+            fingerprint: Some(s.fingerprint.to_owned()),
         };
         let target = Target {
             addr: s.addr,
@@ -113,7 +115,8 @@ impl Peers {
         };
         if let Some(entry) = self.by_fingerprint.get_mut(s.fingerprint) {
             // A peer that moved keeps its entry: the certificate is the
-            // identity, and only its holder can prove it from anywhere.
+            // identity, and only its holder can prove it from anywhere. It
+            // is found again, for its new address to show.
             entry.seen = now;
             entry.target = target;
             let found = (entry.peer != peer).then(|| peer.clone());
@@ -418,6 +421,8 @@ mod tests {
         assert_eq!(found.id, format!("ls:{f}"));
         assert_eq!(found.name, "Pekka");
         assert_eq!(found.model.as_deref(), Some("Model"));
+        assert_eq!(found.address, Some(at(9).to_string()));
+        assert_eq!(found.fingerprint.as_deref(), Some(f.as_str()));
         let again = peers.upsert(&sighting(&f, "Pekka"), t0);
         assert!(again.listed && again.found.is_none(), "unchanged");
         assert_eq!(
@@ -516,7 +521,11 @@ mod tests {
         let f = fp(7);
         peers.upsert(&from(&f, "x", at(1)), t0);
         let u = peers.upsert(&from(&f, "x", at(2)), t0);
-        assert!(u.listed && u.found.is_none() && u.lost.is_none());
+        // Found again under the same id, for its new address to show.
+        assert!(u.listed && u.lost.is_none());
+        let found = u.found.unwrap();
+        assert_eq!(found.id, format!("ls:{f}"));
+        assert_eq!(found.address, Some(at(2).to_string()));
         assert_eq!(peers.get(&format!("ls:{f}")).unwrap().addr, at(2));
         assert_eq!(peers.quiet(t0 + PEER_TTL, PEER_TTL), vec![(at(2), f)]);
         assert!(peers.quiet(t0, PEER_TTL).is_empty());

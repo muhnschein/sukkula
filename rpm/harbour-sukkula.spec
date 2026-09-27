@@ -45,7 +45,8 @@ ExclusiveArch: aarch64
 Requires:   sailfishsilica-qt5
 # One package per QML module the UI imports beyond Silica itself
 # (spec §2). Sailfish.Share and Sailfish.Pickers ship with the platform
-# and have no package on the allowed list to name.
+# and have no package on the allowed list to name; the pickers' media
+# index is the MediaIndexing permission's (spec v0.7), not a package.
 Requires:   nemo-qml-plugin-notifications-qt5
 Requires:   libkeepalive
 # QtMultimedia's Camera and VideoOutput, for the page that scans a code

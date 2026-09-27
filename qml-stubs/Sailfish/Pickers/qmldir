@@ -2,3 +2,6 @@
 module Sailfish.Pickers
 FilePickerPage 1.0 FilePickerPage.qml
 MultiFilePickerDialog 1.0 MultiFilePickerDialog.qml
+MultiImagePickerDialog 1.0 MultiImagePickerDialog.qml
+MultiVideoPickerDialog 1.0 MultiVideoPickerDialog.qml
+MultiDocumentPickerDialog 1.0 MultiDocumentPickerDialog.qml

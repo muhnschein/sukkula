@@ -2,31 +2,31 @@
 import QtQuick 2.6
 
 /*
- * The radars' line drawings, in the ambience's colours: a person, a
- * phone, a file, a text, a plus, the cloud the internet protocols go
- * through, a QR code, and the protocol marks. The marks are Sukkula's own,
- * not the protocols' logos; the QR code is piirit's icon
- * (icons/cover/qr.svg there), redrawn here.
+ * Sukkula's line drawings, in the ambience's colours: the devices (a
+ * phone, a tablet, a computer, Bluetooth's rune for a paired one), the
+ * kinds of file (a photo, a video, music, a document, any file), a
+ * folder, a text, and a QR code, which is piirit's icon
+ * (icons/cover/qr.svg there), redrawn here. A file's kind is told by its
+ * name alone: no picture a peer sent is ever drawn.
  *
  * A canvas loses what it drew when the scene graph lets go of its
  * texture, as it does while the phone is locked: it paints again whenever
  * it can, is shown, or the app comes back to the front.
  *
- * Drawn in a unit square (the cloud: a unit-wide box) scaled to the
- * item, with ES5 only (Qt 5.6).
+ * Drawn in a unit square scaled to the item, with ES5 only (Qt 5.6).
  */
 Canvas {
     id: glyph
 
-    /// "person", "phone", "file", "text", "add", "cloud", "qr",
-    /// "local_send", "quick_share" or "bluetooth".
-    property string kind: "person"
+    /// "phone", "tablet", "computer", "bluetooth", "file", "photo",
+    /// "video", "music", "document", "folder", "text" or "qr".
+    property string kind: "file"
     property color color: "white"
     /// Stroke width in pixels.
     property real lineWidth: Math.max(1.5, glyph.width / 16)
 
     implicitWidth: 64
-    implicitHeight: glyph.kind === "cloud" ? Math.round(glyph.width * 0.6) : glyph.width
+    implicitHeight: glyph.width
 
     onKindChanged: glyph.requestPaint()
     onColorChanged: glyph.requestPaint()
@@ -44,19 +44,6 @@ Canvas {
                 glyph.requestPaint()
             }
         }
-    }
-
-    function _deg(d) {
-        return d * Math.PI / 180
-    }
-
-    function _person(ctx) {
-        ctx.beginPath()
-        ctx.arc(0.5, 0.36, 0.16, 0, 2 * Math.PI, false)
-        ctx.stroke()
-        ctx.beginPath()
-        ctx.arc(0.5, 0.92, 0.32, Math.PI * 1.08, Math.PI * 1.92, false)
-        ctx.stroke()
     }
 
     // A phone: a rounded slab with a line for its speaker.
@@ -77,6 +64,97 @@ Canvas {
         ctx.beginPath()
         ctx.moveTo(0.44, 0.22)
         ctx.lineTo(0.56, 0.22)
+        ctx.stroke()
+    }
+
+    // A tablet: a wider slab, the button's dot at its foot.
+    function _tablet(ctx) {
+        glyph._roundRect(ctx, 0.20, 0.12, 0.60, 0.76, 0.06)
+        ctx.stroke()
+        ctx.beginPath()
+        ctx.arc(0.5, 0.79, 0.025, 0, 2 * Math.PI, false)
+        ctx.fill()
+    }
+
+    // A computer: a screen on a stand.
+    function _computer(ctx) {
+        glyph._roundRect(ctx, 0.12, 0.20, 0.76, 0.48, 0.04)
+        ctx.stroke()
+        ctx.beginPath()
+        ctx.moveTo(0.5, 0.68)
+        ctx.lineTo(0.5, 0.80)
+        ctx.moveTo(0.34, 0.80)
+        ctx.lineTo(0.66, 0.80)
+        ctx.stroke()
+    }
+
+    // A photo: a frame with hills and a sun.
+    function _photo(ctx) {
+        glyph._roundRect(ctx, 0.12, 0.20, 0.76, 0.60, 0.06)
+        ctx.stroke()
+        ctx.beginPath()
+        ctx.moveTo(0.12, 0.68)
+        ctx.lineTo(0.34, 0.47)
+        ctx.lineTo(0.52, 0.64)
+        ctx.lineTo(0.62, 0.55)
+        ctx.lineTo(0.88, 0.76)
+        ctx.stroke()
+        ctx.beginPath()
+        ctx.arc(0.65, 0.38, 0.06, 0, 2 * Math.PI, false)
+        ctx.stroke()
+    }
+
+    // A video: a frame with a play mark.
+    function _video(ctx) {
+        glyph._roundRect(ctx, 0.12, 0.20, 0.76, 0.60, 0.06)
+        ctx.stroke()
+        ctx.beginPath()
+        ctx.moveTo(0.43, 0.38)
+        ctx.lineTo(0.63, 0.50)
+        ctx.lineTo(0.43, 0.62)
+        ctx.closePath()
+        ctx.stroke()
+    }
+
+    // Music: a quaver.
+    function _music(ctx) {
+        ctx.beginPath()
+        ctx.arc(0.40, 0.72, 0.09, 0, 2 * Math.PI, false)
+        ctx.stroke()
+        ctx.beginPath()
+        ctx.moveTo(0.49, 0.72)
+        ctx.lineTo(0.49, 0.18)
+        ctx.lineTo(0.70, 0.28)
+        ctx.stroke()
+    }
+
+    // A document: a file with lines of text on it.
+    function _document(ctx) {
+        glyph._file(ctx)
+        ctx.beginPath()
+        ctx.moveTo(0.38, 0.48)
+        ctx.lineTo(0.64, 0.48)
+        ctx.moveTo(0.38, 0.60)
+        ctx.lineTo(0.64, 0.60)
+        ctx.moveTo(0.38, 0.72)
+        ctx.lineTo(0.54, 0.72)
+        ctx.stroke()
+    }
+
+    // A folder, with its tab.
+    function _folder(ctx) {
+        ctx.beginPath()
+        ctx.moveTo(0.12, 0.26)
+        ctx.lineTo(0.38, 0.26)
+        ctx.lineTo(0.46, 0.34)
+        ctx.lineTo(0.88, 0.34)
+        ctx.lineTo(0.88, 0.78)
+        ctx.lineTo(0.12, 0.78)
+        ctx.closePath()
+        ctx.stroke()
+        ctx.beginPath()
+        ctx.moveTo(0.12, 0.44)
+        ctx.lineTo(0.88, 0.44)
         ctx.stroke()
     }
 
@@ -103,26 +181,6 @@ Canvas {
             ctx.moveTo(rows[i][0], rows[i][1])
             ctx.lineTo(rows[i][2], rows[i][1])
         }
-        ctx.stroke()
-    }
-
-    // A plus, with no ring round it: the centre's disc is the ring.
-    function _add(ctx) {
-        ctx.beginPath()
-        ctx.moveTo(0.5, 0.24)
-        ctx.lineTo(0.5, 0.76)
-        ctx.moveTo(0.24, 0.5)
-        ctx.lineTo(0.76, 0.5)
-        ctx.stroke()
-    }
-
-    // Three circles and a flat base; the angles are where they meet.
-    function _cloud(ctx) {
-        ctx.beginPath()
-        ctx.arc(0.27, 0.44, 0.17, glyph._deg(109.75), glyph._deg(270.69), false)
-        ctx.arc(0.49, 0.30, 0.22, glyph._deg(187.83), glyph._deg(342.13), false)
-        ctx.arc(0.73, 0.42, 0.19, glyph._deg(260.73), glyph._deg(431.33), false)
-        ctx.closePath()
         ctx.stroke()
     }
 
@@ -159,33 +217,7 @@ Canvas {
         }
     }
 
-    // LocalSend: a dotted ring round a dot.
-    function _localSend(ctx) {
-        var dots = 8
-        for (var i = 0; i < dots; i++) {
-            var a = 2 * Math.PI * i / dots
-            ctx.beginPath()
-            ctx.arc(0.5 + 0.28 * Math.cos(a), 0.5 + 0.28 * Math.sin(a), 0.055, 0, 2 * Math.PI, false)
-            ctx.fill()
-        }
-        ctx.beginPath()
-        ctx.arc(0.5, 0.5, 0.11, 0, 2 * Math.PI, false)
-        ctx.fill()
-    }
-
-    // Quick Share: two chevrons, quick.
-    function _quickShare(ctx) {
-        ctx.beginPath()
-        ctx.moveTo(0.26, 0.28)
-        ctx.lineTo(0.46, 0.50)
-        ctx.lineTo(0.26, 0.72)
-        ctx.moveTo(0.52, 0.28)
-        ctx.lineTo(0.72, 0.50)
-        ctx.lineTo(0.52, 0.72)
-        ctx.stroke()
-    }
-
-    // Bluetooth's rune, for when the theme has no icon for it.
+    // Bluetooth's rune: a paired device.
     function _bluetooth(ctx) {
         ctx.beginPath()
         ctx.moveTo(0.30, 0.34)
@@ -203,9 +235,8 @@ Canvas {
         if (glyph.width <= 0 || glyph.height <= 0) {
             return
         }
-        var scale = glyph.width
-        var y0 = glyph.kind === "cloud" ? (glyph.height - 0.52 * scale) / 2 - 0.08 * scale : 0
-        ctx.translate(0, y0)
+        var scale = Math.min(glyph.width, glyph.height)
+        ctx.translate((glyph.width - scale) / 2, (glyph.height - scale) / 2)
         ctx.scale(scale, scale)
         ctx.lineWidth = glyph.lineWidth / scale
         ctx.lineCap = "round"
@@ -213,15 +244,17 @@ Canvas {
         ctx.strokeStyle = glyph.color
         ctx.fillStyle = glyph.color
         switch (glyph.kind) {
-        case "person": glyph._person(ctx); break
         case "phone": glyph._phone(ctx); break
+        case "tablet": glyph._tablet(ctx); break
+        case "computer": glyph._computer(ctx); break
         case "file": glyph._file(ctx); break
+        case "photo": glyph._photo(ctx); break
+        case "video": glyph._video(ctx); break
+        case "music": glyph._music(ctx); break
+        case "document": glyph._document(ctx); break
+        case "folder": glyph._folder(ctx); break
         case "text": glyph._text(ctx); break
-        case "add": glyph._add(ctx); break
-        case "cloud": glyph._cloud(ctx); break
         case "qr": glyph._qr(ctx); break
-        case "local_send": glyph._localSend(ctx); break
-        case "quick_share": glyph._quickShare(ctx); break
         case "bluetooth": glyph._bluetooth(ctx); break
         }
     }

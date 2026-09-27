@@ -241,15 +241,15 @@ break_and_expect 1.4.3 "a reserved OrganizationName" \
 break_and_expect 1.4.4 "an ApplicationName with illegal characters" \
     'sed -i "s|^ApplicationName=.*|ApplicationName=.sukkula|" $D'
 break_and_expect 1.4.5 "a permission that is not on the whitelist" \
-    'sed -i "s|^Permissions=.*|Permissions=Internet;Bluetooth;Camera;Downloads;Documents;Music;Pictures;Videos;RemovableMedia;Telepathy|" $D'
+    'sed -i "s|^Permissions=.*|Permissions=Internet;Bluetooth;Camera;Downloads;Documents;Music;Pictures;Videos;RemovableMedia;MediaIndexing;Telepathy|" $D'
 break_and_expect 1.4.5 "the Compatibility permission" \
-    'sed -i "s|^Permissions=.*|Permissions=Internet;Bluetooth;Camera;Downloads;Documents;Music;Pictures;Videos;RemovableMedia;Compatibility|" $D'
+    'sed -i "s|^Permissions=.*|Permissions=Internet;Bluetooth;Camera;Downloads;Documents;Music;Pictures;Videos;RemovableMedia;MediaIndexing;Compatibility|" $D'
 break_and_expect 1.4.6 "an ExecDBus that is not the Exec value" \
     'printf "ExecDBus=/usr/bin/harbour-sukkula --dbus\n" >> $D'
 break_and_expect 1.4.7 "a key that is not allowed in [X-Sailjail]" \
     'printf "DBusName=org.example\n" >> $D'
 break_and_expect P.2 "a whitelisted permission spec §2 does not grant" \
-    'sed -i "s|^Permissions=.*|Permissions=Internet;Bluetooth;Camera;Downloads;Documents;Music;Pictures;Videos;RemovableMedia;Location|" $D'
+    'sed -i "s|^Permissions=.*|Permissions=Internet;Bluetooth;Camera;Downloads;Documents;Music;Pictures;Videos;RemovableMedia;MediaIndexing;Location|" $D'
 break_and_expect P.2 "a permission spec §2 requires, dropped" \
     'sed -i "s|^Permissions=.*|Permissions=Internet;Downloads|" $D'
 break_and_expect P.2 "UserDirs in place of Downloads" \
