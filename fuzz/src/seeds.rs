@@ -1,4 +1,5 @@
-//! The committed seeds of the two Quick Share targets, as code.
+//! The committed seeds of the two Quick Share targets and of `qr_frame`,
+//! as code.
 //!
 //! Their inputs are decoded with `arbitrary`, so a seed is only as good as
 //! the script it decodes to, and a byte string nobody can read is no seed
@@ -9,8 +10,12 @@
 //! first if `arbitrary` changes its format). `every_seed_reaches_its_state`
 //! proves each still gets where it is meant to.
 //!
-//! Regenerate `fuzz/seeds/quickshare_{frame,handshake}/` after changing a
-//! seed or an input type, from `fuzz/`:
+//! `qr_frame`'s are frames with QR codes drawn in them, each with what the
+//! engine reads there (`every_qr_frame_seed_scans_as_it_says`).
+//!
+//! Regenerate `fuzz/seeds/quickshare_{frame,handshake}/` and
+//! `fuzz/seeds/qr_frame/` after changing a seed or an input type, from
+//! `fuzz/`:
 //!
 //! ```sh
 //! SUKKULA_FUZZ_WRITE_SEEDS=seeds cargo test --lib seeds::write
@@ -19,6 +24,9 @@
 use std::borrow::Borrow;
 
 use arbitrary::{Arbitrary, Unstructured};
+
+use sukkula_engine::api::Scanned;
+use sukkula_engine::scan::{self, Frame};
 
 use crate::handshake::{self, Finish, Init, Key, Pad, Request, Script};
 use crate::quickshare::{
@@ -773,6 +781,94 @@ fn every_seed_reaches_its_state() {
     }
 }
 
+/// A frame as `qr_frame` takes it: its width, then its rows.
+fn qr_frame_input(width: usize, luma: &[u8]) -> Vec<u8> {
+    let mut out = vec![u8::try_from(width).expect("a seed's width fits a byte")];
+    out.extend_from_slice(luma);
+    out
+}
+
+/// `text` as a QR code, `scale` pixels a module and four modules of quiet
+/// zone, dark on light or light on dark: the frame's width and rows.
+fn qr_drawn(text: &str, scale: usize, light_on_dark: bool) -> (usize, Vec<u8>) {
+    let q = qrcode::QrCode::new(text.as_bytes()).expect("a seed's text fits a QR code");
+    let size = q.width();
+    let side = (size + 8) * scale;
+    let (dark, light) = if light_on_dark { (230, 20) } else { (20, 230) };
+    let mut luma = vec![light; side * side];
+    for (i, c) in q.to_colors().iter().enumerate() {
+        if *c == qrcode::Color::Dark {
+            let (x, y) = (4 + i % size, 4 + i / size);
+            for d in 0..scale * scale {
+                luma[(y * scale + d / scale) * side + x * scale + d % scale] = dark;
+            }
+        }
+    }
+    (side, luma)
+}
+
+/// `qr_frame`'s seeds, each with what the engine reads in it.
+fn qr_frame_seeds() -> Vec<(Vec<u8>, Option<Scanned>)> {
+    let croc = |c: &str| Some(Scanned::Croc { code: c.to_owned() });
+    let mut out = Vec::new();
+    for (text, scale, inverted, want) in [
+        ("gala-tulip-acorn", 3, false, croc("gala-tulip-acorn")),
+        ("gala-tulip-acorn", 2, true, croc("gala-tulip-acorn")),
+        ("8123-alpha-bravo-charlie", 3, false, croc("8123-alpha-bravo-charlie")),
+        ("https://getcroc.com/?code=gala-tulip-acorn", 2, false, croc("gala-tulip-acorn")),
+        (
+            "wormhole-transfer:7-guitarist-revenge",
+            3,
+            false,
+            Some(Scanned::Wormhole {
+                code: "7-guitarist-revenge".into(),
+                mailbox_url: None,
+            }),
+        ),
+        (
+            "wormhole-transfer:7-guitarist-revenge?rendezvous=wss%3A%2F%2Fm.example%2Fv1",
+            2,
+            false,
+            Some(Scanned::Wormhole {
+                code: "7-guitarist-revenge".into(),
+                mailbox_url: Some("wss://m.example/v1".into()),
+            }),
+        ),
+        ("https://example.org/", 3, false, Some(Scanned::Other)),
+    ] {
+        let (width, luma) = qr_drawn(text, scale, inverted);
+        out.push((qr_frame_input(width, &luma), want));
+    }
+    out.push((qr_frame_input(64, &[200; 64 * 64]), None));
+    // Finder patterns, 7 pixels each, far more than rqrr groups.
+    let side = 120;
+    let mut luma = vec![230u8; side * side];
+    for ty in 0..side / 8 - 1 {
+        for tx in 0..side / 8 - 1 {
+            for d in 0..49 {
+                let (dx, dy) = (d % 7, d / 7);
+                let ring = dx == 0 || dx == 6 || dy == 0 || dy == 6;
+                let eye = (2..=4).contains(&dx) && (2..=4).contains(&dy);
+                if ring || eye {
+                    luma[(4 + ty * 8 + dy) * side + 4 + tx * 8 + dx] = 20;
+                }
+            }
+        }
+    }
+    out.push((qr_frame_input(side, &luma), None));
+    out
+}
+
+#[test]
+fn every_qr_frame_seed_scans_as_it_says() {
+    for (input, want) in qr_frame_seeds() {
+        let (width, luma) = input.split_first().expect("a seed");
+        let width = usize::from(*width);
+        let frame = Frame::new(luma, width, luma.len() / width, width).expect("a seed in range");
+        assert_eq!(scan::scan(&frame), want, "a {width}-wide seed");
+    }
+}
+
 /// Writes the seeds, when asked to: see the module docs.
 #[test]
 // The S3 ban on writing files is for shipped code; this is a test of the
@@ -783,7 +879,11 @@ fn write() {
         return;
     };
     let dir = std::path::PathBuf::from(dir);
-    let sets: [(&str, Vec<Vec<u8>>); 2] = [
+    let sets: [(&str, Vec<Vec<u8>>); 3] = [
+        (
+            "qr_frame",
+            qr_frame_seeds().into_iter().map(|(i, _)| i).collect(),
+        ),
         (
             "quickshare_frame",
             frame_seeds().iter().map(|(i, _)| frame_input(i)).collect(),

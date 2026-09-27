@@ -5,9 +5,14 @@ import "../components"
 
 /*
  * Receive over Magic Wormhole or croc by typing the sender's code (F-MW2,
- * F-CR2). The offer then comes up in the consent dialog like any other,
- * before any data flows. No scanning: that would need the Camera
- * permission, which spec §2 does not grant.
+ * F-CR2), or by scanning the QR code on the sender's screen (spec v0.6,
+ * ScanPage.qml). The offer then comes up in the consent dialog like any
+ * other, before any data flows.
+ *
+ * A scanned code decides the protocol: a croc code scanned here receives
+ * over croc, if croc is switched on (F-C1). A Magic Wormhole QR code may
+ * name its mailbox server, which this receive then uses, as long as the
+ * code in the field is still the one scanned.
  */
 Page {
     id: page
@@ -21,6 +26,9 @@ Page {
     property bool alive: true
     /// The code was taken: go back once this page is on top. See leave().
     property bool leaving: false
+    /// The last code scanned, and the mailbox server its QR code named.
+    property string scannedCode: ""
+    property string scannedMailbox: ""
 
     /// The code as the engine wants it: trimmed, spaces as dashes --
     /// people read "7 guitarist revenge" aloud -- and a wormhole code in
@@ -57,7 +65,40 @@ Page {
         if (page.croc) {
             page.engine.receiveCroc(page.code, reply)
         } else {
-            page.engine.receiveWormhole(page.code, reply)
+            // The scanned mailbox goes with the scanned code only.
+            var mailbox = page.code === page.scannedCode ? page.scannedMailbox : ""
+            page.engine.receiveWormhole(page.code, reply, mailbox)
+        }
+    }
+
+    /// Opens the camera; what it reads comes back to takeScan().
+    function scan() {
+        var scanning = pageStack.push(Qt.resolvedUrl("ScanPage.qml"), { engine: page.engine })
+        scanning.scanned.connect(page.takeScan)
+    }
+
+    /// A code read off the sender's screen: {protocol, code, mailboxUrl}.
+    function takeScan(result) {
+        if (page.alive !== true || page.busy) {
+            return
+        }
+        if (!page.engine.protocolEnabled(result.protocol)) {
+            banner.show(result.protocol === "croc"
+                        //: A croc QR code was scanned, and croc is off.
+                        ? qsTr("That is a croc code, and croc is switched off in Settings.")
+                        //: A Magic Wormhole QR code was scanned, and Magic Wormhole is off.
+                        : qsTr("That is a Magic Wormhole code, and Magic Wormhole is switched off in Settings."))
+            return
+        }
+        page.protocol = result.protocol
+        codeField.text = result.code
+        page.scannedCode = page.code
+        page.scannedMailbox = result.protocol === "wormhole" ? result.mailboxUrl : ""
+        if (page.valid) {
+            page.receive()
+        } else {
+            //: A scanned code this app cannot receive with.
+            banner.show(qsTr("That code cannot be used here."))
         }
     }
 
@@ -115,9 +156,9 @@ Page {
                 width: parent.width - 2 * Theme.horizontalPageMargin
                 text: page.croc
                       //: How to receive with croc.
-                      ? qsTr("Type the code the sender's croc shows, such as gala-tulip-acorn. You will see what is offered before anything is saved.")
+                      ? qsTr("Type the code the sender's croc shows, such as gala-tulip-acorn, or scan its QR code. You will see what is offered before anything is saved.")
                       //: How to receive with Magic Wormhole.
-                      : qsTr("Type the code the sender's screen shows, such as 7-guitarist-revenge. You will see what is offered before anything is saved.")
+                      : qsTr("Type the code the sender's screen shows, such as 7-guitarist-revenge, or scan its QR code. You will see what is offered before anything is saved.")
                 textFormat: Text.PlainText
                 wrapMode: Text.Wrap
                 font.pixelSize: Theme.fontSizeSmall
@@ -146,6 +187,16 @@ Page {
                 enabled: page.valid && !page.busy && page.engine.running
                          && page.engine.protocolEnabled(page.protocol)
                 onClicked: page.receive()
+            }
+
+            Button {
+                objectName: "scanButton"
+                anchors.horizontalCenter: parent.horizontalCenter
+                //: Opens the camera to read the code off the sender's screen.
+                text: qsTr("Scan QR code")
+                visible: page.engine.scanner !== null
+                enabled: !page.busy && page.engine.running
+                onClicked: page.scan()
             }
 
             BusyIndicator {

@@ -232,7 +232,7 @@ impl Side {
 
     async fn code(&self, id: TransferId) -> String {
         self.event("code", |e| match e {
-            Event::CrocCode { transfer, code } if *transfer == id => Some(code.clone()),
+            Event::CrocCode { transfer, code, .. } if *transfer == id => Some(code.clone()),
             _ => None,
         })
         .await

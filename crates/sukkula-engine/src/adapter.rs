@@ -98,14 +98,47 @@ pub trait Adapter: Send + Sync {
         items: Vec<Outgoing>,
     ) -> BoxFuture<'_, Result<TransferId, ErrorInfo>>;
 
-    /// Receives with a code (wormhole only).
-    fn receive_code(&self, _code: String) -> BoxFuture<'_, Result<TransferId, ErrorInfo>> {
+    /// Receives with a code (Magic Wormhole and croc).
+    fn receive_code(&self, _request: CodeReceive) -> BoxFuture<'_, Result<TransferId, ErrorInfo>> {
         Box::pin(async { Err(unavailable("receiving by code")) })
     }
 
     /// Lists paired devices (Bluetooth only).
     fn list_devices(&self) -> BoxFuture<'_, Result<Vec<BluetoothDevice>, ErrorInfo>> {
         Box::pin(async { Err(unavailable("listing devices")) })
+    }
+}
+
+/// What a receive by code starts from (F-MW2, F-CR2).
+#[derive(Clone, PartialEq, Eq)]
+pub struct CodeReceive {
+    /// The code, as the user typed it or a QR code held it.
+    pub code: String,
+    /// The mailbox server the sender's QR code named (Magic Wormhole
+    /// only; spec v0.6), for this receive instead of the settings' one.
+    pub mailbox_url: Option<String>,
+}
+
+impl CodeReceive {
+    /// A code the user typed: the servers are the settings'.
+    #[must_use]
+    pub fn typed(code: String) -> CodeReceive {
+        CodeReceive {
+            code,
+            mailbox_url: None,
+        }
+    }
+}
+
+impl From<String> for CodeReceive {
+    fn from(code: String) -> CodeReceive {
+        CodeReceive::typed(code)
+    }
+}
+
+impl From<&str> for CodeReceive {
+    fn from(code: &str) -> CodeReceive {
+        CodeReceive::typed(code.to_owned())
     }
 }
 

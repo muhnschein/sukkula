@@ -95,7 +95,7 @@ nothing.
 | `qml` | `qml` | qmllint over `qml/` and `qml-stubs/`; the UI's QML tests, offscreen |
 | `cpp` | `cpp` | the Qt bridge's tests under ASan and UBSan, the shell booted offscreen, and the ELF and install-layout checks of `harbour-sukkula.pro`, against the stub engine and then the real one (`tests/run-cpp-tests.sh`) |
 | `packaging` | `packaging` | spec parses and builds out of tree, desktop entry, catalogs, shellcheck on every script, actionlint on every workflow; `scripts/sonar-report.sh` against a stub server (`ci/sonar-report-selftest.sh`) |
-| `vendor` | `vendor` | `third_party/rqs_lib` is upstream plus its patches (with the checker's selftest) |
+| `vendor` | `vendor` | every vendored crate -- `third_party/rqs_lib`, `mdns-sd`, `rqrr` -- is upstream plus its patches (with the checker's selftest) |
 | `wormhole-interop` | `wormhole-interop` | Sukkula against the Python magic-wormhole client, both ways (below, "Interop with the reference clients") |
 | `croc-interop` | `croc-interop` | Sukkula against croc's Go binary, as the peer and as the relay, both ways (below) |
 | `harbour` | `harbour` | the source-level Harbour gate, then its selftest (`docs/HARBOUR.md`) |

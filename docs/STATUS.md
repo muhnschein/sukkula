@@ -1,6 +1,6 @@
 # Status
 
-Where Sukkula stands against `docs/SPEC.md` (v0.5), what has been
+Where Sukkula stands against `docs/SPEC.md` (v0.6), what has been
 verified and how, and what is waiting on the owner or on hardware.
 
 ## Built
@@ -22,8 +22,12 @@ Everything the spec asks for in v1.0:
   and Send | Receive as the main page's two tabs (spec v0.5): the send
   radar puts every protocol's peers on one screen, the receive radar
   shows who is sending, and History lists what went and came.
+- Scanning a Magic Wormhole or croc code off the sender's screen (spec
+  v0.6): the camera page, `src/scanner.cpp`, `sukkula_scan_qr`, and
+  `third_party/rqrr` (0.11.0 plus 2 patches) behind it; croc's code as a
+  QR code on the send side.
 - The RPM spec for the Jolla Phone 2026 (Sailfish OS 5.2+, aarch64 only).
-- CI with the Harbour gate, 21 fuzz targets, the dependency policy,
+- CI with the Harbour gate, 23 fuzz targets, the dependency policy,
   the vendor check, and interop against the Python wormhole client and
   croc's Go binaries, 11 and 10.
 
@@ -119,13 +123,9 @@ docs; the upstream ones are in `docs/UPSTREAM-QUICKSHARE.md`.
 
 ## Later
 
-Wanted, and not in v1.0 because each needs a Sailjail permission that
-spec §2 does not grant. Either is a spec change: the permission goes into
-§2, `harbour-sukkula.desktop` and `POLICY_PERMISSIONS` in
-`ci/harbour-check.sh` in one commit, never a workaround.
-
-- **Scanning a wormhole code as a QR code** (F-MW2). Needs `Camera`, a
-  camera view in QML and a QR decoder. The decoder reads what the lens
-  sees, so it is hostile input: a new dependency with its own review
-  (spec §6), a fuzz target, and the decoded text through the same
-  `code::parse` a typed code goes through.
+Nothing is waiting on a Sailjail permission any more. The one item that
+was, scanning a code as a QR code, came in spec v0.6 as this list asked:
+`Camera` in §2, the `.desktop` file and `POLICY_PERMISSIONS` in
+`ci/harbour-check.sh` in one commit, the decoder vendored and patched
+after its own review, two fuzz targets, and the decoded text through the
+same `code::parse` a typed code goes through.

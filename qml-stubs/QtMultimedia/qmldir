@@ -1,0 +1,10 @@
+# A stub of QtMultimedia for host tests; see qml-stubs/README.md.
+# Never shipped, never loaded on a device, where Qt's own is.
+module QtMultimedia
+
+Camera 5.0 Camera.qml
+Camera 5.6 Camera.qml
+VideoOutput 5.0 VideoOutput.qml
+VideoOutput 5.6 VideoOutput.qml
+internal CameraFocus CameraFocus.qml
+internal CameraFlash CameraFlash.qml

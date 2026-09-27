@@ -1,6 +1,6 @@
 [package]
 name = "sukkula-ffi"
-description = "The C ABI the Qt shell links: four functions, JSON in and out, and the only unsafe code in Sukkula."
+description = "The C ABI the Qt shell links: five functions, JSON in and out, and the only unsafe code in Sukkula."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -24,6 +24,8 @@ tracing.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+# QR codes for sukkula_scan_qr's tests to find; already the engine's.
+qrcode = { version = "0.14", default-features = false }
 
 [lints]
 workspace = true

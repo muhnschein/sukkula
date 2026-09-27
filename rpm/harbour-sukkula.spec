@@ -48,6 +48,9 @@ Requires:   sailfishsilica-qt5
 # and have no package on the allowed list to name.
 Requires:   nemo-qml-plugin-notifications-qt5
 Requires:   libkeepalive
+# QtMultimedia's Camera and VideoOutput, for the page that scans a code
+# (spec v0.6). The camera itself is the platform's.
+Requires:   qt5-qtdeclarative-import-multimedia
 
 # The shell and the engine's link.
 BuildRequires:  pkgconfig(sailfishapp) >= 1.0.3

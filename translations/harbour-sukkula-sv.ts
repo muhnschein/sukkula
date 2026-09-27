@@ -358,6 +358,29 @@ Receive screen: under croc&apos;s name on its tile.</extracomment>
     </message>
 </context>
 <context>
+    <name>ScanPage</name>
+    <message>
+        <source>Scan QR code</source>
+        <extracomment>Page title: receive by scanning the sender&apos;s QR code.</extracomment>
+        <translation>Skanna QR-kod</translation>
+    </message>
+    <message>
+        <source>The camera is not available.</source>
+        <extracomment>The camera cannot be used (another app has it, or it is missing).</extracomment>
+        <translation>Kameran är inte tillgänglig.</translation>
+    </message>
+    <message>
+        <source>That QR code holds no Magic Wormhole or croc code.</source>
+        <extracomment>A QR code was read, and it is not a Magic Wormhole or croc code.</extracomment>
+        <translation>Den QR-koden innehåller ingen Magic Wormhole- eller croc-kod.</translation>
+    </message>
+    <message>
+        <source>Point the camera at the QR code on the sender&apos;s screen.</source>
+        <extracomment>How to scan.</extracomment>
+        <translation>Rikta kameran mot QR-koden på avsändarens skärm.</translation>
+    </message>
+</context>
+<context>
     <name>SendView</name>
     <message>
         <source>Magic Wormhole sends one file or one text at a time.</source>
@@ -779,11 +802,6 @@ Send screen: under croc&apos;s name on its tile.</extracomment>
         <translation>Ta emot med kod</translation>
     </message>
     <message>
-        <source>Type the code the sender&apos;s screen shows, such as 7-guitarist-revenge. You will see what is offered before anything is saved.</source>
-        <extracomment>How to receive with Magic Wormhole.</extracomment>
-        <translation>Skriv koden som visas på avsändarens skärm, till exempel 7-guitarist-revenge. Du ser vad som erbjuds innan något sparas.</translation>
-    </message>
-    <message>
         <source>Code</source>
         <extracomment>The text field for a Magic Wormhole or croc code.</extracomment>
         <translation>Kod</translation>
@@ -794,9 +812,34 @@ Send screen: under croc&apos;s name on its tile.</extracomment>
         <translation>Ta emot</translation>
     </message>
     <message>
-        <source>Type the code the sender&apos;s croc shows, such as gala-tulip-acorn. You will see what is offered before anything is saved.</source>
+        <source>That is a croc code, and croc is switched off in Settings.</source>
+        <extracomment>A croc QR code was scanned, and croc is off.</extracomment>
+        <translation>Det är en croc-kod, och croc är avstängt i inställningarna.</translation>
+    </message>
+    <message>
+        <source>That is a Magic Wormhole code, and Magic Wormhole is switched off in Settings.</source>
+        <extracomment>A Magic Wormhole QR code was scanned, and Magic Wormhole is off.</extracomment>
+        <translation>Det är en Magic Wormhole-kod, och Magic Wormhole är avstängt i inställningarna.</translation>
+    </message>
+    <message>
+        <source>That code cannot be used here.</source>
+        <extracomment>A scanned code this app cannot receive with.</extracomment>
+        <translation>Den koden kan inte användas här.</translation>
+    </message>
+    <message>
+        <source>Type the code the sender&apos;s croc shows, such as gala-tulip-acorn, or scan its QR code. You will see what is offered before anything is saved.</source>
         <extracomment>How to receive with croc.</extracomment>
-        <translation>Skriv koden som avsändarens croc visar, till exempel gala-tulip-acorn. Du ser vad som erbjuds innan något sparas.</translation>
+        <translation>Skriv koden som avsändarens croc visar, till exempel gala-tulip-acorn, eller skanna dess QR-kod. Du ser vad som erbjuds innan något sparas.</translation>
+    </message>
+    <message>
+        <source>Type the code the sender&apos;s screen shows, such as 7-guitarist-revenge, or scan its QR code. You will see what is offered before anything is saved.</source>
+        <extracomment>How to receive with Magic Wormhole.</extracomment>
+        <translation>Skriv koden som visas på avsändarens skärm, till exempel 7-guitarist-revenge, eller skanna dess QR-kod. Du ser vad som erbjuds innan något sparas.</translation>
+    </message>
+    <message>
+        <source>Scan QR code</source>
+        <extracomment>Opens the camera to read the code off the sender&apos;s screen.</extracomment>
+        <translation>Skanna QR-kod</translation>
     </message>
 </context>
 <context>

@@ -22,13 +22,18 @@
 //!
 //! With croc's public relays, the code also says which of them the two
 //! sides use: [`Code::relay_index`].
+//!
+//! A code also comes from a QR code ([`from_qr`], spec v0.6): croc 11's
+//! link for receiving in a browser, or a code on its own, as croc 10 put
+//! it in its QR codes and Sukkula does.
 
 use std::collections::HashSet;
 use std::sync::OnceLock;
 
 use sha2::{Digest, Sha256};
+use url::Url;
 
-use crate::api::{ErrorCode, ErrorInfo};
+use crate::api::{ErrorCode, ErrorInfo, Scanned};
 
 /// Shortest code croc takes, in bytes.
 pub(super) const MIN_CODE_BYTES: usize = 6;
@@ -71,7 +76,7 @@ fn four_letter_words() -> &'static [&'static str] {
 /// A code that can be used: printable ASCII, no spaces, 6 to 128 bytes,
 /// with the room and password it gives.
 #[derive(Clone, PartialEq, Eq)]
-pub(super) struct Code {
+pub(crate) struct Code {
     typed: String,
     room: String,
     password: String,
@@ -283,7 +288,7 @@ fn generate_with(
 /// # Errors
 ///
 /// [`ErrorCode::BadCode`]: too short or long, or not printable ASCII.
-pub(super) fn parse(typed: &str) -> Result<Code, ErrorInfo> {
+pub(crate) fn parse(typed: &str) -> Result<Code, ErrorInfo> {
     let joined = typed.split_whitespace().collect::<Vec<_>>().join("-");
     let ok = (MIN_CODE_BYTES..=MAX_CODE_BYTES).contains(&joined.len())
         && joined.bytes().all(|b| b.is_ascii_graphic());
@@ -291,6 +296,65 @@ pub(super) fn parse(typed: &str) -> Result<Code, ErrorInfo> {
         return Err(ErrorInfo::new(ErrorCode::BadCode, "not a croc code"));
     }
     Ok(Code::new(joined))
+}
+
+/// The host of croc's link for receiving in a browser,
+/// `https://getcroc.com/?code=<code>`, which croc 11 (and croc 10 since
+/// 10.7) prints and puts in its QR codes.
+const WEB_HOST: &str = "getcroc.com";
+
+/// The croc code in a QR code's text (spec v0.6), or `None` when the text
+/// is not croc's: [`Scanned::Croc`] for a code this client can receive
+/// with, [`Scanned::Other`] for croc's link around one it cannot.
+///
+/// Two shapes are croc's. The link, over HTTPS to croc's own host, with
+/// the code as its one query parameter and nothing else. And a code on its
+/// own, but only one shaped as croc makes them: three or more words of `a`
+/// to `z`, or croc 10's four digits and then words. croc takes any six
+/// printable characters as a code, and the text of a QR code is seldom
+/// one: a web address or a Wi-Fi network is not taken for a code.
+pub(crate) fn from_qr(text: &str) -> Option<Scanned> {
+    let code = match Url::parse(text) {
+        Ok(url) if url.host_str() == Some(WEB_HOST) => web_code(&url),
+        Ok(_) => return None,
+        Err(_) if generated(text) => Some(text.to_owned()),
+        Err(_) => return None,
+    };
+    Some(
+        code.and_then(|c| parse(&c).ok())
+            .map_or(Scanned::Other, |c| Scanned::Croc {
+                code: c.to_string(),
+            }),
+    )
+}
+
+/// The code in croc's web link, if the link is exactly one.
+fn web_code(url: &Url) -> Option<String> {
+    let plain = url.scheme() == "https"
+        && url.port().is_none()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.path() == "/"
+        && url.fragment().is_none();
+    if !plain {
+        return None;
+    }
+    let mut pairs = url.query_pairs();
+    let (key, code) = pairs.next()?;
+    (key == "code" && pairs.next().is_none()).then(|| code.into_owned())
+}
+
+/// Whether `text` is shaped as croc makes codes: croc 11's words, or
+/// croc 10's four digits and words.
+fn generated(text: &str) -> bool {
+    let word = |w: &str| !w.is_empty() && w.bytes().all(|b| b.is_ascii_lowercase());
+    let parts: Vec<&str> = text.split('-').collect();
+    match parts.split_first() {
+        Some((pin, words)) if pin.len() == 4 && pin.bytes().all(|b| b.is_ascii_digit()) => {
+            words.len() >= 3 && words.iter().all(|w| word(w))
+        }
+        _ => parts.len() >= 3 && parts.iter().all(|w| word(w)),
+    }
 }
 
 #[cfg(test)]

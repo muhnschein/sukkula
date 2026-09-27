@@ -1,5 +1,5 @@
 //! `include/sukkula.h`, the Rust side and `docs/FFI.md` agree: the same
-//! return codes with the same values, the same four functions, and the
+//! return codes with the same values, the same five functions, and the
 //! same limits.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -8,7 +8,8 @@ use std::collections::BTreeMap;
 
 use sukkula_ffi::{
     MAX_IN_FLIGHT_COMMANDS, MAX_MESSAGE_BYTES, SUKKULA_ERR_BUSY, SUKKULA_ERR_NULL,
-    SUKKULA_ERR_PANIC, SUKKULA_ERR_TOO_LONG, SUKKULA_ERR_UTF8, SUKKULA_OK,
+    SUKKULA_ERR_PANIC, SUKKULA_ERR_RANGE, SUKKULA_ERR_TOO_LONG, SUKKULA_ERR_UTF8, SUKKULA_OK,
+    SUKKULA_SCAN_BYTES,
 };
 
 const HEADER: &str = include_str!("../include/sukkula.h");
@@ -46,8 +47,15 @@ fn the_return_codes_match() {
         ("SUKKULA_ERR_TOO_LONG".to_owned(), SUKKULA_ERR_TOO_LONG),
         ("SUKKULA_ERR_PANIC".to_owned(), SUKKULA_ERR_PANIC),
         ("SUKKULA_ERR_BUSY".to_owned(), SUKKULA_ERR_BUSY),
+        ("SUKKULA_ERR_RANGE".to_owned(), SUKKULA_ERR_RANGE),
     ]);
-    assert_eq!(codes(), rust, "the header and the Rust constants");
+    let mut header = codes();
+    assert_eq!(
+        header.remove("SUKKULA_SCAN_BYTES").map(i64::from),
+        Some(i64::from(SUKKULA_SCAN_BYTES)),
+        "the scan buffer's size"
+    );
+    assert_eq!(header, rust, "the header and the Rust constants");
     for (name, value) in &rust {
         assert!(
             DOC.contains(&format!("| `{name}` | {value} |")),
@@ -68,6 +76,8 @@ fn the_functions_match() {
         sukkula_ffi::sukkula_command;
     let _: extern "C" fn(*mut sukkula_ffi::SukkulaEngine) = sukkula_ffi::sukkula_stop;
     let _: extern "C" fn() -> *const std::ffi::c_char = sukkula_ffi::sukkula_version;
+    let _: unsafe extern "C" fn(*const u8, u32, u32, u32, *mut std::ffi::c_char, u32) -> i32 =
+        sukkula_ffi::sukkula_scan_qr;
 
     let normalise = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
     let header = normalise(HEADER);
@@ -77,6 +87,7 @@ fn the_functions_match() {
         "int32_t sukkula_command(SukkulaEngine *engine, const char *command_json);",
         "void sukkula_stop(SukkulaEngine *engine);",
         "const char *sukkula_version(void);",
+        "int32_t sukkula_scan_qr(const uint8_t *luma, uint32_t width, uint32_t height, uint32_t stride, char *out, uint32_t out_size);",
         "typedef void (*sukkula_event_cb)(const char *event_json, void *userdata);",
     ] {
         assert!(header.contains(proto), "the header lacks {proto}");

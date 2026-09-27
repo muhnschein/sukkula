@@ -17,10 +17,11 @@ QMAKE_RPATHDIR += /usr/share/$$TARGET/lib
 INCLUDEPATH = $$PWD/../sailfishapp $$INCLUDEPATH
 DEFINES += SUKKULA_SOURCE_ROOT=\\\"$$SUKKULA_ROOT\\\"
 
-HEADERS += $$SUKKULA_ROOT/src/bridge.h $$SUKKULA_ROOT/src/tls_reserve.h \
+HEADERS += $$SUKKULA_ROOT/src/bridge.h $$SUKKULA_ROOT/src/scanner.h $$SUKKULA_ROOT/src/tls_reserve.h \
     $$PWD/../sailfishapp/sailfishapp.h
 SOURCES += \
     $$SUKKULA_ROOT/src/tls_reserve.c \
     $$SUKKULA_ROOT/src/main.cpp \
     $$SUKKULA_ROOT/src/bridge.cpp \
+    $$SUKKULA_ROOT/src/scanner.cpp \
     $$PWD/../sailfishapp/sailfishapp_host.cpp

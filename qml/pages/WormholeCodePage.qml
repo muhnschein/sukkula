@@ -5,8 +5,8 @@ import "../components"
 
 /*
  * A Magic Wormhole or croc send (F-MW1, F-CR1): the code to read out, big,
- * for Magic Wormhole the same code as a QR code, then the transfer's
- * progress. croc has no URI a QR code could carry.
+ * the same code as a QR code -- Magic Wormhole's `wormhole-transfer:` URI,
+ * croc's code on its own (spec v0.6) -- then the transfer's progress.
  *
  * The code comes from the engine, but a wormhole code's number part is the
  * mailbox server's, so it is shown as plain text like everything else.

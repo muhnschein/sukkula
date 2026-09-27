@@ -1,15 +1,20 @@
-//! The C ABI the Qt shell links (`include/sukkula.h`): four functions,
+//! The C ABI the Qt shell links (`include/sukkula.h`): five functions,
 //! JSON in and out, and the only `unsafe` code in Sukkula (S10).
 //!
 //! # What is unsafe here, and why it is sound
 //!
-//! Exactly three things, each commented where it happens:
+//! Exactly five things, each commented where it happens:
 //!
 //! 1. Exporting unmangled symbols (`#[unsafe(no_mangle)]`).
 //! 2. Reading a C string the shell passed in (`read_c_str`): at most
 //!    [`MAX_MESSAGE_BYTES`] + 1 bytes, one at a time, never past its NUL.
 //! 3. Calling the shell's callback (`Callback::deliver`) with a string
 //!    that lives until the call returns.
+//! 4. Reading a camera frame the shell passed in (`sukkula_scan_qr`):
+//!    exactly the bytes its sizes span, once they are checked, and at most
+//!    [`scan::MAX_STRIDE`] times [`scan::MAX_SIDE`].
+//! 5. Writing the scan's answer into the shell's buffer
+//!    (`sukkula_scan_qr`): only once it is known to fit, NUL and all.
 //!
 //! Engine handles are never dereferenced. `sukkula_start` hands out an
 //! opaque number dressed as a pointer, and every other function looks it
@@ -45,7 +50,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 
 use sukkula_engine::api::{ErrorCode, ErrorInfo, Event, parse_start_config};
 use sukkula_engine::ctx::EventSink;
-use sukkula_engine::{Engine, Refused};
+use sukkula_engine::{Engine, Refused, scan};
 
 /// The largest event the callback is handed, in bytes, not counting the
 /// NUL.
@@ -69,6 +74,15 @@ pub const SUKKULA_ERR_PANIC: i32 = -4;
 /// [`MAX_IN_FLIGHT_COMMANDS`] commands are waiting for their replies;
 /// nothing was parsed.
 pub const SUKKULA_ERR_BUSY: i32 = -5;
+/// A frame's size or stride, or the answer's buffer, is out of range;
+/// nothing was read (`sukkula_scan_qr`).
+// CONTRACT: new (additive), with sukkula_scan_qr.
+pub const SUKKULA_ERR_RANGE: i32 = -6;
+
+/// A buffer of this many bytes always holds `sukkula_scan_qr`'s answer,
+/// NUL and all: a code is at most 128 bytes, a mailbox URL at most 256,
+/// and JSON escapes neither past six bytes a byte.
+pub const SUKKULA_SCAN_BYTES: u32 = 4096;
 
 /// An opaque running engine. Never constructed: a handle is a number that
 /// only this crate's registry understands.
@@ -391,6 +405,72 @@ pub extern "C" fn sukkula_stop(engine: *mut SukkulaEngine) {
             engine.stop();
         }
     }));
+}
+
+/// Looks for a QR code in one grey camera frame. See `include/sukkula.h`.
+///
+/// # Safety
+///
+/// `luma` is NULL or points to `stride * (height - 1) + width` bytes that
+/// stay readable and unchanged for the duration of the call; `out` is NULL
+/// or points to `out_size` writable bytes that nothing else touches
+/// meanwhile. Sizes out of range are refused before either is touched.
+#[unsafe(no_mangle)]
+#[allow(unsafe_code)] // The exported symbol.
+pub unsafe extern "C" fn sukkula_scan_qr(
+    luma: *const u8,
+    width: u32,
+    height: u32,
+    stride: u32,
+    out: *mut c_char,
+    out_size: u32,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if luma.is_null() || out.is_null() {
+            return SUKKULA_ERR_NULL;
+        }
+        let size = |n: u32| usize::try_from(n).ok();
+        let (Some(w), Some(h), Some(stride), Some(room)) =
+            (size(width), size(height), size(stride), size(out_size))
+        else {
+            return SUKKULA_ERR_RANGE;
+        };
+        let sides = (1..=scan::MAX_SIDE).contains(&w) && (1..=scan::MAX_SIDE).contains(&h);
+        let fits = (w..=scan::MAX_STRIDE).contains(&stride) && room >= 1;
+        let Some(len) = scan::Frame::bytes(w, h, stride).filter(|_| sides && fits) else {
+            return SUKKULA_ERR_RANGE;
+        };
+        // SAFETY: the caller promises `len` readable bytes at `luma`,
+        // unchanged for the call, and the checks above bound `len` by
+        // MAX_STRIDE * MAX_SIDE, 4 MiB, far below isize::MAX.
+        let frame = unsafe { std::slice::from_raw_parts(luma, len) };
+        let Some(frame) = scan::Frame::new(frame, w, h, stride) else {
+            return SUKKULA_ERR_RANGE;
+        };
+        let json = match scan::scan(&frame) {
+            None => String::new(),
+            Some(found) => match serde_json::to_string(&found) {
+                Ok(json) => json,
+                Err(_) => return SUKKULA_ERR_PANIC,
+            },
+        };
+        let (Some(end), Ok(written)) = (
+            Some(json.len()).filter(|n| *n < room),
+            i32::try_from(json.len()),
+        ) else {
+            return SUKKULA_ERR_RANGE;
+        };
+        // SAFETY: `out` has `room` writable bytes, the caller promises, and
+        // `end` + 1 of them are written: the JSON, which has no NUL of its
+        // own (serde_json escapes U+0000), and the NUL after it. The source
+        // is our own string, which cannot overlap the shell's buffer.
+        unsafe {
+            ptr::copy_nonoverlapping(json.as_ptr(), out.cast::<u8>(), end);
+            out.add(end).write(0);
+        }
+        written
+    }))
+    .unwrap_or(SUKKULA_ERR_PANIC)
 }
 
 /// The version, e.g. `"0.1.0"`. A static string; never free it.

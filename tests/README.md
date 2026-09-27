@@ -70,13 +70,14 @@ tst_consent.qml` runs single QML tests without the other stages.
    | `tst_engine.qml` | Engine.qml against api.rs: command envelopes and ids, callbacks, bridge return codes, every event type, caps and bounds, garbage events |
    | `tst_consent.qml` | the consent dialog: sanitised values verbatim as plain text, PIN, "and N more", total, countdown; Accept, Decline, leaving, timeout and engine-closed paths (F-C2, F-C3, F-QS3, S5) |
    | `tst_main.qml` | main page, History page, text page, cover: Send \| Receive tabs as the engine's state, tapped or swiped, a swipe back mid-switch switched back, a refused switch taking the tab back, discovery on the Send tab only, portrait only, what receiving is doing, transfers, cancel, texts with Copy, About at the foot of Settings (F-C1, F-C4, F-C5) |
-   | `tst_send.qml` | the send radar with every protocol: only the plus until a file is chosen, several files from the browser, more added and all cleared; peers in stable places on round rings, none covering another; the cloud and its tiles; a send's line, progress, cancel and end, refusals, the wormhole tile's code and code page with QR, "+N" and the device list, protocols switched off in Settings (F-C1, F-C6, F-MW1, F-BT1) |
+   | `tst_send.qml` | the send radar with every protocol: only the plus until a file is chosen, several files from the browser, more added and all cleared; peers in stable places on round rings, none covering another; the cloud and its tiles; a send's line, progress, cancel and end, refusals, the wormhole and croc tiles' codes and code pages with their QR codes, "+N" and the device list, protocols switched off in Settings (F-C1, F-C6, F-MW1, F-BT1) |
    | `tst_receive.qml` | the receive radar: offers on the rings as plain text, a transfer taking its offer's place whichever event comes first, its line, progress, cancel and the moment it stays, internet protocols through the cloud from their tile, the code tiles and Magic Wormhole switched off (F-C1, F-C2, F-C5, F-MW2) |
+   | `tst_scan.qml` | scanning a code (spec v0.6): the receive page's Scan button, the camera page handing the viewfinder over a frame at a time and only while it is on top, in front and with a camera, nothing read and non-engine JSON ignored, a QR code of anything else said to be no code and never shown, the code received over its own protocol with its QR code's mailbox, a protocol switched off refusing it, the mailbox dropped once the code is edited, no Scan button without a scanner (F-C1, F-MW2, F-CR2) |
    | `tst_settings.qml` | settings validation, saving on leaving and not when covered, the Magic Wormhole switch, About, receive by code (F-C1, F-C7, F-LS4, F-QS2, F-QS4, F-MW2, F-MW4, S9) |
    | `tst_app.qml` | the whole window: start-up, discovery paused after a while in the background, consent queueing over any page and around transitions, the Share menu, KeepAlive, notifications (§2, F-C6) |
    | `tst_stack.qml` | the whole window while pages cover each other: a consent dialog over Settings saves nothing, a share over another page keeps discovery and its peers, Receive mode gives them back, send and code replies never pop a consent dialog, a closed offer's dialog never stays under the next one and is not answered (F-C2, F-C3, F-C6, F-LS1, F-QS1, S5) |
 4. **`tests/qml/selftest.py`** first requires every check to pass on an
-   untouched copy of the tree, then plants 44 faults one at a time -- a
+   untouched copy of the tree, then plants 51 faults one at a time -- a
    label without `PlainText`, the sender in a Silica header, a misspelt
    `Text.Plaintext`, rich text, a clickable link, an Accept that does not
    accept, a countdown that never declines, KeepAlive held forever, a peer
@@ -97,6 +98,14 @@ tst_consent.qml` runs single QML tests without the other stages.
    the StartConfig, NUL and 64 KiB refusals, `SUKKULA_ERR_BUSY`, a failed
    start's `fatal`, over-long events dropped, nothing delivered after
    `stop()`, and destroying the bridge in the middle of a 5000-event burst.
+   Beside it **`tests/cpp/scanner_test`**, the same way: `src/scanner.cpp`
+   making frames grey and at most 640 pixels a side, one frame at a time,
+   the answer on the GUI thread, an item in an offscreen window grabbed
+   and read (the real engine decodes the QR code drawn in it), and a
+   scanner destroyed with a frame in hand. LeakSanitizer runs with
+   `tests/cpp/scanner_test/lsan.supp`, which names what Qt itself keeps
+   until exit once a window has been shown, and nothing on a path of the
+   scanner's.
 2. **The host app** (`tests/cpp/host_app`): `src/main.cpp` and
    `src/bridge.cpp` with the phone's hardening flags (`src/hardening.pri`)
    and a libsailfishapp stand-in (`tests/cpp/sailfishapp`), started

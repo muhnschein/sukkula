@@ -18,7 +18,7 @@ use sukkula_core::limits::{
     MAX_OFFER_BYTES, MAX_PIN_CHARS,
 };
 use sukkula_core::offer::Offer;
-use sukkula_engine::api::Peer;
+use sukkula_engine::api::{Peer, Scanned};
 
 /// Asserts `violation` is `None`, naming the input when it is not. A
 /// violation is a finding as real as a crash: libFuzzer saves the input.
@@ -133,5 +133,55 @@ pub fn assert_peer(p: &Peer) {
             m,
             oracle::display_violation(m, MAX_MODEL_CHARS),
         );
+    }
+}
+
+/// What every code a QR code gives keeps, whatever it was read from
+/// (`qr_text`, `qr_frame`; spec v0.6): a Magic Wormhole code in the typed
+/// grammar -- a nameplate of one to nine digits without a leading zero,
+/// one to eight words of lowercase ASCII letters and digits, 1 to 32 each,
+/// at least 4 bytes after the nameplate, at most 128 in all -- and a
+/// mailbox, when there is one, that is a plain `ws://` or `wss://` URL of
+/// printable ASCII, at most 256 bytes, with no credentials, query or
+/// fragment, and not the default one; a croc code of 6 to 128 printable
+/// ASCII bytes, no space among them. `Other` carries nothing.
+pub fn assert_scanned(s: &Scanned) {
+    match s {
+        Scanned::Wormhole { code, mailbox_url } => {
+            assert!(code.len() <= 128, "wormhole code of {} bytes", code.len());
+            let (nameplate, password) = code.split_once('-').expect("a code without a hyphen");
+            let words: Vec<&str> = password.split('-').collect();
+            assert!(
+                (1..=9).contains(&nameplate.len())
+                    && nameplate.bytes().all(|b| b.is_ascii_digit())
+                    && !nameplate.starts_with('0'),
+                "nameplate of {code:?}"
+            );
+            assert!(
+                password.len() >= 4
+                    && (1..=8).contains(&words.len())
+                    && words.iter().all(|w| {
+                        (1..=32).contains(&w.len())
+                            && w.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+                    }),
+                "words of {code:?}"
+            );
+            if let Some(url) = mailbox_url {
+                let rest = url
+                    .strip_prefix("ws://")
+                    .or_else(|| url.strip_prefix("wss://"))
+                    .unwrap_or_else(|| panic!("mailbox {url:?}"));
+                assert!(url.len() <= 256 && url.bytes().all(|b| b.is_ascii_graphic()), "mailbox {url:?}");
+                assert!(!url.contains(['?', '#']), "mailbox {url:?} with a query or fragment");
+                let authority = rest.split('/').next().unwrap_or_default();
+                assert!(!authority.is_empty() && !authority.contains('@'), "mailbox {url:?}");
+                assert_ne!(url, "ws://relay.magic-wormhole.io:4000/v1", "the default named as custom");
+            }
+        }
+        Scanned::Croc { code } => {
+            assert!((6..=128).contains(&code.len()), "croc code of {} bytes", code.len());
+            assert!(code.bytes().all(|b| b.is_ascii_graphic()), "croc code {code:?}");
+        }
+        Scanned::Other => {}
     }
 }

@@ -12,6 +12,7 @@
         sukkula_command;
         sukkula_stop;
         sukkula_version;
+        sukkula_scan_qr;
     local:
         *;
 };

@@ -107,7 +107,7 @@ async fn a_text_from_python_reaches_sukkula() {
     .unwrap();
     let (code, child) = code;
     let adapter = b.adapter.clone();
-    let rx = tokio::spawn(async move { adapter.receive_code(code).await });
+    let rx = tokio::spawn(async move { adapter.receive_code(code.into()).await });
     let (id, _) = b.pending().await;
     b.answer(id, true);
     let t = rx.await.unwrap().unwrap();
@@ -140,7 +140,7 @@ async fn a_file_from_python_reaches_sukkula() {
     .await
     .unwrap();
     let adapter = b.adapter.clone();
-    let rx = tokio::spawn(async move { adapter.receive_code(code).await });
+    let rx = tokio::spawn(async move { adapter.receive_code(code.into()).await });
     let (id, offer) = b.pending().await;
     assert_eq!(offer.files[0].name.as_str(), "from-python.bin");
     b.answer(id, true);
@@ -174,7 +174,7 @@ async fn a_folder_from_python_arrives_as_one_unopened_zip() {
     .await
     .unwrap();
     let adapter = b.adapter.clone();
-    let rx = tokio::spawn(async move { adapter.receive_code(code).await });
+    let rx = tokio::spawn(async move { adapter.receive_code(code.into()).await });
     let (id, offer) = b.pending().await;
     assert_eq!(offer.files[0].name.as_str(), "album.zip");
     b.answer(id, true);

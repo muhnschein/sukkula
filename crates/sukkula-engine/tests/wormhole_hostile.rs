@@ -53,7 +53,7 @@ async fn world(behaviour: Behaviour, relay_mode: RelayMode) -> World {
 
 fn receive(side: &Side, code: String) -> tokio::task::JoinHandle<Result<u64, ErrorInfo>> {
     let adapter = side.adapter.clone();
-    tokio::spawn(async move { adapter.receive_code(code).await })
+    tokio::spawn(async move { adapter.receive_code(code.into()).await })
 }
 
 /// A peer that allocates a code and then runs `script` on the wormhole.
@@ -202,7 +202,7 @@ async fn negative_and_oversized_offers_never_reach_the_user() {
     ] {
         let offer = json!({"offer": {"file": {"filename": "x", "filesize": size}}});
         let (c, peer) = hostile(&w, move |wh, _| scripted_offer(wh, offer)).await;
-        let e = w.side.adapter.receive_code(c).await.unwrap_err();
+        let e = w.side.adapter.receive_code(c.into()).await.unwrap_err();
         assert_eq!(e.code, code, "{size}");
         // The peer is told no, in the v1 way.
         let answer = peer.await.unwrap();
@@ -211,7 +211,7 @@ async fn negative_and_oversized_offers_never_reach_the_user() {
     let text = "x".repeat(MAX_MESSAGE_BYTES + 1);
     let offer = json!({"offer": {"message": text}});
     let (c, peer) = hostile(&w, move |wh, _| scripted_offer(wh, offer)).await;
-    let e = w.side.adapter.receive_code(c).await.unwrap_err();
+    let e = w.side.adapter.receive_code(c.into()).await.unwrap_err();
     assert_eq!(e.code, ErrorCode::TooLarge);
     assert!(peer.await.unwrap().get("error").is_some());
     assert!(!w.side.was_asked(), "S4: refused before anyone was asked");
@@ -243,7 +243,7 @@ async fn malformed_and_unknown_offers_are_declined() {
                 .and_then(Result::ok)
         })
         .await;
-        let e = w.side.adapter.receive_code(c).await.unwrap_err();
+        let e = w.side.adapter.receive_code(c.into()).await.unwrap_err();
         assert_ne!(e.code, ErrorCode::Internal, "{offer}: {e:?}");
         let answer = peer.await.unwrap();
         if reply {
@@ -315,7 +315,7 @@ async fn a_sender_that_never_offers_times_out() {
     })
     .await;
     let start = tokio::time::Instant::now();
-    let e = w.side.adapter.receive_code(code).await.unwrap_err();
+    let e = w.side.adapter.receive_code(code.into()).await.unwrap_err();
     assert_eq!(e.code, ErrorCode::Network);
     assert!(start.elapsed() < Duration::from_secs(10));
 }
@@ -332,7 +332,7 @@ async fn a_flood_of_messages_is_cut_off() {
         tokio::time::sleep(DEADLINE).await;
     })
     .await;
-    let e = w.side.adapter.receive_code(code).await.unwrap_err();
+    let e = w.side.adapter.receive_code(code.into()).await.unwrap_err();
     assert_eq!(e.code, ErrorCode::Network);
     assert!(!w.side.was_asked());
 }
@@ -762,7 +762,7 @@ async fn receives_that_are_still_connecting_are_bounded() {
     let e = w
         .side
         .adapter
-        .receive_code(format!("{}-guitarist-revenge", n + 1))
+        .receive_code(format!("{}-guitarist-revenge", n + 1).into())
         .await
         .unwrap_err();
     assert_eq!(e.code, ErrorCode::TooLarge);

@@ -3,8 +3,9 @@
 #
 # The C++ shell's host tests, offline, on a desktop Qt 5.15:
 #
-#   1. tests/cpp/bridge_test under ASan and UBSan, against the stub engine
-#      (tests/cpp/stub) and, with SUKKULA_ENGINE=rust, the real one too;
+#   1. tests/cpp/bridge_test and tests/cpp/scanner_test under ASan and
+#      UBSan, against the stub engine (tests/cpp/stub) and, with
+#      SUKKULA_ENGINE=rust, the real one too;
 #   2. src/main.cpp and src/bridge.cpp built as the phone builds them (same
 #      hardening flags) against a libsailfishapp stand-in, started
 #      offscreen on the real qml/ with qml-stubs/: no Qt warning, and the
@@ -142,6 +143,24 @@ for e in $engines; do
     fi
 done
 
+# 1b. The scanner: frames to the engine, grey, small and one at a time.
+for e in $engines; do
+    dir=$build/scanner-$e
+    if build_pro "$dir" "$root/tests/cpp/scanner_test/scanner_test.pro" CONFIG+=sukkula_sanitize \
+        SUKKULA_ENGINE="$e" SUKKULA_RUST_LIB="$rust_lib"; then
+        # Qt's own allocations kept until exit once a window has been
+        # shown, and only those, are not leaks of ours (the file says which).
+        if (cd "$scratch" && LSAN_OPTIONS="suppressions=$root/tests/cpp/scanner_test/lsan.supp:print_suppressions=0" \
+            "$dir/tst_scanner" -silent); then
+            say "scanner tests ($e engine): ok"
+        else
+            fail "scanner tests ($e engine)"
+        fi
+    else
+        fail "scanner tests ($e engine) did not build"
+    fi
+done
+
 # 2. and 3. The shell as the phone builds it.
 mkdir -p "$build/qm"
 for ts in "$root"/translations/*.ts; do
@@ -191,13 +210,14 @@ rm -rf "$dir"
 mkdir -p "$dir"
 mkdir -p "$dir/engine"
 pro_lib=$dir/engine/libsukkula_ffi.so
-abi="sukkula_command sukkula_start sukkula_stop sukkula_version"
+abi="sukkula_command sukkula_scan_qr sukkula_start sukkula_stop sukkula_version"
 if [ "$engine" = rust ]; then
     # The real archive, linked into the library the way
-    # scripts/cross-build-rust.sh links the phone's: the four entry points
+    # scripts/cross-build-rust.sh links the phone's: the five entry points
     # pulled in, the export map, every symbol resolved.
     cc -shared -o "$pro_lib" -Wl,-soname,libsukkula_ffi.so \
         -Wl,-u,sukkula_start -Wl,-u,sukkula_command -Wl,-u,sukkula_stop -Wl,-u,sukkula_version \
+        -Wl,-u,sukkula_scan_qr \
         -Wl,--version-script="$root/crates/sukkula-ffi/exports.map" \
         -Wl,-z,relro -Wl,-z,now -Wl,-z,defs -Wl,--as-needed \
         "$rust_lib" -ldbus-1 -lgcc_s -lutil -lrt -lpthread -lm -ldl -lc

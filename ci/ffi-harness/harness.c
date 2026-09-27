@@ -15,6 +15,10 @@
  *    call, is never running twice at once, and never runs after
  *    sukkula_stop() has returned.
  *
+ * It also scans camera frames with sukkula_scan_qr(): each frame and
+ * answer buffer allocated to exactly its size, so that a read or write
+ * past either is the sanitizer's to report, and from four threads at once.
+ *
  * Every check prints "ok" or "FAIL"; any failure makes the exit status 1.
  */
 
@@ -689,6 +693,112 @@ static void test_cycles(void)
     check(ok, "200 start/stop cycles (LeakSanitizer checks them at exit)");
 }
 
+/* ---- sukkula_scan_qr. -------------------------------------------------- */
+
+/* "gala-tulip-acorn" as a QR code, the croc_code example of docs/FFI.md. */
+static const char *const croc_qr[25] = {
+    "1111111001011010001111111",
+    "1000001011111100001000001",
+    "1011101000110001001011101",
+    "1011101000011100001011101",
+    "1011101011011100101011101",
+    "1000001001110011001000001",
+    "1111111010101010101111111",
+    "0000000001111000100000000",
+    "1010101001110001100010010",
+    "0111000001011100101000111",
+    "0111111110101010101110111",
+    "1011100011010110010110000",
+    "1001101110000010001000001",
+    "0101000011010010111001011",
+    "1000001101000100010011111",
+    "0100000010110000100011001",
+    "1001101110001001111110011",
+    "0000000010111101100010111",
+    "1111111001111011101011111",
+    "1000001000001110100010010",
+    "1011101011010010111111001",
+    "1011101001110010100110000",
+    "1011101010000100100110101",
+    "1000001001110001110000010",
+    "1111111010101001111111011",
+};
+
+/* A white frame of exactly the bytes its shape spans, so that a read past
+ * its end is ASan's to see, with croc_qr at 4 pixels a module. */
+static unsigned char *scan_frame(int w, int h, int stride, int with_code)
+{
+    size_t len = (size_t)stride * (size_t)(h - 1) + (size_t)w;
+    unsigned char *f = malloc(len);
+    if (f == NULL)
+        abort();
+    memset(f, 0xff, len);
+    for (int y = 0; with_code && y < 25; y++)
+        for (int x = 0; x < 25; x++)
+            if (croc_qr[y][x] == '1')
+                for (int d = 0; d < 16; d++)
+                    f[(size_t)(16 + y * 4 + d / 4) * (size_t)stride + (size_t)(16 + x * 4 + d % 4)] = 0;
+    return f;
+}
+
+static const char croc_json[] = "{\"found\":\"croc\",\"code\":\"gala-tulip-acorn\"}";
+
+static void *scanner(void *arg)
+{
+    const unsigned char *f = arg;
+    char out[SUKKULA_SCAN_BYTES];
+    int32_t n = sukkula_scan_qr(f, 200, 160, 203, out, sizeof out);
+    return (void *)(intptr_t)(n > 0 && strcmp(out, croc_json) == 0);
+}
+
+static void test_scan_qr(void)
+{
+    unsigned char *f = scan_frame(200, 160, 203, 1);
+    char *out = malloc(SUKKULA_SCAN_BYTES);
+    int32_t n = sukkula_scan_qr(f, 200, 160, 203, out, SUKKULA_SCAN_BYTES);
+    check(n == (int32_t)strlen(croc_json) && strcmp(out, croc_json) == 0,
+          "scan: a croc code in a frame read to its last byte (%d)", (int)n);
+    free(out);
+
+    /* A buffer of exactly the answer and its NUL, then one byte short. */
+    out = malloc((size_t)n + 1);
+    check(sukkula_scan_qr(f, 200, 160, 203, out, (uint32_t)n + 1) == n &&
+              strcmp(out, croc_json) == 0,
+          "scan: the answer fills a buffer of its own size exactly");
+    check(sukkula_scan_qr(f, 200, 160, 203, out, (uint32_t)n) == SUKKULA_ERR_RANGE,
+          "scan: a buffer one byte short is refused, unwritten past its end");
+    free(out);
+
+    char small[8];
+    check(sukkula_scan_qr(NULL, 200, 160, 203, small, sizeof small) == SUKKULA_ERR_NULL &&
+              sukkula_scan_qr(f, 200, 160, 203, NULL, 64) == SUKKULA_ERR_NULL,
+          "scan: NULL frame or buffer");
+    check(sukkula_scan_qr(f, 0, 160, 203, small, sizeof small) == SUKKULA_ERR_RANGE &&
+              sukkula_scan_qr(f, 200, 1025, 203, small, sizeof small) == SUKKULA_ERR_RANGE &&
+              sukkula_scan_qr(f, 200, 160, 199, small, sizeof small) == SUKKULA_ERR_RANGE &&
+              sukkula_scan_qr(f, 200, 160, 4097, small, sizeof small) == SUKKULA_ERR_RANGE &&
+              sukkula_scan_qr(f, 200, 160, 203, small, 0) == SUKKULA_ERR_RANGE,
+          "scan: shapes out of range are refused unread");
+
+    pthread_t t[4];
+    int all = 1;
+    for (int i = 0; i < 4; i++)
+        pthread_create(&t[i], NULL, scanner, f);
+    for (int i = 0; i < 4; i++) {
+        void *ok;
+        pthread_join(t[i], &ok);
+        all = all && ok != NULL;
+    }
+    check(all, "scan: four threads at once");
+    free(f);
+
+    /* The largest frame there is, blank. */
+    f = scan_frame(1024, 1024, 4096, 0);
+    check(sukkula_scan_qr(f, 1024, 1024, 4096, small, sizeof small) == 0,
+          "scan: the largest frame, with nothing in it");
+    free(f);
+}
+
 int main(void)
 {
     const char *tmp = getenv("TMPDIR");
@@ -711,6 +821,7 @@ int main(void)
     test_callback_calls_in();
     test_busy();
     test_cycles();
+    test_scan_qr();
 
     nftw(base_dir, remove_entry, 16, FTW_DEPTH | FTW_PHYS);
     int failed = atomic_load(&failures);

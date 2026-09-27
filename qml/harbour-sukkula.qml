@@ -14,7 +14,8 @@ import "cover"
  * whose files go to the main page's send radar (F-C6); and keeping the CPU
  * awake while, and only while, a transfer runs (spec §2).
  *
- * `bridge` is the C++ Bridge main.cpp puts in the root context.
+ * `bridge` is the C++ Bridge main.cpp puts in the root context, and
+ * `scanner` the C++ Scanner beside it.
  */
 ApplicationWindow {
     id: appWindow
@@ -32,9 +33,13 @@ ApplicationWindow {
     }
     allowedOrientations: defaultAllowedOrientations
 
+    // The root context's `scanner`, under a name no Engine property hides.
+    readonly property QtObject cameraScanner: scanner
+
     Engine {
         id: sukkula
         backend: bridge
+        scanner: appWindow.cameraScanner
 
         onOfferArrived: appWindow.navigate()
         onTransferEnded: appWindow.transferEnded(direction, state, transferId)

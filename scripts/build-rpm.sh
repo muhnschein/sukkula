@@ -222,7 +222,7 @@ check() {
         --rpath "/usr/share/$NAME/lib" --tls-reserve 4096 "$unpack/usr/bin/$NAME" || status=1
     # shellcheck disable=SC2086
     "$ROOT/ci/check-elf.sh" --library --stripped $ceiling \
-        --exports-only "sukkula_start sukkula_command sukkula_stop sukkula_version" \
+        --exports-only "sukkula_start sukkula_command sukkula_stop sukkula_version sukkula_scan_qr" \
         "$unpack/usr/share/$NAME/lib/libsukkula_ffi.so" || status=1
     rm -rf "$unpack"
     "$ROOT/ci/harbour-validate-rpm.sh" "$rpm" || status=1

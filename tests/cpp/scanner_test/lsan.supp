@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# LeakSanitizer suppressions for tst_scanner: what Qt 5.15 itself keeps
+# until exit and never frees once a window has been on screen -- the
+# offscreen platform's screen and cursor, QtQuick's image cache and the
+# textures made from it, a window's connections to the screen. Each entry
+# names a Qt function that is never on the path of an allocation of the
+# scanner's (grabToImage, QThreadPool, QImage conversion and scaling), so a
+# leak of src/scanner.cpp's still fails the run.
+leak:libqoffscreen.so
+leak:QQuickPixmap::load
+leak:QQuickWindowPrivate::init
+leak:QQuickImage::updatePaintNode
+leak:QSGRenderContext::textureForFactory
+leak:QPixmap::fromImage

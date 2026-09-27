@@ -2,8 +2,11 @@
 
 Minimal stand-ins for the Sailfish OS modules the app imports
 (`Sailfish.Silica`, `Sailfish.Share`, `Sailfish.Pickers`, `Nemo.KeepAlive`,
-`Nemo.Notifications`), so the app's QML can be loaded and exercised with a
-desktop Qt 5.15 under `QT_QPA_PLATFORM=offscreen` (see `tests/README.md`).
+`Nemo.Notifications`), and for `QtMultimedia`'s `Camera` and `VideoOutput`,
+which the host's Qt may lack and which would want a camera anyway, so the
+app's QML can be loaded and exercised with a desktop Qt 5.15 under
+`QT_QPA_PLATFORM=offscreen` (see `tests/README.md`). The stub camera is
+there unless a test sets its `availability`.
 
 They are **never shipped** (the RPM installs `qml/` only) and never loaded
 on a device. They declare the surface Sukkula uses, not all of Silica: if

@@ -358,6 +358,29 @@ Receive screen: under croc&apos;s name on its tile.</extracomment>
     </message>
 </context>
 <context>
+    <name>ScanPage</name>
+    <message>
+        <source>Scan QR code</source>
+        <extracomment>Page title: receive by scanning the sender&apos;s QR code.</extracomment>
+        <translation>QR-Code scannen</translation>
+    </message>
+    <message>
+        <source>The camera is not available.</source>
+        <extracomment>The camera cannot be used (another app has it, or it is missing).</extracomment>
+        <translation>Die Kamera ist nicht verfügbar.</translation>
+    </message>
+    <message>
+        <source>That QR code holds no Magic Wormhole or croc code.</source>
+        <extracomment>A QR code was read, and it is not a Magic Wormhole or croc code.</extracomment>
+        <translation>Dieser QR-Code enthält keinen Magic-Wormhole- oder croc-Code.</translation>
+    </message>
+    <message>
+        <source>Point the camera at the QR code on the sender&apos;s screen.</source>
+        <extracomment>How to scan.</extracomment>
+        <translation>Richte die Kamera auf den QR-Code auf dem Bildschirm des Absenders.</translation>
+    </message>
+</context>
+<context>
     <name>SendView</name>
     <message>
         <source>Magic Wormhole sends one file or one text at a time.</source>
@@ -779,11 +802,6 @@ Send screen: under croc&apos;s name on its tile.</extracomment>
         <translation>Mit Code empfangen</translation>
     </message>
     <message>
-        <source>Type the code the sender&apos;s screen shows, such as 7-guitarist-revenge. You will see what is offered before anything is saved.</source>
-        <extracomment>How to receive with Magic Wormhole.</extracomment>
-        <translation>Tippe den Code ein, den der Bildschirm des Senders zeigt, etwa 7-guitarist-revenge. Du siehst, was angeboten wird, bevor etwas gespeichert wird.</translation>
-    </message>
-    <message>
         <source>Code</source>
         <extracomment>The text field for a Magic Wormhole or croc code.</extracomment>
         <translation>Code</translation>
@@ -794,9 +812,34 @@ Send screen: under croc&apos;s name on its tile.</extracomment>
         <translation>Empfangen</translation>
     </message>
     <message>
-        <source>Type the code the sender&apos;s croc shows, such as gala-tulip-acorn. You will see what is offered before anything is saved.</source>
+        <source>That is a croc code, and croc is switched off in Settings.</source>
+        <extracomment>A croc QR code was scanned, and croc is off.</extracomment>
+        <translation>Das ist ein croc-Code, und croc ist in den Einstellungen ausgeschaltet.</translation>
+    </message>
+    <message>
+        <source>That is a Magic Wormhole code, and Magic Wormhole is switched off in Settings.</source>
+        <extracomment>A Magic Wormhole QR code was scanned, and Magic Wormhole is off.</extracomment>
+        <translation>Das ist ein Magic-Wormhole-Code, und Magic Wormhole ist in den Einstellungen ausgeschaltet.</translation>
+    </message>
+    <message>
+        <source>That code cannot be used here.</source>
+        <extracomment>A scanned code this app cannot receive with.</extracomment>
+        <translation>Dieser Code kann hier nicht verwendet werden.</translation>
+    </message>
+    <message>
+        <source>Type the code the sender&apos;s croc shows, such as gala-tulip-acorn, or scan its QR code. You will see what is offered before anything is saved.</source>
         <extracomment>How to receive with croc.</extracomment>
-        <translation>Gib den Code ein, den croc beim Absender zeigt, etwa gala-tulip-acorn. Du siehst, was angeboten wird, bevor etwas gespeichert wird.</translation>
+        <translation>Gib den Code ein, den croc beim Absender zeigt, etwa gala-tulip-acorn, oder scanne seinen QR-Code. Du siehst, was angeboten wird, bevor etwas gespeichert wird.</translation>
+    </message>
+    <message>
+        <source>Type the code the sender&apos;s screen shows, such as 7-guitarist-revenge, or scan its QR code. You will see what is offered before anything is saved.</source>
+        <extracomment>How to receive with Magic Wormhole.</extracomment>
+        <translation>Tippe den Code ein, den der Bildschirm des Senders zeigt, etwa 7-guitarist-revenge, oder scanne seinen QR-Code. Du siehst, was angeboten wird, bevor etwas gespeichert wird.</translation>
+    </message>
+    <message>
+        <source>Scan QR code</source>
+        <extracomment>Opens the camera to read the code off the sender&apos;s screen.</extracomment>
+        <translation>QR-Code scannen</translation>
     </message>
 </context>
 <context>

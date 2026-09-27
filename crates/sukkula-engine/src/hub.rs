@@ -61,7 +61,7 @@ use thiserror::Error;
 use tokio::sync::{Mutex as AsyncMutex, MutexGuard as AsyncMutexGuard};
 use tokio_util::sync::CancellationToken;
 
-use crate::adapter::{Adapter, Outgoing, OutgoingFile};
+use crate::adapter::{Adapter, CodeReceive, Outgoing, OutgoingFile};
 use crate::api::{
     API_VERSION, Command, CommandEnvelope, ErrorCode, ErrorInfo, Event, FileView,
     MAX_IN_FLIGHT_COMMANDS, MAX_LISTED_FILES, OfferView, Outcome, ProtocolState, ProtocolStatus,
@@ -550,13 +550,17 @@ impl Hub {
                 let items = prepare(items).await?;
                 adapter.send(target, items).await.map(Some)
             }
-            Command::ReceiveWormhole { code } => {
+            Command::ReceiveWormhole { code, mailbox_url } => {
                 let adapter = self.adapter(Protocol::Wormhole)?;
-                adapter.receive_code(code).await.map(Some)
+                let request = CodeReceive { code, mailbox_url };
+                adapter.receive_code(request).await.map(Some)
             }
             Command::ReceiveCroc { code } => {
                 let adapter = self.adapter(Protocol::Croc)?;
-                adapter.receive_code(code).await.map(Some)
+                adapter
+                    .receive_code(CodeReceive::typed(code))
+                    .await
+                    .map(Some)
             }
             Command::Cancel { transfer } => {
                 if self.ctx.transfers().cancel(transfer) {
@@ -2421,10 +2425,10 @@ mod tests {
 
         fn receive_code(
             &self,
-            code: String,
+            request: crate::adapter::CodeReceive,
         ) -> crate::adapter::BoxFuture<'_, Result<TransferId, ErrorInfo>> {
             Box::pin(async move {
-                let secs: u64 = code.parse().unwrap();
+                let secs: u64 = request.code.parse().unwrap();
                 tokio::time::sleep(Duration::from_secs(secs)).await;
                 Ok(7)
             })
@@ -2680,7 +2684,7 @@ mod tests {
 
         fn receive_code(
             &self,
-            _: String,
+            _: crate::adapter::CodeReceive,
         ) -> crate::adapter::BoxFuture<'_, Result<TransferId, ErrorInfo>> {
             self.called("receive_code");
             Box::pin(async { Ok(2) })

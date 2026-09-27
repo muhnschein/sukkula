@@ -413,7 +413,7 @@ async fn wormhole_keeps_codes_texts_and_names_out_of_the_log() {
     let text_code = a.code().await;
     let adapter = b.adapter.clone();
     let code = text_code.clone();
-    let rx = tokio::spawn(async move { adapter.receive_code(code).await });
+    let rx = tokio::spawn(async move { adapter.receive_code(code.into()).await });
     let (id, _) = b.pending().await;
     b.answer(id, true);
     let got = rx.await.unwrap().unwrap();
@@ -451,7 +451,7 @@ async fn wormhole_keeps_codes_texts_and_names_out_of_the_log() {
     };
     let adapter = c.adapter.clone();
     let code = file_code.clone();
-    let rx = tokio::spawn(async move { adapter.receive_code(code).await });
+    let rx = tokio::spawn(async move { adapter.receive_code(code.into()).await });
     let (id, _) = c.pending().await;
     c.answer(id, true);
     let got = rx.await.unwrap().unwrap();

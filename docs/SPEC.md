@@ -1,4 +1,4 @@
-# Sukkula — Specification v0.5
+# Sukkula — Specification v0.6
 
 Sep 24, 2026 · @Philipp
 
@@ -19,6 +19,13 @@ texts to a History page, and grants the Sailjail permissions for sending
 from the user's folders and memory cards. It adds croc as a fifth
 protocol, over the internet like Magic Wormhole (§4, F-CR). The changes
 are marked **(v0.5)**.
+
+v0.6 (Sep 27, 2026) receives Magic Wormhole and croc codes by scanning the
+QR code on the sender's screen, and shows croc's code as a QR code too. It
+grants the `Camera` Sailjail permission and the `QtMultimedia` QML import,
+adds a fifth C function, `sukkula_scan_qr`, and a second C++ class, the
+scanner, and vendors rqrr as the QR decoder. The changes are marked
+**(v0.6)**.
 
 ## 1. Purpose, scope and name
 
@@ -45,15 +52,15 @@ Sukkula also registers as a target in the system Share menu, so any app can hand
 Every package must pass `sfdk check -s harbour`; anything the validator rejects is out of scope, not worked around.
 
 - **Targets:** aarch64 only, Sailfish OS 5.2 and later, which is the Jolla Phone 2026 and nothing else. No armv7hl, no i486, no compatibility code for older releases. **(v0.2)**
-- **Sailjail permissions:** `Internet;Bluetooth;Downloads` and nothing else. `Bluetooth` grants BlueZ on the system bus (`org.bluez`) and obexd on the session bus (`org.bluez.obex`), which is everything Bluetooth and the Quick Share BLE nudge need. Received files go to `~/Downloads/Sukkula/`, staged in `~/Downloads/Sukkula/.partial/` (see S3); files to send arrive via the Share menu or a file picker. **(v0.5: `Internet;Bluetooth;Downloads;Documents;Music;Pictures;Videos;RemovableMedia`. The five added are read-only in practice -- nothing is written outside `~/Downloads/Sukkula/` -- and let a file be sent from the user's folders and memory cards, whether picked in the file browser or handed over through the Share menu, where Gallery's photos come from `~/Pictures`. Not `UserDirs`, which would take in the whole home directory, and not `MediaIndexing`: the file browser needs no media index.)**
+- **Sailjail permissions:** `Internet;Bluetooth;Downloads` and nothing else. `Bluetooth` grants BlueZ on the system bus (`org.bluez`) and obexd on the session bus (`org.bluez.obex`), which is everything Bluetooth and the Quick Share BLE nudge need. Received files go to `~/Downloads/Sukkula/`, staged in `~/Downloads/Sukkula/.partial/` (see S3); files to send arrive via the Share menu or a file picker. **(v0.5: `Internet;Bluetooth;Downloads;Documents;Music;Pictures;Videos;RemovableMedia`. The five added are read-only in practice -- nothing is written outside `~/Downloads/Sukkula/` -- and let a file be sent from the user's folders and memory cards, whether picked in the file browser or handed over through the Share menu, where Gallery's photos come from `~/Pictures`. Not `UserDirs`, which would take in the whole home directory, and not `MediaIndexing`: the file browser needs no media index.)** **(v0.6: and `Camera`, for the page that reads a code off the sender's screen: the viewfinder runs only while that page is in front, and nothing is recorded or saved.)**
 - **Linked system libraries** (all on the Harbour allow-list): Qt5 Core/Gui/Qml/Quick/DBus, libsailfishapp, libdbus-1.so.3, libz. Everything else is Rust, statically linked into one private library, `/usr/share/harbour-sukkula/lib/libsukkula_ffi.so`, which the binary finds through its RPATH **(v0.3: not into the binary itself. The `silica-qt5` booster `dlopen()`s the binary, and an executable's thread-locals are resolved to fixed offsets that a `dlopen()`ed one does not get.)**
-- **QML imports:** Sailfish.Silica, Sailfish.Share (ShareProvider), Sailfish.Pickers, Nemo.KeepAlive, Nemo.Notifications. QtBluetooth is not allowed, so BlueZ is reached over raw D-Bus from Rust.
+- **QML imports:** Sailfish.Silica, Sailfish.Share (ShareProvider), Sailfish.Pickers, Nemo.KeepAlive, Nemo.Notifications. QtBluetooth is not allowed, so BlueZ is reached over raw D-Bus from Rust. **(v0.6: and QtMultimedia 5.6, for the scan page's Camera and VideoOutput alone.)**
 - **Lifecycle:** receiving only while the app runs (cover page shows "Receiving"). KeepAlive holds the CPU awake during an active transfer only.
 - **Network:** inbound TCP (LocalSend 53317, Quick Share random port) must survive Sailfish's connman firewall. Verify on hardware in milestone 1; if blocked, document it and stop.
 
 ## 3. Architecture
 
-All logic lives in Rust; C++ is limited to a start-up shim and one bridge class, because Silica and libsailfishapp must be booted from C++.
+All logic lives in Rust; C++ is limited to a start-up shim and one bridge class, because Silica and libsailfishapp must be booted from C++. **(v0.6: and the scanner, which only moves camera frames to the engine: a QML item's pixels can reach C++ and no further.)**
 
 ```mermaid
 flowchart TD
@@ -73,7 +80,7 @@ Arrows show call direction; events flow back up the same path.
 
 - `sukkula-core`: every untrusted value passes through here. It sanitises names and display text, enforces limits, runs the consent broker and writes files. It has no network code and `#![forbid(unsafe_code)]`.
 - `sukkula-engine`: thin adapters that translate each protocol library's events into core types. Each protocol is a Cargo feature so it can be built and tested alone.
-- `sukkula-ffi`: a `staticlib`, linked into `libsukkula_ffi.so` **(v0.3)**, with four C functions, which are all the library exports: `sukkula_start(config_json, callback, userdata)`, `sukkula_command(handle, json)`, `sukkula_stop(handle)`, `sukkula_version()`. Every entry point wraps `catch_unwind`; strings passed to the callback are valid only during the call.
+- `sukkula-ffi`: a `staticlib`, linked into `libsukkula_ffi.so` **(v0.3)**, with four C functions, which are all the library exports: `sukkula_start(config_json, callback, userdata)`, `sukkula_command(handle, json)`, `sukkula_stop(handle)`, `sukkula_version()`. Every entry point wraps `catch_unwind`; strings passed to the callback are valid only during the call. **(v0.6: and a fifth, `sukkula_scan_qr(luma, width, height, stride, out, out_size)`, which reads a QR code in one grey camera frame and needs no engine. The C++ side gains one class besides the bridge, `src/scanner.cpp`, which grabs the viewfinder, makes it grey and small, and hands it to that function on a thread of its own.)**
 
 **Commands and events** are versioned JSON with serde `deny_unknown_fields`, capped at 64 KiB. A panic in a connection task kills that task only (`panic = "unwind"`), never the app.
 
@@ -111,14 +118,14 @@ Each requirement has an ID; every ID gets at least one automated test or a named
 **Magic Wormhole (F-MW)**, via `magic-wormhole` 0.8, transfer protocol v1:
 
 - **F-MW1** Send one file and show the generated code (2 words) as text and a QR code.
-- **F-MW2** Receive by typing a code, then show the consent dialog before any data flows. **(v0.2: no scanning -- a camera needs the `Camera` Sailjail permission, which §2 does not grant.)**
+- **F-MW2** Receive by typing a code, then show the consent dialog before any data flows. **(v0.2: no scanning -- a camera needs the `Camera` Sailjail permission, which §2 does not grant.)** **(v0.6: or by scanning the QR code on the sender's screen -- Warp's, Destiny's and Sukkula's `wormhole-transfer:` URI -- with the camera. The code in it is checked as a typed one is, and a mailbox server it names, checked as one in Settings is, is used for that receive.)**
 - **F-MW3** Folder offers arrive as the sender's `.zip` and are saved unopened.
 - **F-MW4** Default mailbox and relay servers, with custom URLs in Settings.
 
 **croc (F-CR) (v0.5)**, our own implementation of croc 11's protocol, and of croc 10's for its clients still about (`crates/sukkula-engine/src/croc/`; no Rust library speaks either), checked against croc v11.5.4's and v10.7.0's Go binaries:
 
-- **F-CR1** Send files, or one text on its own, and show the generated code (three words, as croc 11 makes them, which croc 10 reads alike) as text. No QR code: croc has no URI for one.
-- **F-CR2** Receive by typing a code, then show the consent dialog before any data flows; the sender's file list is checked (S1-S6) before the user sees it.
+- **F-CR1** Send files, or one text on its own, and show the generated code (three words, as croc 11 makes them, which croc 10 reads alike) as text. No QR code: croc has no URI for one. **(v0.6: and as a QR code of the code alone, as croc 10 put it in its QR codes -- not croc 11's `https://getcroc.com/?code=` link, which a camera app would open, handing the code to a web server.)**
+- **F-CR2** Receive by typing a code, then show the consent dialog before any data flows; the sender's file list is checked (S1-S6) before the user sees it. **(v0.6: or by scanning the sender's QR code: croc 11's web link, or a code on its own in croc's shape. A scanned code decides the protocol, as long as that protocol is switched on (F-C1).)**
 - **F-CR3** croc's public relays by default -- the one the code picks, as croc 11 does -- with a custom relay and its password in Settings.
 - **F-CR4** Data always goes through the relay: no LAN shortcut, no resume. Folders arrive flat, each file under its own name; symbolic links are left out.
 
@@ -174,6 +181,8 @@ Sukkula writes adapters, not protocols: each protocol comes from one maintained 
 | dbus | BlueZ obexd | MIT/Apache-2.0 | crates.io |
 | p256, crypto-bigint, aes-gcm, hmac, hkdf, base64, miniz\_oxide **(v0.5)** | croc: its PAKE, key and seal, and DEFLATE (croc's own curve, SIEC255, is ours) | MIT/Apache-2.0 (miniz\_oxide also Zlib) | crates.io |
 | The EFF's short word list #1 **(v0.5)** | croc 11's codes, the list croc carries | CC BY 4.0 | `crates/sukkula-engine/src/croc/eff/` |
+| [rqrr](https://github.com/WanzenBug/rqrr) **(v0.6)** | Reading QR codes from the camera: pure Rust, no `unsafe`, a port of quirc | (MIT OR Apache-2.0) AND ISC | vendored 0.11.0 + patches (its grouping bounded) |
+| qrcode | The QR codes the code pages show | MIT/Apache-2.0 | crates.io |
 | tokio, serde, serde\_json, thiserror, sha2, tracing | Runtime and plumbing | MIT/Apache-2.0 | crates.io |
 | proptest, tempfile (dev only) | Tests | MIT/Apache-2.0 | crates.io |
 
@@ -195,7 +204,7 @@ A change merges only when CI passes: `cargo fmt --check`, `clippy -D warnings`, 
 | Core | Every S-rule as a property test (names, display text, inbox caps and cleanup) | proptest |
 | Adapters | Loopback transfers per protocol: Sukkula to Sukkula, and Sukkula to the reference client on the same host (LocalSend CLI, `wormhole` CLI, rquickshare) **(v0.2: LocalSend against the upstream core's own client and server; `wormhole` against the pinned Python client in CI's `wormhole-interop` job; (v0.5) croc against croc v11.5.4's and v10.7.0's Go binaries, as the peer and as the relay, in CI's `croc-interop` job; no rquickshare interop yet -- Quick Share is Sukkula to Sukkula over the patched library plus hand-built frames, and real Android peers are M-30)** | cargo test (integration) |
 | Hostile input | Malicious peers replaying Q1–Q5 and S1–S7 cases: traversal names, negative and oversized sizes, endless chunks, bidi aliases, slow senders | cargo test with hand-built frames |
-| Parsers | FFI command JSON, LocalSend DTOs, Quick Share frames, wormhole offers, croc's PAKE, banner, messages and file lists **(v0.5)** | cargo-fuzz, corpus in repo |
+| Parsers | FFI command JSON, LocalSend DTOs, Quick Share frames, wormhole offers, croc's PAKE, banner, messages and file lists **(v0.5)**, camera frames and what their QR codes say **(v0.6)** | cargo-fuzz, corpus in repo |
 | FFI | Start/stop cycles, bad UTF-8, oversize commands, callback on a foreign thread | cargo test + a small C harness under ASan |
 | Device | Manual checklist per release on the Jolla Phone 2026, against Pixel, Samsung, LocalSend iOS/desktop and Bluetooth | Named test IDs M-1… (`docs/MANUAL-TESTS.md`) |
 
