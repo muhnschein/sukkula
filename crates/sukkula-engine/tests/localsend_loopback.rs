@@ -501,6 +501,68 @@ async fn discovery_registers_with_peers_it_knows_without_multicast() {
     .await;
 }
 
+/// Send mode: Alice looks for devices with Receive off, and Bob answers her
+/// announcement the only way LocalSend does -- by registering with the
+/// server it names. Alice lists him from that registration; her server
+/// takes no offer while she is not receiving; and it goes when discovery
+/// does. (Before, discovery ran no server, so an answer had nowhere to go
+/// and a LocalSend phone that saw Sukkula stayed off its radar.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn looking_with_receive_off_hears_the_answers_to_our_announcement() {
+    let a = Node::new(&NodeConfig::new(0, "Alice"));
+    let b = Node::new(&NodeConfig::new(1, "Bob"));
+    let b_port = b.receive().await;
+    a.ls.start_discovery().await.unwrap();
+    let a_port =
+        a.ls.port()
+            .await
+            .expect("discovery listens for the answers");
+    upstream_registers(a_port, 0, 1, b_port).await;
+    let bob = format!("ls:{}", identity(1).fingerprint);
+    let listed = a
+        .wait_event("Bob listed from his answer", |e| match e {
+            Event::PeerFound { peer } if peer.id == bob => Some(peer.clone()),
+            _ => None,
+        })
+        .await;
+    assert_eq!(listed.name, "Bob");
+    // Only registrations: an offer is refused unread.
+    let body = offer_json(1, "Bob", &serde_json::json!({}));
+    let refused = request(a_port, 1, "/api/localsend/v2/prepare-upload", &body)
+        .await
+        .expect("an answer");
+    assert_eq!(refused.status, 403);
+    assert!(
+        !a.consent
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|e| matches!(e, ConsentEvent::Pending { .. })),
+        "nobody was asked"
+    );
+    // Discovery stops, the listener with it.
+    a.ls.stop_discovery().await;
+    assert_eq!(a.ls.port().await, None);
+    assert!(
+        tokio::net::TcpListener::bind(("127.0.0.1", a_port))
+            .await
+            .is_ok()
+    );
+    // Receive on and off again with discovery running keeps it listening
+    // for the answers, and taking offers only while Receive is on.
+    a.ls.start_discovery().await.unwrap();
+    a.ls.start_receiving().await.unwrap();
+    a.ls.stop_receiving().await;
+    let port = a.ls.port().await.expect("still listening while looking");
+    upstream_registers(port, 0, 1, b_port).await;
+    let refused = request(port, 1, "/api/localsend/v2/prepare-upload", &body)
+        .await
+        .expect("an answer");
+    assert_eq!(refused.status, 403);
+    a.ls.stop_discovery().await;
+    assert_eq!(a.ls.port().await, None);
+}
+
 /// A lead whose server did not answer is tried again in the next rounds.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_peer_that_did_not_answer_is_asked_again() {

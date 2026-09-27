@@ -48,7 +48,7 @@ Every ID names the requirement it covers.
 
 | ID | Covers | Steps | Pass when |
 | --- | --- | --- | --- |
-| M-20 | F-LS1 | Open LocalSend on the desktop and on iOS. | Both see the phone, and the phone sees both. |
+| M-20 | F-LS1 | Open LocalSend on the desktop, on iOS and on an Android phone, and leave each on its Receive screen. On the Jolla, with Receive off, open the Send tab and pick a file. Then from the desktop's LocalSend, try to send to the phone while it is still on the Send tab. | Every one appears on the radar within a few seconds, without being refreshed on its side, and each sees the phone. The desktop's send is refused ("not receiving"): the Send tab takes no offers. |
 | M-21 | F-LS2 | Switch the desktop's LocalSend to HTTP (encryption off) and send. | The phone refuses; the desktop reports an error. |
 | M-22 | F-LS3 | Send from the phone to the desktop and to iOS. | Files arrive intact (compare SHA-256). |
 | M-23 | F-LS4 | Set a PIN; send from the desktop with a wrong PIN, then the right one. | Wrong PIN refused, right PIN reaches the consent dialog. |

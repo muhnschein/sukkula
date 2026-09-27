@@ -162,7 +162,11 @@ These are enforced in the code and checked in CI, not merely intended.
   such querier, legacy unicast included -- and limits its unicast replies
   per address.
 - **LocalSend is HTTPS-only and pinned.** No plain-HTTP listener exists.
-  Sends are pinned, during the handshake, to the fingerprint the peer
+  The HTTPS server runs while receiving, and while the Send tab looks for
+  devices, since LocalSend answers an announcement only by registering
+  with the server it names; then it serves `register` and `info` alone,
+  every registration proven by its client certificate, and refuses offers
+  unread. Sends are pinned, during the handshake, to the fingerprint the peer
   announced. Uploads are accepted only from the address and certificate
   that made the accepted offer, with the per-file token. The register
   fallback of discovery (F-LS1) never scans the subnet: it registers only

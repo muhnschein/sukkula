@@ -36,7 +36,10 @@
 //!
 //! The multicast socket runs while receiving (so senders looking for us get
 //! an answer) or discovering (so we hear who is there), and announces when
-//! either starts, and periodically while discovering.
+//! either starts, and periodically while discovering. An announcement of
+//! ours is answered by a register request to our server, never by
+//! multicast (upstream's `answer_announcement`), so discovery keeps the
+//! server running as well, for registrations only unless receiving.
 //!
 //! [`Options::announce_interval`]: super::Options::announce_interval
 
