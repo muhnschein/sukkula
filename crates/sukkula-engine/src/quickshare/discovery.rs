@@ -201,10 +201,9 @@ pub(super) fn insert(
         return None;
     }
     let id = peer_id(endpoint_id);
-    let entry = PeerEntry {
-        peer: listed(endpoint_id, raw_name, device_type),
-        addr,
-    };
+    let mut peer = listed(endpoint_id, raw_name, device_type);
+    peer.address = Some(addr.ip().to_string());
+    let entry = PeerEntry { peer, addr };
     let (changed, replaced) = {
         let mut peers = lock(&shared.peers);
         let (seq, replaced) = match peers.by_id.get(&id) {
@@ -300,6 +299,8 @@ pub(super) fn listed(
             rqs_lib::DeviceType::Laptop => DeviceType::Computer,
             rqs_lib::DeviceType::Unknown => DeviceType::Unknown,
         },
+        address: None,
+        fingerprint: None,
     }
 }
 

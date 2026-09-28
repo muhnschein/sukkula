@@ -8,9 +8,10 @@ import "helpers/Events.js" as Ev
  * context as main.cpp provides it: the engine started once, the consent
  * dialog brought up over whatever is showing and one offer at a time
  * (F-C2, F-C3), the stack's transitions waited out, Send mode's discovery
- * paused while the app stays in the background, the Share menu's items
- * reaching the centre of the send radar, in Send mode (F-C6), KeepAlive
- * held during transfers only (§2), and notifications that name no one.
+ * paused while the app stays in the background, the Share menu's files
+ * reaching the Send tab, its texts not taken (F-C6, spec v0.7), the
+ * cover's actions opening the app on their tab, KeepAlive held during
+ * transfers only (§2), and notifications that name no one.
  */
 Script {
     id: test
@@ -61,7 +62,7 @@ Script {
             test.compare(bridge.startCount, 1, "the engine is started once")
             test.compare(test.top(), "mainPage")
             test.verify(test.win.coverItem !== null, "the cover is made")
-            test.compare(probe.find(test.win.coverItem, "coverState").text, "Not receiving")
+            test.verify(probe.find(test.win.coverItem, "coverIdle").visible, "the cover: Send and Receive")
             test.compare(test.find("keepAlive").enabled, false, "no KeepAlive while idle")
             // In front, as the phone starts it (the runner's window is not).
             test.win.applicationActive = true
@@ -159,7 +160,7 @@ Script {
             var note = test.find("doneNote")
             test.compare(note.publishCount, 1)
             test.compare(note.summary, "2 files received")
-            test.compare(note.body, "Saved in Downloads/Sukkula")
+            test.compare(note.body, "Saved in Downloads › Sukkula")
             test.verify(note.remoteActions.length === 0, "no action that opens anything")
             // An outgoing one is not announced.
             bridge.emitEvent(Ev.transferStarted(11, "outgoing", {}))
@@ -173,11 +174,16 @@ Script {
         function () {
             var note = test.find("doneNote")
             test.compare(note.summary, "Receiving failed")
-            test.compare(note.body, "Network error or timeout.")
+            test.compare(note.body, "The connection failed or timed out.")
             test.win.applicationActive = true
             // The Share menu (F-C6), while receiving and with a page over
             // the main one.
+            test.find("modeTabs").tabClicked(1)
             bridge.emitEvent(Ev.receiving(true))
+            return 50
+        },
+        function () {
+            test.compare(test.find("modePager").currentIndex, 1, "receiving")
             test.stack.push(Qt.resolvedUrl("../../qml/pages/AboutPage.qml"), { engine: test.find("mainPage").engine })
             return 50
         },
@@ -199,9 +205,9 @@ Script {
             test.compare(test.top(), "mainPage", "the main page, whatever was over it")
             test.compare(test.stack.depth, 1)
             var page = test.stack.currentPage
-            test.compare(page.payload.files.length, 2, "at the radar's centre")
+            test.compare(page.payload.files.length, 2, "chosen on the Send tab; the text not taken")
             test.compare(page.payload.files[1].path, "/home/defaultuser/Downloads/y z.png")
-            test.compare(page.payload.texts, ["shared EVIL text"])
+            test.compare(test.find("modePager").currentIndex, 0, "the Send tab")
             var cmds = bridge.parsedCommands()
             test.compare(cmds[cmds.length - 1].cmd, { type: "set_receiving", on: false }, "and Send mode")
             bridge.emitEvent(Ev.receiving(false))
@@ -211,7 +217,8 @@ Script {
         },
         function () {
             test.compare(test.top(), "consentDialog")
-            test.find("shareText").triggered([{ data: "second share" }])
+            test.verify(test.find("shareText") === null, "no share method for texts")
+            test.find("shareFiles").triggered([{ filePath: "/home/defaultuser/Documents/second.pdf" }])
             return 300
         },
         function () {
@@ -222,18 +229,37 @@ Script {
         function () {
             test.compare(test.top(), "mainPage", "then the share")
             test.compare(test.stack.depth, 1)
-            test.compare(test.stack.currentPage.payload.texts, ["second share"], "in place of the first")
-            test.compare(test.stack.currentPage.payload.files.length, 0)
+            test.compare(test.stack.currentPage.payload.files,
+                         [{ path: "/home/defaultuser/Documents/second.pdf", name: "second.pdf", size: -1 }],
+                         "in place of the first")
             // Nothing was sent by sharing alone.
             var cmds = bridge.parsedCommands()
             for (var i = 0; i < cmds.length; i++) {
                 test.verify(cmds[i].cmd.type !== "send", "no send without a target chosen")
             }
-            // The cover's action is the Receive switch.
-            bridge.emitEvent(Ev.receiving(true))
+            // The cover's actions open the app on their tab, whatever
+            // was over the main page.
+            bridge.emitEvent(Ev.receiving(false))
+            test.win.applicationActive = false
+            test.stack.push(Qt.resolvedUrl("../../qml/pages/AboutPage.qml"), { engine: test.find("mainPage").engine })
+            return 50
         },
         function () {
-            test.compare(probe.find(test.win.coverItem, "coverState").text, "Receiving")
+            var before = test.win.activateCount
+            probe.find(test.win.coverItem, "coverActionReceive").triggered()
+            test.compare(test.win.activateCount, before + 1, "the window comes forward")
+            test.compare(test.top(), "mainPage")
+            test.compare(test.find("modePager").currentIndex, 1, "on the Receive tab")
+            var cmds = bridge.parsedCommands()
+            var last = null
+            for (var i = 0; i < cmds.length; i++) {
+                if (cmds[i].cmd.type === "set_receiving") {
+                    last = cmds[i].cmd
+                }
+            }
+            test.compare(last, { type: "set_receiving", on: true }, "receiving")
+            probe.find(test.win.coverItem, "coverActionSend").triggered()
+            test.compare(test.find("modePager").currentIndex, 0, "and on the Send tab")
         }
     ]
 }

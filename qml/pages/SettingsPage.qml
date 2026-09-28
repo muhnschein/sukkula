@@ -4,11 +4,18 @@ import Sailfish.Silica 1.0
 import "../components"
 
 /*
- * Settings, saved when the page is left: the device name (F-C7), each
- * protocol on or off (F-C1), the LocalSend PIN (F-LS4), Quick Share
- * visibility and the BLE nudge (F-QS4, F-QS2), Magic Wormhole and its
- * servers (F-MW4), croc and its relay (F-CR3), and debug logging, off by
- * default (S9).
+ * Settings, saved when the page is left: the name other devices see
+ * (F-C7); under "Nearby", each way on or off by who it reaches -- Android
+ * phones (Quick Share, with its visibility and the BLE nudge, F-QS4,
+ * F-QS2), computers and other phones (LocalSend, with its PIN, F-LS4),
+ * Bluetooth -- and under "Far away" Magic Wormhole and croc, with their
+ * servers folded away (F-MW4, F-CR3) (F-C1, spec v0.7); and debug logging,
+ * off by default (S9).
+ *
+ * Under each way of receiving nearby, how it is doing: waiting for the
+ * Receive tab, starting, ready, or -- in red, with the engine's detail --
+ * why it could not start. The Receive tab only says that one could not,
+ * and leads here.
  *
  * The fields are checked here the way sukkula-core checks them
  * (config.rs), so a bad value is caught while it can still be fixed; the
@@ -29,6 +36,18 @@ Page {
     readonly property bool crocPasswordValid: /^[\x20-\x7e]{0,64}$/.test(page.trimmed(crocPasswordField.text))
     readonly property bool valid: page.pinValid && page.mailboxValid && page.relayValid
                                   && page.crocRelayValid && page.crocPasswordValid
+    readonly property bool serversValid: page.mailboxValid && page.relayValid
+                                         && page.crocRelayValid && page.crocPasswordValid
+    /// The fields for one's own servers are unfolded: on a tap, and
+    /// whenever one is wrong, so it can be seen.
+    property bool serversOpen: false
+    onServersValidChanged: {
+        if (!page.serversValid) {
+            page.serversOpen = true
+        }
+    }
+    /// How far the options under a switch are indented.
+    readonly property real indent: Theme.paddingLarge * 2
 
     // A bad value keeps the page open, highlighted, rather than being
     // thrown away on the way out.
@@ -76,6 +95,50 @@ Page {
         return text.replace(/^\s+|\s+$/g, "")
     }
 
+    /// The engine's word on how a way of receiving is doing, or null.
+    function statusOf(protocol) {
+        var statuses = page.engine.protocolStatuses
+        for (var i = 0; i < statuses.length; i++) {
+            if (statuses[i].protocol === protocol) {
+                return statuses[i]
+            }
+        }
+        return null
+    }
+
+    /// How a way of receiving nearby is doing, in a line for under its
+    /// switch: nothing while it is off, here or in the engine, or failed.
+    function statusText(protocol, on) {
+        if (!on || !page.engine.protocolEnabled(protocol)) {
+            return ""
+        }
+        if (!page.engine.receiving) {
+            //: Settings, under a way of receiving nearby: it runs only while the Receive tab is on screen.
+            return qsTr("Receives while the Receive tab is open")
+        }
+        var status = page.statusOf(protocol)
+        switch (status ? status.state : "") {
+        case "starting":
+            //: Settings, under a way of receiving nearby: it is starting up.
+            return qsTr("Starting…")
+        case "ready":
+            //: Settings, under a way of receiving nearby: others can send to this phone this way.
+            return qsTr("Ready to receive")
+        }
+        return ""
+    }
+
+    /// A switch's grey line, with how it is doing under it.
+    function describe(what, status) {
+        return status.length > 0 ? what + "\n" + status : what
+    }
+
+    /// [the engine's status] when a way on here could not start, else [].
+    function failure(protocol, on) {
+        var status = page.statusOf(protocol)
+        return on && page.engine.receiving && status && status.state === "failed" ? [status] : []
+    }
+
     function load() {
         var s = page.engine.settings
         var ls = s.localsend || {}
@@ -97,6 +160,8 @@ Page {
         crocPasswordField.text = typeof cr.password === "string" ? cr.password : ""
         bluetoothSwitch.checked = bt.enabled !== false
         loggingSwitch.checked = s.logging === true
+        page.serversOpen = mailboxField.text.length > 0 || relayField.text.length > 0
+                           || crocRelayField.text.length > 0 || crocPasswordField.text.length > 0
         page.loaded = true
     }
 
@@ -156,6 +221,40 @@ Page {
     // share replaces (harbour-sukkula.qml, navigate()).
     Component.onDestruction: page.save()
 
+    // Under a switch: why its way of receiving could not start, and the
+    // engine's detail.
+    Component {
+        id: failedLine
+
+        Column {
+            objectName: "protocolFailed"
+            width: column.width
+            bottomPadding: Theme.paddingMedium
+
+            Label {
+                objectName: "protocolFailedLine"
+                x: page.indent + Theme.horizontalPageMargin
+                width: parent.width - x - Theme.horizontalPageMargin
+                //: Settings, under a way of receiving nearby: it could not start; %1 says why.
+                text: qsTr("Could not start: %1").arg(page.engine.errorText({ code: modelData.errorCode }))
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                font.pixelSize: Theme.fontSizeSmall
+                color: Theme.errorColor
+            }
+            Label {
+                x: page.indent + Theme.horizontalPageMargin
+                width: parent.width - x - Theme.horizontalPageMargin
+                visible: text.length > 0
+                text: modelData.errorDetail
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                font.pixelSize: Theme.fontSizeExtraSmall
+                color: Theme.secondaryColor
+            }
+        }
+    }
+
     SilicaFlickable {
         anchors.fill: parent
         contentHeight: column.height + Theme.paddingLarge
@@ -180,98 +279,48 @@ Page {
                 color: Theme.errorColor
             }
 
-            // What failed to start, with the engine's detail line.
-            Repeater {
-                model: page.engine.protocolStatuses
-                delegate: Column {
-                    width: column.width
-                    visible: modelData.state === "failed"
-
-                    Label {
-                        x: Theme.horizontalPageMargin
-                        width: parent.width - 2 * Theme.horizontalPageMargin
-                        //: A protocol could not start; %1 is its name, %2 why.
-                        text: qsTr("%1 could not start: %2").arg(page.engine.protocolName(modelData.protocol))
-                                                          .arg(page.engine.errorText({ code: modelData.errorCode }))
-                        textFormat: Text.PlainText
-                        wrapMode: Text.Wrap
-                        font.pixelSize: Theme.fontSizeSmall
-                        color: Theme.errorColor
-                    }
-                    Label {
-                        x: Theme.horizontalPageMargin
-                        width: parent.width - 2 * Theme.horizontalPageMargin
-                        visible: text.length > 0
-                        text: modelData.errorDetail
-                        textFormat: Text.PlainText
-                        wrapMode: Text.Wrap
-                        font.pixelSize: Theme.fontSizeExtraSmall
-                        color: Theme.secondaryColor
-                    }
-                }
+            SectionHeader {
+                //: Settings: over the name other devices see (F-C7).
+                text: qsTr("Name shown to other devices")
             }
-
             TextField {
                 id: nameField
                 objectName: "deviceNameField"
                 width: parent.width
-                //: Settings: the name other devices see (F-C7).
-                label: qsTr("Device name")
                 // The name used when this is empty: the phone's model.
                 placeholderText: page.engine.effectiveDeviceName
                 maximumLength: 64
             }
 
             SectionHeader {
-                text: "LocalSend"
-                visible: page.engine.hasProtocol("local_send")
-            }
-            TextSwitch {
-                id: localSendSwitch
-                visible: page.engine.hasProtocol("local_send")
-                //: Settings: switch a protocol on or off.
-                text: qsTr("Use LocalSend")
-                //: Settings: what the LocalSend switch covers.
-                description: qsTr("Send to and receive from LocalSend apps on the same Wi-Fi.")
-            }
-            TextField {
-                id: pinField
-                objectName: "pinField"
-                width: parent.width
-                visible: page.engine.hasProtocol("local_send")
-                //: Settings: the PIN LocalSend senders must type (F-LS4).
-                label: page.pinValid
-                       ? qsTr("Receive PIN (optional)")
-                       //: Settings: the PIN field holds something else than 1 to 16 letters and digits.
-                       : qsTr("Up to 16 letters and digits")
-                //: Settings: the PIN field when no PIN is set.
-                placeholderText: qsTr("No PIN")
-                inputMethodHints: Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
-                maximumLength: 16
-                errorHighlight: !page.pinValid
-            }
-
-            SectionHeader {
-                text: "Quick Share"
-                visible: page.engine.hasProtocol("quick_share")
+                visible: page.engine.hasProtocol("quick_share") || page.engine.hasProtocol("local_send")
+                         || page.engine.hasProtocol("bluetooth")
+                //: Settings section: sending and receiving on the same Wi-Fi, or over Bluetooth.
+                text: qsTr("Nearby")
             }
             TextSwitch {
                 id: quickShareSwitch
+                objectName: "quickShareSwitch"
                 visible: page.engine.hasProtocol("quick_share")
-                //: Settings: switch a protocol on or off.
-                text: qsTr("Use Quick Share")
-                //: Settings: what the Quick Share switch covers.
-                description: qsTr("Send to and receive from Android phones on the same Wi-Fi.")
+                //: Settings: the Quick Share switch, by who it reaches.
+                text: qsTr("Android phones")
+                //: Settings: under "Android phones".
+                description: page.describe(qsTr("Quick Share, on the same Wi-Fi"),
+                                           page.statusText("quick_share", quickShareSwitch.checked))
+            }
+            Repeater {
+                model: page.failure("quick_share", quickShareSwitch.checked)
+                delegate: failedLine
             }
             ComboBox {
                 id: visibilityBox
                 objectName: "visibilityBox"
-                width: parent.width
+                x: page.indent
+                width: parent.width - page.indent
                 visible: page.engine.hasProtocol("quick_share")
+                enabled: quickShareSwitch.checked
                 //: Settings: who can see this phone over Quick Share (F-QS4).
                 label: qsTr("Visible to")
-                //: Settings: Quick Share visibility; contacts-only is impossible without a Google account.
-                description: qsTr("Contacts only needs a Google account, so it is not offered.")
                 menu: ContextMenu {
                     MenuItem {
                         //: Quick Share visibility: anyone nearby while receiving is on.
@@ -286,37 +335,131 @@ Page {
             TextSwitch {
                 id: nudgeSwitch
                 objectName: "nudgeSwitch"
+                x: page.indent
+                width: parent.width - page.indent
                 visible: page.engine.hasProtocol("quick_share")
+                enabled: quickShareSwitch.checked
                 //: Settings: while sending, a Bluetooth LE signal makes nearby Android phones announce themselves on the Wi-Fi (F-QS2).
-                text: qsTr("Bluetooth nudge")
-                //: Settings: what the Bluetooth nudge does. It works only while Send mode looks for devices; it does not make this phone visible.
-                description: qsTr("While Send mode looks for devices, a Bluetooth signal prompts Android phones nearby to show up.")
+                text: qsTr("Bluetooth wake-up")
+                //: Settings: what the Bluetooth wake-up does. It works only while the Send tab looks for devices; it does not make this phone visible.
+                description: qsTr("Makes Android phones nearby show up while you send.")
+            }
+            TextSwitch {
+                id: localSendSwitch
+                objectName: "localSendSwitch"
+                visible: page.engine.hasProtocol("local_send")
+                //: Settings: the LocalSend switch, by who it reaches.
+                text: qsTr("Computers and other phones")
+                //: Settings: under "Computers and other phones".
+                description: page.describe(qsTr("LocalSend, on the same Wi-Fi"),
+                                           page.statusText("local_send", localSendSwitch.checked))
+            }
+            Repeater {
+                model: page.failure("local_send", localSendSwitch.checked)
+                delegate: failedLine
+            }
+            TextField {
+                id: pinField
+                objectName: "pinField"
+                x: page.indent
+                width: parent.width - page.indent
+                visible: page.engine.hasProtocol("local_send")
+                enabled: localSendSwitch.checked
+                //: Settings: the PIN LocalSend senders must type (F-LS4).
+                label: page.pinValid
+                       ? qsTr("PIN to receive (optional)")
+                       //: Settings: the PIN field holds something else than 1 to 16 letters and digits.
+                       : qsTr("Up to 16 letters and digits")
+                //: Settings: the PIN field when no PIN is set.
+                placeholderText: qsTr("No PIN")
+                inputMethodHints: Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
+                maximumLength: 16
+                errorHighlight: !page.pinValid
+            }
+            TextSwitch {
+                id: bluetoothSwitch
+                objectName: "bluetoothSwitch"
+                visible: page.engine.hasProtocol("bluetooth")
+                text: "Bluetooth"
+                //: Settings: what the Bluetooth switch covers, and why it only sends (F-BT2).
+                description: qsTr("Sends to paired devices. Receiving is handled by the phone's Bluetooth settings.")
             }
 
             SectionHeader {
-                text: "Magic Wormhole"
-                visible: page.engine.hasProtocol("wormhole")
+                visible: page.engine.hasProtocol("wormhole") || page.engine.hasProtocol("croc")
+                //: Settings section: sending and receiving over the internet with a code.
+                text: qsTr("Far away")
             }
             TextSwitch {
                 id: wormholeSwitch
                 objectName: "wormholeSwitch"
                 visible: page.engine.hasProtocol("wormhole")
-                //: Settings: switch a protocol on or off.
-                text: qsTr("Use Magic Wormhole")
-                //: Settings: what the Magic Wormhole switch covers (F-C1): sending to a code and receiving with one.
-                description: qsTr("Send and receive with a code, through a server on the internet.")
+                text: "Magic Wormhole"
+                //: Settings: under the Magic Wormhole switch: the apps a Magic Wormhole code works with.
+                description: qsTr("Works with Warp and the wormhole command")
+            }
+            TextSwitch {
+                id: crocSwitch
+                objectName: "crocSwitch"
+                visible: page.engine.hasProtocol("croc")
+                text: "croc"
+                //: Settings: under the croc switch: the app a croc code works with.
+                description: qsTr("Works with the croc app")
+            }
+
+            // The servers, folded away: most never change them.
+            BackgroundItem {
+                objectName: "serversToggle"
+                width: parent.width
+                height: Theme.itemSizeSmall
+                visible: page.engine.hasProtocol("wormhole") || page.engine.hasProtocol("croc")
+                onClicked: page.serversOpen = !page.serversOpen
+
+                Label {
+                    anchors {
+                        right: serversArrow.left
+                        rightMargin: Theme.paddingSmall
+                        verticalCenter: parent.verticalCenter
+                    }
+                    //: Settings: unfolds the fields for one's own Magic Wormhole and croc servers.
+                    text: qsTr("Your own servers")
+                    textFormat: Text.PlainText
+                    color: Theme.highlightColor
+                }
+                Image {
+                    id: serversArrow
+                    anchors {
+                        right: parent.right
+                        rightMargin: Theme.horizontalPageMargin
+                        verticalCenter: parent.verticalCenter
+                    }
+                    source: "image://theme/icon-m-down?" + Theme.highlightColor
+                    rotation: page.serversOpen ? 180 : 0
+                }
+            }
+            Label {
+                objectName: "serversNote"
+                x: Theme.horizontalPageMargin
+                width: parent.width - 2 * Theme.horizontalPageMargin
+                visible: page.serversOpen && (page.engine.hasProtocol("wormhole") || page.engine.hasProtocol("croc"))
+                bottomPadding: Theme.paddingMedium
+                //: Settings, over the fields for one's own servers.
+                text: qsTr("Leave a field empty to use the public server.")
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                font.pixelSize: Theme.fontSizeSmall
+                color: Theme.secondaryHighlightColor
             }
             TextField {
                 id: mailboxField
                 objectName: "mailboxField"
                 width: parent.width
-                visible: page.engine.hasProtocol("wormhole")
+                visible: page.serversOpen && page.engine.hasProtocol("wormhole")
                 //: Settings: the Magic Wormhole mailbox server (F-MW4).
-                label: page.mailboxValid ? qsTr("Mailbox server")
+                label: page.mailboxValid ? qsTr("Magic Wormhole mailbox server")
                                          //: Settings: the mailbox URL is not usable.
                                          : qsTr("Must start with ws:// or wss://")
-                //: Settings: an empty server field means the built-in default.
-                placeholderText: qsTr("Default server")
+                placeholderText: qsTr("Magic Wormhole mailbox server")
                 inputMethodHints: Qt.ImhUrlCharactersOnly | Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
                 maximumLength: 256
                 errorHighlight: !page.mailboxValid
@@ -325,42 +468,26 @@ Page {
                 id: relayField
                 objectName: "relayField"
                 width: parent.width
-                visible: page.engine.hasProtocol("wormhole")
+                visible: page.serversOpen && page.engine.hasProtocol("wormhole")
                 //: Settings: the Magic Wormhole transit relay (F-MW4).
-                label: page.relayValid ? qsTr("Transit relay")
+                label: page.relayValid ? qsTr("Magic Wormhole transit relay")
                                        //: Settings: the relay URL is not usable.
                                        : qsTr("Must look like tcp://host:port")
-                //: Settings: an empty server field means the built-in default.
-                placeholderText: qsTr("Default server")
+                placeholderText: qsTr("Magic Wormhole transit relay")
                 inputMethodHints: Qt.ImhUrlCharactersOnly | Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
                 maximumLength: 256
                 errorHighlight: !page.relayValid
-            }
-
-            SectionHeader {
-                text: "croc"
-                visible: page.engine.hasProtocol("croc")
-            }
-            TextSwitch {
-                id: crocSwitch
-                objectName: "crocSwitch"
-                visible: page.engine.hasProtocol("croc")
-                //: Settings: switch a protocol on or off.
-                text: qsTr("Use croc")
-                //: Settings: what the croc switch covers (F-C1): sending to a code and receiving with one.
-                description: qsTr("Send and receive with a code, through a croc relay on the internet.")
             }
             TextField {
                 id: crocRelayField
                 objectName: "crocRelayField"
                 width: parent.width
-                visible: page.engine.hasProtocol("croc")
+                visible: page.serversOpen && page.engine.hasProtocol("croc")
                 //: Settings: the croc relay (F-CR3).
-                label: page.crocRelayValid ? qsTr("Relay")
+                label: page.crocRelayValid ? qsTr("croc relay")
                                            //: Settings: the croc relay is not usable.
                                            : qsTr("Must look like host or host:port")
-                //: Settings: an empty server field means the built-in default.
-                placeholderText: qsTr("Default server")
+                placeholderText: qsTr("croc relay")
                 inputMethodHints: Qt.ImhUrlCharactersOnly | Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
                 maximumLength: 256
                 errorHighlight: !page.crocRelayValid
@@ -369,29 +496,15 @@ Page {
                 id: crocPasswordField
                 objectName: "crocPasswordField"
                 width: parent.width
-                visible: page.engine.hasProtocol("croc")
+                visible: page.serversOpen && page.engine.hasProtocol("croc")
                 //: Settings: the croc relay's password (F-CR3).
-                label: page.crocPasswordValid ? qsTr("Relay password")
+                label: page.crocPasswordValid ? qsTr("croc relay password")
                                               //: Settings: the croc relay password is not usable.
                                               : qsTr("Up to 64 plain letters, digits and signs")
-                //: Settings: an empty croc relay password means croc's own.
-                placeholderText: qsTr("Default password")
+                placeholderText: qsTr("croc relay password")
                 inputMethodHints: Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
                 maximumLength: 64
                 errorHighlight: !page.crocPasswordValid
-            }
-
-            SectionHeader {
-                text: "Bluetooth"
-                visible: page.engine.hasProtocol("bluetooth")
-            }
-            TextSwitch {
-                id: bluetoothSwitch
-                visible: page.engine.hasProtocol("bluetooth")
-                //: Settings: switch a protocol on or off.
-                text: qsTr("Send over Bluetooth")
-                //: Settings: why Bluetooth only sends (F-BT2).
-                description: qsTr("To paired devices. Receiving over Bluetooth is up to the phone's own Bluetooth settings.")
             }
 
             SectionHeader {
@@ -404,7 +517,7 @@ Page {
                 //: Settings: debug logging (S9).
                 text: qsTr("Debug logging")
                 //: Settings: what debug logging does.
-                description: qsTr("Only for finding faults. Leave it off otherwise.")
+                description: qsTr("Writes more detail to the system log.")
             }
 
             Item {

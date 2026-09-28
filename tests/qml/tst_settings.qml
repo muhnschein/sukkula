@@ -7,8 +7,13 @@ import "helpers/Events.js" as Ev
 
 /*
  * Settings (F-C1, F-C7, F-LS4, F-QS4, F-QS2, F-MW4, F-CR3, S9): loaded
- * from the engine, checked as sukkula-core checks them, saved when the
- * page is left -- not when a page is pushed over it -- and only when
+ * from the engine, each way named by who it reaches, how each way of
+ * receiving nearby is doing under its switch -- waiting for the Receive
+ * tab, ready, or why it could not start, in red with the engine's detail
+ * -- an option under a switch greyed while the switch is off, one's own
+ * servers folded away until set or wrong, each field saying which server
+ * it is even while empty; checked as sukkula-core checks them, saved when
+ * the page is left -- not when a page is pushed over it -- and only when
  * something changed, with every field the page does not know kept. Then
  * the About page. Receiving by code is tst_scan.qml's.
  */
@@ -57,8 +62,40 @@ Script {
             test.compare(test.field("crocRelayField").text, "", "croc's own relay by default (F-CR3)")
             test.compare(test.field("crocPasswordField").text, "")
             test.compare(test.field("nudgeSwitch").description,
-                         "While Send mode looks for devices, a Bluetooth signal prompts Android phones nearby to show up.",
+                         "Makes Android phones nearby show up while you send.",
                          "the nudge said as what it is: a sending aid (F-QS2)")
+            test.compare(test.field("quickShareSwitch").text, "Android phones", "Quick Share by who it reaches")
+            test.compare(test.field("localSendSwitch").text, "Computers and other phones", "LocalSend too")
+            test.compare(test.field("localSendSwitch").description,
+                         "LocalSend, on the same Wi-Fi\nReceives while the Receive tab is open",
+                         "the protocol only in the grey line, with how it is doing")
+            test.compare(test.field("quickShareSwitch").description,
+                         "Quick Share, on the same Wi-Fi\nReceives while the Receive tab is open")
+            test.compare(probe.findAll(test.page, "protocolFailed").length, 0, "nothing failed")
+            // An option under a switch is greyed while the switch is off.
+            test.verify(test.field("pinField").enabled && test.field("nudgeSwitch").enabled)
+            test.field("localSendSwitch").click()
+            test.field("quickShareSwitch").click()
+            test.verify(!test.field("pinField").enabled, "no PIN without LocalSend")
+            test.verify(!test.field("nudgeSwitch").enabled && !test.field("visibilityBox").enabled,
+                        "no nudge or visibility without Quick Share")
+            test.field("localSendSwitch").click()
+            test.field("quickShareSwitch").click()
+            // One's own servers are folded away until asked for.
+            test.verify(!test.page.serversOpen && !test.field("mailboxField").visible
+                        && !test.field("crocRelayField").visible, "the servers folded away")
+            probe.find(test.page, "serversToggle").clicked()
+            test.verify(test.field("mailboxField").visible && test.field("relayField").visible
+                        && test.field("crocRelayField").visible && test.field("crocPasswordField").visible,
+                        "and unfolded with a tap")
+            test.verify(test.field("serversNote").visible, "saying what an empty field means, once")
+            // Each empty field says which server it is: Silica hides the
+            // label of an empty field.
+            test.compare([test.field("mailboxField").placeholderText, test.field("relayField").placeholderText,
+                          test.field("crocRelayField").placeholderText,
+                          test.field("crocPasswordField").placeholderText],
+                         ["Magic Wormhole mailbox server", "Magic Wormhole transit relay", "croc relay",
+                          "croc relay password"])
             // Leaving unchanged saves nothing.
             window.pageStack.pop()
             return 50
@@ -141,11 +178,31 @@ Script {
                 logging: true
             })
             // Fields this page does not know are kept, not reset.
-            bridge.emitEvent(Ev.settings({ future_field: { x: 1 } }))
             test.page = null
         },
         function () {
-            test.page = window.pageStack.push(Qt.resolvedUrl("../../qml/pages/SettingsPage.qml"), { engine: engine })
+            // A server set is shown: the fields come unfolded.
+            test.verify(test.page === null)
+            var s = JSON.parse(JSON.stringify(engine.settings))
+            test.compare(s.croc.relay, null, "the engine's copy: nothing saved went back to it")
+            bridge.emitEvent(Ev.settings({ croc: { enabled: true, relay: "croc.example.org:9009", password: null } }))
+        },
+        function () {
+            var page = window.pageStack.push(Qt.resolvedUrl("../../qml/pages/SettingsPage.qml"), { engine: engine })
+            test.verify(page.serversOpen && probe.find(page, "crocRelayField").visible, "a relay set is in view")
+            window.pageStack.pop()
+            bridge.emitEvent(Ev.settings({ future_field: { x: 1 } }))
+            return 50
+        },
+        function () {
+            test.compare(test.commandsOfType("set_settings").length, 1, "an unchanged page saved nothing")
+            // A wrong server unfolds them, so it can be seen.
+            var page = window.pageStack.push(Qt.resolvedUrl("../../qml/pages/SettingsPage.qml"), { engine: engine })
+            test.verify(!page.serversOpen)
+            probe.find(page, "mailboxField").text = "http://x"
+            test.verify(page.serversOpen, "a wrong server unfolds them")
+            probe.find(page, "mailboxField").text = ""
+            test.page = page
             test.field("deviceNameField").text = "Other"
             window.pageStack.pop()
             return 50
@@ -168,16 +225,39 @@ Script {
         },
         function () {
             var main = window.pageStack.currentPage
-            test.compare(probe.find(main, "bannerLabel").text, "A setting could not be used.")
+            test.compare(probe.find(main, "bannerLabel").text, "A setting is not valid.")
             bridge.autoReply = true
-            // A protocol that failed shows why, with the engine's detail.
+            // While receiving: how each way is doing, under its switch; a
+            // way that failed says why, in red, with the engine's detail.
             bridge.emitEvent(Ev.receiving(true, true))
             test.page = window.pageStack.push(Qt.resolvedUrl("../../qml/pages/SettingsPage.qml"), { engine: engine })
         },
         function () {
-            var all = probe.texts(test.page).join("\n")
-            test.verify(all.indexOf("LocalSend could not start: Network error or timeout.") >= 0, all)
-            test.verify(all.indexOf("port 53317 in use") >= 0, "the detail line")
+            test.compare(test.field("quickShareSwitch").description, "Quick Share, on the same Wi-Fi\nReady to receive")
+            test.compare(test.field("localSendSwitch").description, "LocalSend, on the same Wi-Fi",
+                         "a failure is not a grey word")
+            var failed = probe.findAll(test.page, "protocolFailed")
+            test.compare(failed.length, 1, "LocalSend's, only")
+            var line = probe.find(failed[0], "protocolFailedLine")
+            test.compare(line.text, "Could not start: The connection failed or timed out.")
+            test.verify(line.color === Theme.errorColor, "in red")
+            test.verify(probe.texts(failed[0]).join("\n").indexOf("port 53317 in use") >= 0, "the detail line")
+            var order = failed[0].parent.children
+            var at = function (item) {
+                for (var i = 0; i < order.length; i++) {
+                    if (order[i] === item) {
+                        return i
+                    }
+                }
+                return -1
+            }
+            test.verify(at(failed[0]) > at(test.field("localSendSwitch")) && at(failed[0]) < at(test.field("pinField")),
+                        "under its switch, over its options")
+            // Switched off here: no status for it any more.
+            test.field("localSendSwitch").click()
+            test.compare(probe.findAll(test.page, "protocolFailed").length, 0)
+            test.compare(test.field("localSendSwitch").description, "LocalSend, on the same Wi-Fi")
+            test.field("localSendSwitch").click()
             window.pageStack.pop()
             // About.
             test.page = window.pageStack.push(Qt.resolvedUrl("../../qml/pages/AboutPage.qml"), { engine: engine })

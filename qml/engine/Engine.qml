@@ -61,19 +61,24 @@ QtObject {
     /// The name peers see (F-C7).
     property string effectiveDeviceName: ""
 
-    /// Transfers in progress, for KeepAlive and the cover.
+    /// Transfers in progress, for KeepAlive and the cover, and how many
+    /// of them are coming in.
     property int activeTransfers: 0
+    property int activeIncoming: 0
     property real activeBytes: 0
     property real activeTotal: 0
 
     /// Transfers, newest first. Roles: transferId, direction, protocol,
-    /// peer, files (names, one per line), fileCount, total, bytes, state
-    /// ("active", "done", "cancelled", "failed"), error (a code), saved
-    /// (names, one per line), savedCount.
+    /// peer, files (names, one per line), sizes (their sizes, one per
+    /// line), fileCount, total, bytes, state ("active", "done",
+    /// "cancelled", "failed"), error (a code), saved (names, one per line),
+    /// savedCount, startedAt and endedAt (ms since the epoch; 0 while
+    /// running).
     property ListModel transfers: ListModel {}
     /// Peers to send to, one model per protocol that discovers them.
-    /// Roles: peerId, protocol, name, deviceModel, deviceType. (Not
-    /// "model": a role of that name would hide a delegate's `model`.)
+    /// Roles: peerId, protocol, name, deviceModel, deviceType, address,
+    /// fingerprint. (Not "model": a role of that name would hide a
+    /// delegate's `model`.)
     property ListModel localSendPeers: ListModel {}
     property ListModel quickSharePeers: ListModel {}
     /// Offers waiting for the user (F-C2), oldest first. Roles: offerId,
@@ -287,9 +292,10 @@ QtObject {
         var row = engine.transfers.get(i)
         return {
             transferId: row.transferId, direction: row.direction, protocol: row.protocol,
-            peer: row.peer, files: row.files, fileCount: row.fileCount, total: row.total,
-            bytes: row.bytes, state: row.state, error: row.error, saved: row.saved,
-            savedCount: row.savedCount
+            peer: row.peer, files: row.files, sizes: row.sizes, fileCount: row.fileCount,
+            total: row.total, bytes: row.bytes, state: row.state, error: row.error,
+            saved: row.saved, savedCount: row.savedCount, startedAt: row.startedAt,
+            endedAt: row.endedAt
         }
     }
     function peerModel(protocol) {
@@ -351,18 +357,71 @@ QtObject {
         }
         return ""
     }
-    function stateText(state) {
-        switch (state) {
-        //: A protocol's receiver is switched off.
-        case "off": return qsTr("Off")
-        //: A protocol's receiver is starting up.
-        case "starting": return qsTr("Starting")
-        //: A protocol's receiver is listening for offers.
-        case "ready": return qsTr("Ready")
-        //: A protocol's receiver could not start.
-        case "failed": return qsTr("Failed")
-        //: The protocol can only send from this phone, or receive by a typed code (Bluetooth, Magic Wormhole, croc).
-        case "send_only": return qsTr("Send only")
+    /// What a file is, by its name's extension alone: "photo", "video",
+    /// "music", "document" or "file". Only for an icon and a word; no file
+    /// is opened or looked into, and nothing a peer sent is ever shown as
+    /// a picture (S2).
+    function kindOf(name) {
+        var m = /\.([A-Za-z0-9]{1,5})$/.exec(String(name))
+        var ext = m ? m[1].toLowerCase() : ""
+        if (["jpg", "jpeg", "png", "gif", "heic", "heif", "webp", "bmp", "tif", "tiff", "dng"].indexOf(ext) >= 0) {
+            return "photo"
+        }
+        if (["mp4", "m4v", "mov", "mkv", "webm", "avi", "3gp", "mpg", "mpeg", "ogv"].indexOf(ext) >= 0) {
+            return "video"
+        }
+        if (["mp3", "m4a", "aac", "ogg", "oga", "opus", "flac", "wav", "wma"].indexOf(ext) >= 0) {
+            return "music"
+        }
+        if (["pdf", "doc", "docx", "odt", "ods", "odp", "xls", "xlsx", "ppt", "pptx", "txt", "md",
+             "rtf", "csv", "epub"].indexOf(ext) >= 0) {
+            return "document"
+        }
+        return "file"
+    }
+    /// The kind files share, or "file" when they do not all share one or
+    /// not all of them are named.
+    function commonKind(names, count) {
+        if (!names || names.length === 0 || names.length < count) {
+            return "file"
+        }
+        var kind = engine.kindOf(names[0])
+        for (var i = 1; i < names.length; i++) {
+            if (engine.kindOf(names[i]) !== kind) {
+                return "file"
+            }
+        }
+        return kind
+    }
+    /// "3 photos", "2 videos", "4 files": how many, in Sukkula's words
+    /// only, so it may go where no peer's words may, a page header.
+    function countWords(kind, count) {
+        switch (kind) {
+        //: How many photos, e.g. in "3 photos".
+        case "photo": return qsTr("%n photo(s)", "", count)
+        //: How many videos, e.g. in "2 videos".
+        case "video": return qsTr("%n video(s)", "", count)
+        }
+        //: How many files, e.g. in "4 files".
+        return qsTr("%n file(s)", "", count)
+    }
+    /// What a set of files is called: the name of the one file, or
+    /// countWords(). A name may be a peer's: plain-text labels only.
+    function bundleName(names, count) {
+        if (count === 1 && names && names.length === 1) {
+            return names[0]
+        }
+        return engine.countWords(engine.commonKind(names, count), count)
+    }
+    /// A peer's device type as a word, or "" for "unknown".
+    function deviceTypeText(type) {
+        switch (type) {
+        //: What kind of device a peer says it is.
+        case "phone": return qsTr("Phone")
+        //: What kind of device a peer says it is.
+        case "tablet": return qsTr("Tablet")
+        //: What kind of device a peer says it is.
+        case "computer": return qsTr("Computer")
         }
         return ""
     }
@@ -373,30 +432,30 @@ QtObject {
         switch (code) {
         case "bad_command":
         case "bad_version":
-            return qsTr("Sukkula could not understand its own request.")
+            return qsTr("Internal error.")
         case "unavailable":
-            return qsTr("Not available. Is it switched off in Settings?")
+            return qsTr("Not available. It may be switched off in Settings.")
         case "not_found":
-            return qsTr("It is gone. The other device may have left.")
+            return qsTr("The other device is no longer available.")
         case "bad_settings":
-            return qsTr("A setting could not be used.")
+            return qsTr("A setting is not valid.")
         case "bad_file":
             // Mostly Sailjail: the user's folders and memory cards are
             // granted (spec §2), and a file from anywhere else is out of
             // reach.
-            return qsTr("A file could not be read. Sukkula can send files from Downloads, Documents, Music, Pictures, Videos and memory cards only.")
+            return qsTr("A file could not be read. Sukkula can only send files from Downloads, Documents, Music, Pictures, Videos and memory cards.")
         case "too_large":
-            return qsTr("Too large, or too many files.")
+            return qsTr("Too many files, or too much data.")
         case "refused":
             return qsTr("Declined.")
         case "peer_mismatch":
-            return qsTr("The other device is not the one it claimed to be.")
+            return qsTr("The other device could not be verified.")
         case "bad_code":
-            return qsTr("That code does not work.")
+            return qsTr("The code is wrong or has expired.")
         case "network":
-            return qsTr("Network error or timeout.")
+            return qsTr("The connection failed or timed out.")
         case "storage":
-            return qsTr("Could not save. Is the storage full?")
+            return qsTr("Could not save. The storage may be full.")
         }
         return qsTr("Something went wrong.")
     }
@@ -539,7 +598,9 @@ QtObject {
             protocol: engine._protocol(peer.protocol),
             name: engine._str(peer.name, 128),
             deviceModel: engine._str(peer.model, 128),
-            deviceType: engine._oneOf(peer.device_type, ["phone", "tablet", "computer", "unknown"])
+            deviceType: engine._oneOf(peer.device_type, ["phone", "tablet", "computer", "unknown"]),
+            address: engine._address(peer.address),
+            fingerprint: engine._fingerprint(peer.fingerprint)
         }
         var i = engine._indexOf(model, "peerId", id)
         if (i >= 0) {
@@ -641,11 +702,13 @@ QtObject {
             return
         }
         var names = []
+        var sizes = []
         if (Array.isArray(t.files)) {
             for (var i = 0; i < t.files.length && i < engine.maxListedFiles; i++) {
                 var f = t.files[i]
                 if (f && typeof f === "object") {
                     names.push(engine._str(f.name, 255))
+                    sizes.push(engine._count(f.size))
                 }
             }
         }
@@ -655,13 +718,16 @@ QtObject {
             protocol: protocol,
             peer: engine._str(t.peer, 128),
             files: names.join("\n"),
+            sizes: sizes.join("\n"),
             fileCount: Math.max(engine._count(t.file_count), names.length),
             total: engine._count(t.total_bytes),
             bytes: 0,
             state: "active",
             error: "",
             saved: "",
-            savedCount: 0
+            savedCount: 0,
+            startedAt: Date.now(),
+            endedAt: 0
         }
         var at = engine._indexOf(engine.transfers, "transferId", id)
         if (at >= 0) {
@@ -719,6 +785,7 @@ QtObject {
         engine.transfers.setProperty(i, "error", state === "failed" ? engine._error(outcome.error).code : "")
         engine.transfers.setProperty(i, "saved", saved.join("\n"))
         engine.transfers.setProperty(i, "savedCount", saved.length)
+        engine.transfers.setProperty(i, "endedAt", Date.now())
         engine._recount()
         engine.transferUpdated(id)
         engine.transferEnded(id, row.direction, state)
@@ -784,6 +851,17 @@ QtObject {
     /// An id: a whole number at least 0, else -1.
     function _key(v) {
         return typeof v === "number" && isFinite(v) && v >= 0 && Math.floor(v) === v ? v : -1
+    }
+    /// An IP address, with a port or not: at most 64 characters of
+    /// digits, hex letters, dots, colons, brackets and a zone's percent
+    /// sign, else "".
+    function _address(v) {
+        var a = engine._str(v, 64)
+        return /^[0-9A-Za-z.:%\[\]]*$/.test(a) ? a : ""
+    }
+    /// A certificate fingerprint: 64 hex digits, else "".
+    function _fingerprint(v) {
+        return typeof v === "string" && /^[0-9A-F]{64}$/.test(v) ? v : ""
     }
     function _oneOf(v, allowed) {
         return typeof v === "string" && allowed.indexOf(v) >= 0 ? v : ""
@@ -892,6 +970,7 @@ QtObject {
 
     function _recount() {
         var active = 0
+        var incoming = 0
         var bytes = 0
         var total = 0
         for (var i = 0; i < engine.transfers.count; i++) {
@@ -900,9 +979,13 @@ QtObject {
                 active++
                 bytes += t.bytes
                 total += t.total
+                if (t.direction === "incoming") {
+                    incoming++
+                }
             }
         }
         engine.activeTransfers = active
+        engine.activeIncoming = incoming
         engine.activeBytes = bytes
         engine.activeTotal = total
     }

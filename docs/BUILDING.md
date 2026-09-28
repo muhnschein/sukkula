@@ -117,6 +117,29 @@ tests alone:
 cargo test -p sukkula-engine --no-default-features --features wormhole
 ```
 
+## The words on screen
+
+Every `qsTr()` in `qml/` is what an English reader sees and the source text
+the Finnish, German and Swedish catalogs are translated from. They follow the
+rules Vuo's review of its own strings set down in its architecture notes:
+
+- A string says what a thing does, once, in a finished sentence: a subject
+  and a verb, no fragment added as a coda. Literal verbs: "contains", not
+  "holds"; "uses", not "goes through".
+- A line under a control earns its place by saying what the label cannot: a
+  consequence (what the certificate check stops), what it works with (Warp,
+  the croc app), or a thing to do (leave a field empty). One that restates
+  its label, or the section it is in, goes.
+- A protocol's name is in the grey line, or on a control that is that
+  protocol's (its switch, its server).
+- Sentence case, `…` rather than three dots, and "Downloads › Sukkula" for
+  where received files go, the same everywhere.
+
+Changing a string orphans its translation in every catalog.
+`scripts/update-translations.sh` brings the catalogs up to the sources, and
+`tests/run-qml-tests.sh` fails while a catalog is behind them or a
+translation is missing.
+
 ## Cross-building the engine
 
 `scripts/cross-build-rust.sh` has two routes, and both leave the library

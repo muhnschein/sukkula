@@ -126,7 +126,7 @@ policy, stricter than Harbour.
 | 2.6 | nothing writes to a path the package installs |
 | 2.7 | every platform QML module imported has its package required (`Nemo.Notifications`, `Nemo.KeepAlive`) |
 | P.1 | no other device architecture anywhere in the spec, the workflows or the build scripts |
-| P.2 | the sandbox permissions are exactly spec §2's: `Internet;Bluetooth;Downloads;Documents;Music;Pictures;Videos;RemovableMedia` |
+| P.2 | the sandbox permissions are exactly spec §2's: `Internet;Bluetooth;Camera;Downloads;Documents;Music;Pictures;Videos;RemovableMedia;MediaIndexing` |
 | P.3 | every SDK version the packaging can build against is 5.2 or later |
 | P.4 | `OrganizationName=sukkula`, `ApplicationName=sukkula` |
 | P.5 | platform QML modules are exactly spec §2's: Sailfish.Silica, Sailfish.Share, Sailfish.Pickers, Nemo.KeepAlive, Nemo.Notifications |
@@ -164,7 +164,7 @@ policy, stricter than Harbour.
 
 ## Sailjail permissions, and why each
 
-`Permissions=Internet;Bluetooth;Camera;Downloads;Documents;Music;Pictures;Videos;RemovableMedia`
+`Permissions=Internet;Bluetooth;Camera;Downloads;Documents;Music;Pictures;Videos;RemovableMedia;MediaIndexing`
 and nothing else (spec §2). P.2 fails a tree that asks for less or for
 more: each one missing is a feature that silently does not work in the
 sandbox, and each one extra is reach nobody reviewed.
@@ -195,8 +195,14 @@ sandbox, and each one extra is reach nobody reviewed.
   is read by the app itself: a photo shared from Gallery lives in
   `~/Pictures` (piirit found the same). Nothing is written in these
   folders. `UserDirs` would cover them all, and the rest of the home
-  directory with them; `MediaIndexing` would feed the content pickers,
-  which the file browser does not need.
+  directory with them.
+- **MediaIndexing** -- the platform's content picker for pictures,
+  videos, music and documents (spec v0.7), the Send tab's "Choose files",
+  which lists what the media index (Tracker) knows rather than walk the
+  folders. The
+  index gives names, places and kinds; the pickers hand back paths and
+  sizes, and the app reads nothing else of it. The file browser, for any
+  file, needs no index.
 
 A permission added or dropped is a spec change: §2, the `.desktop` file
 and `POLICY_PERMISSIONS` in `ci/harbour-check.sh` in the same commit,

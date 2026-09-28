@@ -15,10 +15,11 @@ import "helpers/Events.js" as Ev
  * said as no code and never shown. The first code read is received over
  * the protocol it is for, with the mailbox its QR code named, and the
  * page goes once the offer is answered; a code for a protocol switched
- * off is refused with a word why (F-C1). Under the viewfinder the code
- * can be typed or pasted instead -- the clipboard offered when it holds
- * a code -- and the engine tells its protocol (receive_code). A failed
- * receive says why and reads again. Without a scanner, typing still
+ * off is refused with a word why (F-C1). Without a camera, the page
+ * leads to the one for typing the code in, in its place. That page has
+ * the keyboard up and the clipboard in the field when it holds a code,
+ * and the engine tells the typed code's protocol (receive_code); a failed
+ * receive says why and the code stays. Without a scanner, typing still
  * works.
  */
 Script {
@@ -62,6 +63,11 @@ Script {
                                           { engine: withEngine ? withEngine : engine })
     }
 
+    function openTyping(withEngine) {
+        test.page = window.pageStack.push(Qt.resolvedUrl("../../qml/pages/TypeCodePage.qml"),
+                                          { engine: withEngine ? withEngine : engine })
+    }
+
     function find(name) {
         return probe.find(test.page, name)
     }
@@ -87,8 +93,8 @@ Script {
             test.view = test.find("scanLoader").item
             test.verify(test.view !== null, "the viewfinder loaded")
             test.compare(test.hint(), "Point the camera at the sender's QR code")
-            test.verify(test.find("typeCodeButton").visible, "the typed code, a tap away")
-            test.verify(!test.find("codePanel").visible)
+            test.compare(probe.find(test.page, "pageHeaderTitle").text, "Scan a QR code")
+            test.verify(!test.find("typeInstead").visible, "typing is a page of its own")
             return 400
         },
         function () {
@@ -119,7 +125,7 @@ Script {
         },
         function () {
             test.verify(window.pageStack.currentPage === test.page, "still scanning")
-            test.compare(test.hint(), "That QR code holds no Magic Wormhole or croc code.")
+            test.compare(test.hint(), "This QR code contains no Magic Wormhole or croc code.")
             test.compare(test.commandsOfType("receive_wormhole").length, 0, "nothing received")
             // In the background: the camera off, no frames.
             test.page.foreground = false
@@ -185,17 +191,21 @@ Script {
                         "said why")
             test.verify(!test.find("scanLoader").item.done, "and reading again")
             bridge.emitEvent(Ev.settings({}))
-            // The code typed instead: the clipboard offered when it holds
-            // a code, and not when it holds anything else.
+            window.pageStack.pop()
+            // The code typed in: the clipboard offered when it holds a
+            // code, and not when it holds anything else.
             Clipboard.text = "milk, eggs, bread"
-            test.find("typeCodeButton").clicked()
-            return 50
+            test.openTyping()
         },
         function () {
-            test.verify(test.find("codePanel").visible, "the typed code's panel")
+            test.compare(test.page.objectName, "typeCodePage")
+            test.compare(probe.find(test.page, "pageHeaderTitle").text, "Type in a code")
             test.compare(test.find("codeField").text, "", "a shopping list is not pasted")
-            test.compare(test.hint(), "Or point the camera at the code", "the camera still reads")
+            test.compare(test.find("codeField").label, "Code")
+            test.verify(test.page.focused, "the keyboard asked for as the page comes")
+            test.verify(!test.find("receiveButton").enabled, "nothing to receive with yet")
             test.find("codeField").text = "  7 Guitarist revenge "
+            test.verify(test.find("receiveButton").enabled)
             // A receive that fails says why, and the code stays.
             bridge.commandResult = -1
             test.find("receiveButton").clicked()
@@ -205,7 +215,7 @@ Script {
             test.compare(test.commandsOfType("receive_code"), [{ type: "receive_code", code: "7 Guitarist revenge" }],
                          "the code as typed: the engine tells its protocol")
             test.verify(window.pageStack.currentPage === test.page, "failed: still here")
-            test.verify(test.find("codePanel").visible, "the panel back")
+            test.compare(test.find("codeField").text, "  7 Guitarist revenge ", "the code stays")
             test.verify(probe.texts(test.page).join("\n").indexOf("Not available") >= 0, "said why")
             bridge.commandResult = 0
             test.find("receiveButton").clicked()
@@ -215,11 +225,13 @@ Script {
             test.compare(test.commandsOfType("receive_code").length, 2)
             test.compare(window.pageStack.currentPage.objectName, "mainPage")
             Clipboard.text = " Gala tulip acorn\n"
-            test.open()
+            test.openTyping()
         },
         function () {
-            test.find("typeCodeButton").clicked()
             test.compare(test.find("codeField").text, "Gala tulip acorn", "a code on the clipboard, offered")
+            test.compare(test.find("codeField").label, "Code, pasted from the clipboard")
+            test.find("codeField").text = "Gala tulip acorns"
+            test.compare(test.find("codeField").label, "Code", "changed: no longer the clipboard's")
             window.pageStack.pop()
             return 50
         },
@@ -237,16 +249,22 @@ Script {
         function () {
             test.compare(test.hint(), "The camera is not available.")
             test.compare(test.fake.scans, test.scansBefore, "nothing scanned without a camera")
-            test.verify(test.find("typeCodeButton").visible, "the code can still be typed")
+            test.verify(test.find("typeInstead").visible, "the code can still be typed in")
+            test.find("typeInstead").clicked()
+            return 50
+        },
+        function () {
+            test.compare(window.pageStack.currentPage.objectName, "typeCodePage", "in the scan page's place")
+            test.compare(window.pageStack.previousPage(window.pageStack.currentPage).objectName, "mainPage")
             window.pageStack.pop()
             return 50
         },
         function () {
-            // No scanner: the code can still be typed.
-            test.open(noScanner)
+            // No scanner: the code can still be typed in.
+            test.openTyping(noScanner)
         },
         function () {
-            test.verify(test.find("typeCodeButton").visible, "typing without a scanner")
+            test.verify(test.find("codeField").visible, "typing without a scanner")
         }
     ]
 }

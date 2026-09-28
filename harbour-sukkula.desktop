@@ -16,7 +16,7 @@ X-Nemo-Single-Instance=yes
 # ShareProvider of the same name in qml/share/ShareTarget.qml, whose
 # qsTr() strings repeat these Description= values for the catalogues
 # (tests/qml/static_checks.py keeps the three in step).
-X-Share-Methods=files;text
+X-Share-Methods=files
 
 [X-Share Method files]
 Description=Send nearby
@@ -25,16 +25,8 @@ Description[fi]=Lähetä lähelle
 Description[sv]=Skicka i närheten
 SupportsMultipleFiles=yes
 
-[X-Share Method text]
-Description=Send text nearby
-Description[de]=Text in der Nähe senden
-Description[fi]=Lähetä teksti lähelle
-Description[sv]=Skicka text i närheten
-Capabilities=text/*;text/x-url;text/uri-list
-SupportsMultipleFiles=no
-
 # Sailjail (spec §2): exactly Internet;Bluetooth;Camera;Downloads;
-# Documents;Music;Pictures;Videos;RemovableMedia.
+# Documents;Music;Pictures;Videos;RemovableMedia;MediaIndexing.
 #
 # Internet: LocalSend and Quick Share on the LAN, Magic Wormhole's mailbox
 # and relay, croc's relay. Bluetooth: BlueZ on the system bus and obexd on
@@ -46,6 +38,10 @@ SupportsMultipleFiles=no
 # Videos and RemovableMedia: files to send, picked in the file browser or
 # handed over through the Share menu (Gallery's photos are in ~/Pictures),
 # from those folders and from memory cards. Nothing is written there.
+# MediaIndexing: the pickers for photos, videos and documents
+# (spec v0.7), which list what the media index knows; the file browser
+# needs no index. The index lists names and places, and Sukkula reads no
+# more of it than the pickers show.
 #
 # The data directory is ~/.local/share/sukkula/sukkula, from the two names
 # below; src/main.cpp sets the same names so AppDataLocation agrees.
@@ -55,7 +51,7 @@ SupportsMultipleFiles=no
 # name Sailjail lets the app own), and starts the app with this line when
 # it is not running.
 [X-Sailjail]
-Permissions=Internet;Bluetooth;Camera;Downloads;Documents;Music;Pictures;Videos;RemovableMedia
+Permissions=Internet;Bluetooth;Camera;Downloads;Documents;Music;Pictures;Videos;RemovableMedia;MediaIndexing
 OrganizationName=sukkula
 ApplicationName=sukkula
 ExecDBus=harbour-sukkula
