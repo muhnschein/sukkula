@@ -121,7 +121,7 @@ cargo test -p sukkula-engine --no-default-features --features wormhole
 
 Every `qsTr()` in `qml/` is what an English reader sees and the source text
 the Finnish, German and Swedish catalogs are translated from. They follow the
-rules Vuo's review of its own strings set down (its `docs/architecture.md`):
+rules Vuo's review of its own strings set down in its architecture notes:
 
 - A string says what a thing does, once, in a finished sentence: a subject
   and a verb, no fragment added as a coda. Literal verbs: "contains", not
