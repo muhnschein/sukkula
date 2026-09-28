@@ -248,6 +248,7 @@ Page {
         id: sendTab
 
         SilicaFlickable {
+            id: sendList
             contentHeight: Math.max(height, send.implicitHeight)
 
             PullDownMenu {
@@ -263,11 +264,11 @@ Page {
                     onClicked: page.openHistory()
                 }
                 MenuItem {
-                    objectName: "addMore"
+                    objectName: "pulleyAddFiles"
                     //: Pulley menu on the Send tab: choose more files.
                     text: qsTr("Add files")
-                    visible: send.hasPayload
-                    onClicked: send.pick(send.lastPicker)
+                    visible: send.hasPayload && !send.hasOutgoing
+                    onClicked: send.pick()
                 }
                 MenuItem {
                     objectName: "startOver"
@@ -283,12 +284,14 @@ Page {
                 objectName: "sendView"
                 width: parent.width
                 topInset: page.stripBand
+                viewHeight: sendList.height
                 engine: page.engine
                 payload: page.payload
                 banner: pageBanner
                 remorse: pageRemorse
                 discovering: page.discovering
                 current: pager.currentIndex === 0
+                foreground: page.foreground
                 Component.onCompleted: page.sendView = send
             }
 

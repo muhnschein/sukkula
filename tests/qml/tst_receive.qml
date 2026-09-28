@@ -6,17 +6,19 @@ import "helpers"
 import "helpers/Events.js" as Ev
 
 /*
- * The Receive tab (F-C1, F-C5, F-MW2): ready, with the name others see,
- * under the canvas's radar round a phone, pulsing while nothing comes; a
- * transfer coming in, with the sender's name as plain
- * text, what comes in Sukkula's words, its progress and a cross to stop
- * it, staying a moment after it ends; what came today, files that came
- * together as one row ("2 files", "3 photos") that lists them on a page
- * of its own, one file by its name, a text that opens it, a failure not
- * among them; receiving with a code, by scanning its QR code or typing it
- * in, each a page of its own, gone when both code protocols are switched
- * off; and a way that could not start said in red, leading to Settings,
- * which says how each way is doing.
+ * The Receive tab (F-C1, F-C5, F-MW2), round the anchor: ready, with the
+ * name others see, the anchor pulsing while nothing comes, at a fifth of
+ * the page's height as on the Send tab; a transfer coming in, the anchor
+ * waiting, then filling with the percentage, the sender's name as plain
+ * text, what comes in Sukkula's words and Cancel; then a check and where
+ * it went, or a cross and why, for a moment; several at once, the others
+ * under "Receiving"; what came today, files that came together as one
+ * row ("2 files", "3 photos") that lists them on a page of its own, one
+ * file by its name, a text that opens it, a failure not among them;
+ * receiving with a code, by scanning its QR code or typing it in, each a
+ * page of its own, gone when both code protocols are switched off; and a
+ * way that could not start said in red, leading to Settings, which says
+ * how each way is doing.
  */
 Script {
     id: test
@@ -36,6 +38,14 @@ Script {
 
     function find(name) {
         return probe.find(test.view, name)
+    }
+
+    /// A label of the hero, and its anchor.
+    function says(name) {
+        return probe.find(test.find("receiveHero"), name).text
+    }
+    function anchor() {
+        return probe.find(test.find("receiveHero"), "anchor")
     }
 
     function shown(name) {
@@ -89,14 +99,17 @@ Script {
         function () {
             test.compare(probe.find(test.main, "modePager").currentIndex, 1, "the Receive tab")
             test.compare(test.lastOf("set_receiving"), { type: "set_receiving", on: true })
-            test.compare(test.find("receiveState").text, "Switching on…")
+            test.compare(test.says("heroTitle"), "Switching on…")
             bridge.emitEvent(Ev.receiving(true))
         },
         function () {
-            test.compare(test.find("receiveState").text, "Ready to receive")
-            test.compare(test.find("seenAs").text, "Others nearby see you as")
-            test.compare(test.find("deviceNameLabel").text, "Jolla Phone")
+            test.compare(test.says("heroTitle"), "Ready to receive")
+            test.compare(test.says("heroSubtitle"), "Others nearby see you as")
+            test.compare(test.says("heroLine"), "Jolla Phone")
             test.verify(test.view.pulsing, "the rings pulse")
+            test.compare(test.anchor().mode, "ready")
+            test.compare(probe.findAll(test.anchor(), "pulse").length, 3)
+            test.verify(probe.findAll(test.anchor(), "pulse")[0].visible)
             test.verify(test.find("scanCode").visible, "receiving with a code")
             test.verify(test.find("typeCode").visible, "and by typing it in")
             // The QR code is piirit's, drawn: the theme has none.
@@ -107,84 +120,74 @@ Script {
             test.verify(mark.visible, "the drawing shows")
             test.compare(probe.findAll(mark, "qrFinder").length, 3, "three finder patterns")
             test.compare(probe.findAll(mark, "qrModule").length, 5, "and five modules")
-            test.verify(!probe.find(test.find("radarGlyph"), "qrMark").visible, "only for a QR code")
+            var phone = probe.find(test.anchor(), "anchorGlyph")
+            test.compare(phone.names, ["icon-m-device", "icon-m-phone"], "a plain phone in the disc")
+            test.verify(!probe.find(phone, "qrMark").visible, "only for a QR code")
             test.verify(!probe.find(test.find("scanCode"), "rowSubtitle").visible
                         && !probe.find(test.find("typeCode"), "rowSubtitle").visible, "no line under either")
             test.compare(test.received(), [], "nothing came yet")
             test.verify(!test.find("savedIn").visible)
             test.verify(!test.find("receiveFailed").visible, "nothing failed")
-            // The radar as the canvas drew it, round the theme's phone
-            // icon: that size where the rest leaves no more room, up to a
-            // third more where it does, and the pulses (out to 1.15 times
-            // it) always within the margins.
-            var radar = test.find("radar")
+            // The anchor as the canvas draws it, at a fifth of the page's
+            // height, as on the Send tab, with the pulses (out to 1.15
+            // times it) within the margins.
             var hero = test.find("receiveHero")
-            var words = test.find("heroWords")
-            var rest = test.find("receiveRest")
-            var base = Theme.iconSizeMedium * 1.9 / 0.432
-            var fit = (test.view.width - 2 * Theme.horizontalPageMargin) / 1.15
+            var a = test.anchor()
             test.compare(test.view.viewHeight, test.main.height, "the list's height, from the page")
-            var sizes = [4000, 700, 0]
-            for (var i = 0; i < sizes.length; i++) {
-                test.view.viewHeight = sizes[i]
-                var room = sizes[i] - test.view.topInset - words.height - rest.height - 3 * Theme.paddingLarge
-                test.compare(radar.width, Math.min(fit, Math.max(base, Math.min(base * 1.35, room / 1.15))),
-                             "the radar in " + sizes[i])
-                test.compare(hero.height, Math.max(hero.children[0].height + 2 * Theme.paddingLarge,
-                                                   sizes[i] - test.view.topInset - rest.height),
-                             "the hero fills what is left of " + sizes[i])
-            }
-            test.view.viewHeight = 4000
-            test.compare(radar.width, Math.min(fit, base * 1.35), "room enough: a third more than the canvas's")
-            test.view.viewHeight = 0
-            test.compare(radar.width, Math.min(fit, base), "no room: the canvas's")
-            test.compare(test.find("radarCore").width, radar.width * 0.432, "the disc, as on the canvas")
-            test.compare(test.find("radarGlyph").names, ["icon-m-device", "icon-m-phone"], "a plain phone in it")
+            test.compare(hero.anchorTop, Math.max(Theme.paddingLarge,
+                                                  Math.round(test.main.height * 0.2) - test.view.topInset))
+            test.compare(hero.anchorTop, probe.find(test.main, "sendHero").anchorTop, "where the Send tab has it")
+            test.compare(a.width, Math.min(Theme.iconSizeMedium * 1.9 / 0.432,
+                                           (test.view.width - 2 * Theme.horizontalPageMargin) / 1.15))
+            test.compare(probe.find(a, "anchorDisc").width, a.width * 0.432, "the disc, as on the canvas")
             // Three pulses, a third of the 3 s cycle apart, each going out
             // from the disc to past the outer ring and fading as it goes,
             // eased as CSS's ease-out.
-            test.verify(Math.abs(test.view.easeOut(0.5) - 0.6846) < 1e-3, "ease-out: " + test.view.easeOut(0.5))
-            test.verify(Math.abs(test.view.easeOut(0)) < 1e-6 && Math.abs(test.view.easeOut(1) - 1) < 1e-6)
-            var pulses = probe.findAll(radar, "pulse")
-            test.compare(pulses.length, 3)
-            radar.phase = 0
-            var near = function (a, b) { return Math.abs(a - b) < 1e-3 }
+            test.verify(Math.abs(a.easeOut(0.5) - 0.6846) < 1e-3, "ease-out: " + a.easeOut(0.5))
+            test.verify(Math.abs(a.easeOut(0)) < 1e-6 && Math.abs(a.easeOut(1) - 1) < 1e-6)
+            var pulses = probe.findAll(a, "pulse")
+            a.phase = 0
+            var near = function (x, y) { return Math.abs(x - y) < 1e-3 }
             test.verify(near(pulses[0].scale, 0.45) && near(pulses[0].opacity, 0.9), "the first, at the disc")
-            test.verify(near(pulses[1].scale, 0.45 + 0.7 * test.view.easeOut(1 / 3))
-                        && near(pulses[2].scale, 0.45 + 0.7 * test.view.easeOut(2 / 3)), "the others, a third on each")
-            radar.phase = 0.9999
+            test.verify(near(pulses[1].scale, 0.45 + 0.7 * a.easeOut(1 / 3))
+                        && near(pulses[2].scale, 0.45 + 0.7 * a.easeOut(2 / 3)), "the others, a third on each")
+            a.phase = 0.9999
             test.verify(near(pulses[0].scale, 1.15) && near(pulses[0].opacity, 0), "past the outer ring, faded")
-            test.verify(pulses[0].visible && String(pulses[0].border.color) === String(Theme.highlightColor)
+            test.verify(String(pulses[0].border.color) === String(Theme.highlightColor)
                         && pulses[0].color.a === 0, "a ring, not a disc")
-            test.view.viewHeight = test.main.height
             // A transfer comes in, after its offer was accepted.
             bridge.emitEvent(Ev.transferStarted(20, "incoming", { peer: Ev.EVIL_MODEL }))
+        },
+        function () {
+            test.compare(test.anchor().mode, "waiting", "the arc goes round until the bytes come")
+            test.compare(test.says("heroTitle"), Ev.EVIL_MODEL, "who, as plain text")
+            test.compare(test.says("heroSubtitle"), "Receiving 2 files…")
+            test.verify(!test.view.pulsing, "the rings stop while it comes")
             bridge.emitEvent(Ev.progress(20, 500, 2000))
         },
         function () {
-            test.verify(!test.find("receiveHero").visible, "the hero gives way")
-            test.verify(!test.view.pulsing, "the rings stop while it comes")
-            var rows = test.shown("receiveProgress")
-            test.compare(rows.length, 1)
-            test.compare(rows[0].title, Ev.EVIL_MODEL, "who, as plain text")
-            test.compare(probe.find(rows[0], "progressStatus").text, "Receiving 2 files…")
-            test.compare(probe.find(rows[0], "progressPercent").text, "25%")
-            test.compare(probe.find(rows[0], "progressDetail").text, "500 B of 2.0 kB")
+            test.compare(test.anchor().mode, "progress", "the ring fills, in the same place")
+            test.compare(probe.find(test.anchor(), "anchorPercent").text, "25%")
+            test.compare(test.says("heroSubtitle"), "500 B of 2.0 kB")
+            test.compare(test.says("heroLine"), "2 files")
+            test.compare(test.shown("receiveProgress").length, 0, "the hero shows it, not a row")
             test.verifyPlainText(test.main, "a transfer coming in")
-            probe.find(rows[0], "cancelTransfer").clicked()
+            test.find("cancelReceive").clicked()
             test.compare(test.lastOf("cancel"), { type: "cancel", transfer: 20 })
             bridge.emitEvent(Ev.finished(20, "done", [Ev.EVIL_FILE, "b.pdf"]))
         },
         function () {
-            var rows = test.shown("receiveProgress")
-            test.compare(rows.length, 1, "an ended transfer stays a moment")
-            test.compare(probe.find(rows[0], "progressStatus").text, "Saved in Downloads › Sukkula")
+            test.compare(test.anchor().mode, "done", "an ended transfer stays a moment")
+            test.compare(probe.find(test.anchor(), "anchorGlyph").kind, "check")
+            test.compare(test.says("heroTitle"), "Received")
+            test.compare(test.says("heroSubtitle"), "Saved in Downloads › Sukkula")
+            test.compare(test.says("heroLine"), "2 files from " + Ev.EVIL_MODEL)
+            test.verify(!test.find("cancelReceive").visible)
             test.compare(test.received(), [], "and is not yet among what came")
             return 200
         },
         function () {
-            test.compare(test.shown("receiveProgress").length, 0, "then leaves")
-            test.verify(test.find("receiveHero").visible)
+            test.compare(test.says("heroTitle"), "Ready to receive", "then back to ready")
             test.compare(test.received(), [["2 files", "From " + Ev.EVIL_MODEL + " · 2.0 kB", "file"]],
                          "files that came together: one row")
             test.verify(test.find("savedIn").visible, "and where they are")
@@ -221,11 +224,15 @@ Script {
             bridge.emitEvent(Ev.finished(24, "done"))
         },
         function () {
-            var failed = test.shown("receiveProgress")
-            test.compare(failed.length, 4, "each ends under Receiving first")
+            // The newest in the hero, the others under Receiving.
+            test.compare(test.says("heroTitle"), "Received")
+            test.compare(test.says("heroSubtitle"), "Saved in History", "a text")
+            test.compare(test.says("heroLine"), "Text message from Pixel")
+            var others = test.shown("receiveProgress")
+            test.compare(others.length, 3, "each ends under Receiving first")
             var statuses = []
-            for (var i = 0; i < failed.length; i++) {
-                statuses.push(probe.find(failed[i], "progressStatus").text)
+            for (var i = 0; i < others.length; i++) {
+                statuses.push(probe.find(others[i], "progressStatus").text)
             }
             test.verify(statuses.indexOf("Failed: The connection failed or timed out.") >= 0, statuses.join(" | "))
             return 200
@@ -260,11 +267,25 @@ Script {
         function () {
             test.compare(window.pageStack.currentPage.objectName, "typeCodePage")
             window.pageStack.pop()
+            // One that fails: a cross, and why, in red.
+            bridge.emitEvent(Ev.transferStarted(25, "incoming", { peer: "Pixel" }))
+            bridge.emitEvent(Ev.finished(25, "failed", null, "storage"))
+        },
+        function () {
+            test.compare(test.anchor().mode, "failed")
+            test.compare(probe.find(test.anchor(), "anchorGlyph").kind, "cross")
+            test.compare(test.says("heroTitle"), "Not received")
+            test.compare(test.says("heroSubtitle"), "Could not save. The storage may be full.")
+            test.verify(test.find("receiveHero").failed, "in red")
+            return 200
+        },
+        function () {
+            test.compare(test.says("heroTitle"), "Ready to receive")
             // A way that failed to start: said in red, leading to Settings.
             bridge.emitEvent(Ev.receiving(true, true))
         },
         function () {
-            test.compare(test.find("receiveState").text, "Ready to receive", "Quick Share still sees it")
+            test.compare(test.says("heroTitle"), "Ready to receive", "Quick Share still sees it")
             var failed = test.find("receiveFailed")
             test.verify(failed.visible, "the failure said")
             var line = probe.find(failed, "receiveFailedLine")
@@ -281,7 +302,7 @@ Script {
                 { protocol: "quick_share", state: "failed", error: { code: "network", message: "y" } }] }))
         },
         function () {
-            test.compare(test.find("receiveState").text, "Others nearby cannot see you")
+            test.compare(test.says("heroTitle"), "Others nearby cannot see you")
             test.compare(probe.find(test.view, "receiveFailedLine").text, "Tap to see why.")
             test.verify(!test.view.pulsing, "no pulse for nobody")
             bridge.emitEvent(Ev.receiving(true))
@@ -306,14 +327,15 @@ Script {
                                            croc: { enabled: false, relay: null, password: null } }))
         },
         function () {
-            test.compare(test.find("receiveState").text, "Receiving is switched off in Settings.")
-            test.verify(!test.find("deviceNameLabel").visible, "no name to be seen by")
+            test.compare(test.says("heroTitle"), "Receiving is switched off in Settings.")
+            test.compare(test.says("heroLine"), "", "no name to be seen by")
+            test.compare(test.says("heroSubtitle"), "")
             bridge.emitEvent(Ev.settings({ localsend: { enabled: false, pin: null },
                                            quickshare: { enabled: false, visibility: "everyone", ble_nudge: true },
                                            croc: { enabled: true, relay: null, password: null } }))
         },
         function () {
-            test.compare(test.find("receiveState").text, "Ready to receive codes")
+            test.compare(test.says("heroTitle"), "Ready to receive codes")
         }
     ]
 }

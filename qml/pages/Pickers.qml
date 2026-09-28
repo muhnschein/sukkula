@@ -3,16 +3,15 @@ import QtQuick 2.6
 import Sailfish.Pickers 1.0
 
 /*
- * Where files to send are chosen (F-C6), in the platform's own pickers:
- * the content picker, which bundles pictures, videos, music and documents
- * in one dialog, as piirit's attach button does (its AttachLibraryPage);
- * and the file browser, for a file the media index does not list.
+ * Where files to send are chosen (F-C6): the platform's content picker,
+ * which bundles pictures, videos, music, documents and the file system in
+ * one dialog, as piirit's attach button does (its AttachLibraryPage).
  *
- * The content picker lists what the media index knows, which needs the
- * MediaIndexing permission (spec v0.7). The file browser runs in this
- * process and shows exactly what Sailjail lets Sukkula read: Downloads,
- * Documents, Music, Pictures, Videos and memory cards. Every picker hands
- * back paths and sizes only; nothing here opens a file or draws one.
+ * The media it lists come from the media index, which needs the
+ * MediaIndexing permission (spec v0.7); its file system shows what Sailjail
+ * lets Sukkula read: Downloads, Documents, Music, Pictures, Videos and
+ * memory cards. It hands back paths and sizes only; nothing here opens a
+ * file or draws one.
  *
  * Sailfish.Pickers is named here and in SingleFilePicker.qml, and nowhere
  * else.
@@ -23,11 +22,6 @@ QtObject {
     /// Files were chosen: [{path, size}], `size` in bytes or -1 where the
     /// picker did not say.
     signal picked(var files)
-
-    /// The picker for "content" or "files".
-    function component(kind) {
-        return kind === "files" ? pickers.files : pickers.content
-    }
 
     /// A chosen item's path: `filePath` where the picker gives it, else
     /// its local file URL's.
@@ -74,13 +68,6 @@ QtObject {
             id: contentDialog
             objectName: "contentPicker"
             onAccepted: pickers.take(contentDialog.selectedContent)
-        }
-    }
-    property Component files: Component {
-        MultiFilePickerDialog {
-            id: fileDialog
-            objectName: "filePicker"
-            onAccepted: pickers.take(fileDialog.selectedContent)
         }
     }
 }

@@ -29,47 +29,15 @@ Item {
     readonly property real progress: row.phase === "done" ? 1
                                      : row.total > 0 ? Math.min(1, row.bytes / row.total) : 0
 
-    /// When the bytes started to come, and how many there were then, for
-    /// how long is left.
-    property real _since: 0
-    property real _from: 0
-    property real _now: 0
-
-    onBytesChanged: {
-        row._now = Date.now()
-        if (row.bytes > 0 && row._since === 0) {
-            row._since = row._now
-            row._from = row.bytes
-        }
-    }
-
-    /// Seconds left at the rate so far, or -1 while that says nothing yet.
-    function secondsLeft() {
-        var took = (row._now - row._since) / 1000
-        var done = row.bytes - row._from
-        if (!row.active || row._since === 0 || took < 2 || done <= 0 || row.total <= row.bytes) {
-            return -1
-        }
-        return Math.ceil((row.total - row.bytes) / (done / took))
+    TransferRate {
+        id: rate
+        bytes: row.bytes
+        total: row.total
+        active: row.active
     }
 
     function sizeLine() {
-        if (row.detail.length > 0) {
-            return row.detail
-        }
-        if (!row.active || row.total <= 0) {
-            return ""
-        }
-        //: Progress: %1 bytes so far, %2 bytes in all, both formatted.
-        var line = qsTr("%1 of %2").arg(Format.formatFileSize(row.bytes)).arg(Format.formatFileSize(row.total))
-        var left = row.secondsLeft()
-        if (left < 0) {
-            return line
-        }
-        //: Progress: how long is left, after how much is done; %1 is that, e.g. "4.3 MB of 8.2 MB".
-        return left < 90 ? qsTr("%1 · about %n second(s) left", "", left).arg(line)
-                         //: Progress: how long is left, after how much is done; %1 is that.
-                         : qsTr("%1 · about %n minute(s) left", "", Math.round(left / 60)).arg(line)
+        return row.detail.length > 0 ? row.detail : rate.sizeLine()
     }
 
     width: parent ? parent.width : 0

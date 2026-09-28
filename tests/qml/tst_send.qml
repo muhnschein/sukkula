@@ -6,22 +6,24 @@ import "helpers"
 import "helpers/Events.js" as Ev
 
 /*
- * The Send tab (F-C6) with each protocol: the question and its two
- * tiles, the content picker (pictures, videos, music and documents in
- * one) and the file browser, while discovery already runs and the foot
- * says who is about; files chosen, summed up as "2 photos" with
- * their size, more added and all cleared behind a remorse; the devices
- * nearby by name as plain text, a device found over two protocols as one
- * row whose menu says which way, the paired Bluetooth devices after
- * them; the send command's exact shape; a send's row with its progress,
- * cancel and end while the other rows wait, and the files still chosen
- * after it; refusals said; About this device (address, pinned
- * certificate); sending with a code: Magic Wormhole for one file, croc
- * for several, its code and QR, Copy and Share, "Receiver's app" switching
- * with the old code given up, the code given up when its page is left
- * unused, and its progress on the tab once the receiver has come (F-MW1,
- * F-CR1); and each protocol switched off in Settings gone from the tab
- * (F-C1).
+ * The Send tab (F-C6) with each protocol, round the anchor: "Ready to
+ * send" with who is about under it, the sweep going round while
+ * discovery runs, and one button, the content picker; files chosen,
+ * summed up as "2 photos" with their size, more added and all cleared
+ * behind a remorse; the devices nearby by name as plain text, a device
+ * found over two protocols as one row whose menu says which way, the
+ * paired Bluetooth devices after them, and one "Looking for more"; the
+ * send command's exact shape; a send as the whole tab: waiting for an
+ * answer, the ring filling with the percentage, Cancel going straight
+ * back, a check with "Send to another" and "Done", a cross with why,
+ * "Try again" and "Back"; refusals said; About this device (address,
+ * pinned certificate); sending with a code: Magic Wormhole for one file,
+ * croc for several, its code as the title and its QR code in the
+ * anchor's place, Copy and Share, "Receiver's app" switching with the
+ * old code given up, the code given up when its page is left unused, no
+ * server line, and the send going on on the tab once the receiver has
+ * come (F-MW1, F-CR1); and each protocol switched off in Settings gone
+ * from the tab (F-C1).
  */
 Script {
     id: test
@@ -90,15 +92,19 @@ Script {
         return null
     }
 
-    /// The send's progress row on show, or null.
-    function progress() {
-        var all = probe.findAll(test.view, "sendProgress")
-        for (var i = 0; i < all.length; i++) {
-            if (all[i].visible) {
-                return all[i]
-            }
-        }
-        return null
+    /// The Send tab's hero, and a label of it.
+    function hero() {
+        return test.find("sendHero")
+    }
+    function says(name) {
+        return probe.find(test.hero(), name).text
+    }
+    function anchor() {
+        return probe.find(test.hero(), "anchor")
+    }
+    /// A label of the code page's hero.
+    function pageSays(name) {
+        return probe.find(probe.find(test.page, "codeHero"), name).text
     }
 
     /// A device row's menu, opened: its items' texts, and the items.
@@ -137,55 +143,61 @@ Script {
         function () {
             test.main = window.pageStack.push(Qt.resolvedUrl("../../qml/pages/MainPage.qml"), { engine: engine })
             test.view = probe.find(test.main, "sendView")
-            test.view.linger = 50
         },
         function () {
             test.verify(test.view.current, "the Send tab first")
             test.compare(test.commandsOfType("start_discovery").length, 1, "discovery runs from the start")
             test.compare(test.commandsOfType("list_bluetooth_devices").length, 1)
-            test.compare(test.find("sendQuestion").text, "What would you like to send?")
-            test.verify(test.find("pickContent").visible && test.find("pickFiles").visible, "two tiles")
-            test.compare(test.find("pickPhotos"), null, "one picker for pictures, videos, music and documents")
-            test.compare(test.find("nearbyLine").text, "Looking for devices nearby…")
-            test.verify(!test.find("payloadRow").visible, "nothing chosen")
+            test.compare(test.says("heroTitle"), "Ready to send")
+            test.compare(test.says("heroSubtitle"), "Looking for devices nearby…")
+            test.compare(test.anchor().mode, "looking", "the sweep while devices are looked for")
+            test.verify(probe.find(test.anchor(), "anchorSweep").visible)
+            test.compare(test.anchor().glyph, "phone")
+            test.verify(test.find("chooseFiles").visible, "one button")
+            test.compare(test.find("pickContent"), null, "no tiles")
+            test.compare(test.find("pickFiles"), null, "the content picker has the file system")
+            test.verify(!test.find("addMore").visible && !test.find("clearPayload").visible, "nothing chosen")
             test.compare(test.rows(), [], "no devices to pick from yet")
             bridge.emitEvent(Ev.peerFound("p1", "local_send"))
             bridge.emitEvent(Ev.peerFound("q1", "quick_share", "Android"))
             bridge.emitEvent(Ev.bluetoothDevices([{ address: "AA:BB:CC:DD:EE:FF", name: "Car EVIL" }]))
         },
         function () {
-            test.compare(test.find("nearbyLine").text, Ev.EVIL_NAME + " and 1 more nearby",
+            test.compare(test.says("heroSubtitle"), Ev.EVIL_NAME + " and 1 more nearby",
                          "who is about, the paired ones not counted; the name's %2 stays text")
             test.verifyPlainText(test.main, "the tab with peers found")
             // The content picker: pictures, videos, music and documents in
             // one, several at once, with sizes.
-            test.find("pickContent").clicked()
+            test.find("chooseFiles").clicked()
             test.pick("contentPicker", [{ url: "file://" + test.pictures + "a.jpg", fileSize: 1000 },
-                                      { url: "file://" + test.pictures + "b%20c.jpg", fileSize: 3000 },
-                                      { url: "https://evil.example/x.jpg" }])
+                                        { url: "file://" + test.pictures + "b%20c.jpg", fileSize: 3000 },
+                                        { url: "https://evil.example/x.jpg" }])
         },
         function () {
             test.compare(window.pageStack.currentPage.objectName, "mainPage", "the picker closes")
             test.compare(test.main.payload.files.length, 2, "local files only")
             test.compare(test.main.payload.files[1].path, test.pictures + "b c.jpg", "the URL decoded")
-            test.verify(!test.find("sendQuestion").visible, "the question has its answer")
-            test.compare(test.find("payloadSummary").text, "2 photos")
-            test.compare(test.find("payloadSize").text, "4.0 kB")
+            test.compare(test.says("heroTitle"), "2 photos", "what, in the anchor's title")
+            test.compare(test.says("heroSubtitle"), "4.0 kB")
+            test.compare(test.anchor().glyph, "photo", "their kind in the disc")
+            test.compare(test.anchor().mode, "looking", "the anchor stays put, still looking")
+            test.verify(!test.find("chooseFiles").visible && test.find("addMore").visible
+                        && test.find("clearPayload").visible, "Add files and Clear")
             test.compare(test.rows(), [[Ev.EVIL_NAME, "Phone · LocalSend"], ["Android", "Phone · Quick Share"],
                                        ["Car EVIL", "Paired device · Bluetooth"]],
                          "by name, the paired ones last, the protocol in the grey line")
+            test.compare(test.find("lookingLabel").text, "Looking for more", "one line says discovery goes on")
+            test.compare(test.find("nearbyHint").text, "Devices must be on the same Wi-Fi and ready to receive.")
             // The ambience's own icons: a phone, a paired device.
             var phone = probe.find(test.row("Android"), "rowGlyph")
             test.compare(phone.names, ["icon-m-device", "icon-m-phone"])
             test.verify(String(phone.source).indexOf("image://theme/icon-m-") === 0, "from the theme: " + phone.source)
             test.compare(probe.find(test.row("Car EVIL"), "rowGlyph").names[0], "icon-m-bluetooth-device")
-            test.compare(probe.find(test.find("sendWithCode"), "rowGlyph").kind, "code")
-            test.compare(test.find("nearbyHint").text,
-                         "Devices must be on the same Wi-Fi and ready to receive.")
+            test.compare(probe.find(test.find("sendWithCode"), "rowGlyph").kind, "qr")
             test.verify(test.find("sendWithCode").visible, "and far away, with a code")
             test.verify(!probe.find(test.find("sendWithCode"), "rowSubtitle").visible, "its title says it")
             test.verifyPlainText(test.main, "the device list")
-            // The cross clears it all, after a moment to change one's mind.
+            // Clear clears it all, after a moment to change one's mind.
             test.find("clearPayload").clicked()
             var remorse = probe.find(test.main, "clearRemorse")
             test.verify(remorse.active, "a remorse first")
@@ -194,19 +206,19 @@ Script {
             test.find("clearPayload").clicked()
             remorse.trigger()
             test.compare(test.main.payload.itemCount, 0)
-            test.verify(test.find("pickContent").visible, "the tiles again")
+            test.verify(test.find("chooseFiles").visible, "the one button again")
             test.compare(test.rows(), [], "the devices go with it")
-            // Browse folders: the file browser; one, by its path, size
-            // unknown.
-            test.find("pickFiles").clicked()
-            test.pick("filePicker", [{ filePath: test.downloads + "a.txt", url: "" }])
+            // A file from the file system: by its path, size unknown.
+            test.find("chooseFiles").clicked()
+            test.pick("contentPicker", [{ filePath: test.downloads + "a.txt", url: "" }])
         },
         function () {
-            test.compare(test.find("payloadSummary").text, "a.txt", "one file: its name")
-            test.verify(!test.find("payloadSize").visible, "no size where none was said")
-            // + adds more, in the picker used last.
+            test.compare(test.says("heroTitle"), "a.txt", "one file: its name")
+            test.compare(test.says("heroSubtitle"), "", "no size where none was said")
+            test.compare(test.anchor().glyph, "document")
+            // Add files: the same picker.
             test.find("addMore").clicked()
-            test.compare(window.pageStack.currentPage.objectName, "filePicker", "the file browser again")
+            test.compare(window.pageStack.currentPage.objectName, "contentPicker")
             window.pageStack.pop()
             bridge.nextTransfer = 50
             test.row(Ev.EVIL_NAME).clicked()
@@ -218,35 +230,35 @@ Script {
         },
         function () {
             test.compare(test.view.outgoing.transferId, 50)
-            var p = test.progress()
-            test.verify(p !== null, "the device's row shows the send")
-            test.compare(p.title, Ev.EVIL_NAME)
-            test.compare(probe.find(p, "progressStatus").text, "Waiting for an answer…")
-            test.verify(test.row("Android").dimmed && test.row("Car EVIL").dimmed, "the other rows wait")
-            test.verify(!test.find("clearPayload").enabled, "nothing to clear while it goes")
+            // The tab is the send: who, and waiting for them.
+            test.compare(test.anchor().mode, "waiting")
+            test.compare(test.anchor().glyph, "phone", "the device's kind in the disc")
+            test.compare(test.says("heroTitle"), Ev.EVIL_NAME)
+            test.compare(test.says("heroSubtitle"), "Waiting for them to accept…")
+            test.compare(test.says("heroLine"), "a.txt")
+            test.compare(test.rows(), [], "no other device while it goes")
+            test.verify(!test.find("sendWithCode").visible && !test.find("addMore").visible)
+            test.verify(test.find("cancelSend").visible, "Cancel, where the buttons were")
             bridge.emitEvent(Ev.transferStarted(50, "outgoing", {}))
             bridge.emitEvent(Ev.progress(50, 500, 2000))
         },
         function () {
-            var p = test.progress()
-            test.compare(probe.find(p, "progressPercent").text, "25%")
-            test.compare(probe.find(p, "progressStatus").text, "Sending…")
-            test.compare(probe.find(p, "progressDetail").text, "500 B of 2.0 kB")
-            test.compare(probe.find(p, "progressLine").value, 0.25)
-            test.verifyPlainText(test.main, "a send's row")
-            probe.find(p, "cancelTransfer").clicked()
+            test.compare(test.anchor().mode, "progress", "the ring fills")
+            test.compare(test.anchor().value, 0.25)
+            test.compare(probe.find(test.anchor(), "anchorPercent").text, "25%")
+            test.verify(!probe.find(test.anchor(), "anchorDisc").visible, "the percentage alone in the ring")
+            test.compare(test.says("heroSubtitle"), "500 B of 2.0 kB")
+            test.compare(test.says("heroLine"), "a.txt")
+            test.verifyPlainText(test.main, "a send under way")
+            test.find("cancelSend").clicked()
             test.compare(test.lastOf("cancel"), { type: "cancel", transfer: 50 })
             bridge.emitEvent(Ev.finished(50, "cancelled"))
+            return 20
         },
         function () {
-            test.compare(probe.find(test.progress(), "progressStatus").text, "Cancelled")
+            test.verify(test.view.outgoing === null, "cancelled here: straight back to the devices")
             test.compare(test.main.payload.itemCount, 1, "a send that did not go keeps what was chosen")
-            return 150
-        },
-        function () {
-            test.verify(test.view.outgoing === null, "back to the list by itself")
             test.compare(test.rows().length, 3, "with everyone")
-            test.verify(!test.row("Android").dimmed)
             // One device over two ways: one row, by its name.
             bridge.emitEvent(test.peer("q2", "quick_share", "Pixel 8", { address: "192.168.1.42", model: undefined }))
             bridge.emitEvent(test.peer("p2", "local_send", "Pixel 8", { address: "192.168.1.42:53317",
@@ -259,12 +271,13 @@ Script {
             test.compare(m.texts, ["Send with Quick Share", "Send with LocalSend", "About this device"])
             // Its menu sends the other way.
             bridge.autoReply = false
+            var android = test.view.devices[0]
             m.items[1].clicked()
             m.menu.destroy()
             test.compare(test.lastOf("send").target, { protocol: "local_send", peer: "p2" }, "over LocalSend")
-            test.compare(probe.find(test.progress(), "progressStatus").text, "Connecting…")
+            test.compare(test.says("heroSubtitle"), "Connecting…")
             // No second send while one is on its way.
-            test.row("Android").clicked()
+            test.view.choose(android)
             test.compare(test.commandsOfType("send").length, 2)
             // A refused send is said, and everything stays.
             bridge.emitEvent(Ev.reply(test.lastId(), false, "refused"))
@@ -284,14 +297,51 @@ Script {
             bridge.emitEvent(Ev.finished(51, "done"))
         },
         function () {
-            var p = test.progress()
-            test.compare(probe.find(p, "progressStatus").text, "Sent")
-            test.compare(probe.find(p, "progressPercent").text, "100%")
+            test.compare(test.anchor().mode, "done")
+            test.compare(probe.find(test.anchor(), "anchorGlyph").kind, "check", "a check in a filled disc")
+            test.compare(test.says("heroTitle"), "Sent")
+            test.compare(test.says("heroSubtitle"), "a.txt to Pixel 8")
+            test.verify(test.find("sendAnother").visible && test.find("sendDone").visible)
+            test.verify(!test.find("cancelSend").visible)
             test.compare(test.main.payload.itemCount, 1, "what was sent stays chosen, for another device")
             return 150
         },
         function () {
+            test.verify(test.view.outgoing !== null, "the check stays until a button says where to")
+            test.find("sendAnother").clicked()
             test.verify(test.view.outgoing === null)
+            test.compare(test.says("heroTitle"), "a.txt", "back to who to, the file still chosen")
+            test.compare(test.rows().length, 4)
+            // A send that fails: why, then Try again or Back.
+            bridge.nextTransfer = 52
+            test.row("Android").clicked()
+        },
+        function () {
+            bridge.emitEvent(Ev.transferStarted(52, "outgoing", { protocol: "quick_share", peer: "Android" }))
+            bridge.emitEvent(Ev.finished(52, "failed", null, "refused"))
+        },
+        function () {
+            test.compare(test.anchor().mode, "failed")
+            test.compare(probe.find(test.anchor(), "anchorGlyph").kind, "cross", "a cross in a red disc")
+            test.compare(test.says("heroTitle"), "Not sent")
+            test.compare(test.says("heroSubtitle"), "Declined.")
+            test.compare(test.says("heroLine"), "a.txt")
+            test.verify(test.hero().failed && probe.find(test.hero(), "heroTitle").color === Theme.errorColor, "in red")
+            test.verify(test.find("sendRetry").visible && test.find("sendBack").visible)
+            bridge.nextTransfer = 53
+            test.find("sendRetry").clicked()
+            test.compare(test.lastOf("send").target, { protocol: "quick_share", peer: "q1" }, "the same way again")
+            test.compare(test.view.outgoing.name, "Android")
+        },
+        function () {
+            bridge.emitEvent(Ev.transferStarted(53, "outgoing", { protocol: "quick_share", peer: "Android" }))
+            bridge.emitEvent(Ev.finished(53, "failed"))
+        },
+        function () {
+            test.compare(test.says("heroSubtitle"), "The connection failed or timed out.")
+            test.find("sendBack").clicked()
+            test.verify(test.view.outgoing === null, "Back: to the devices")
+            test.compare(test.main.payload.itemCount, 1)
             // About this device.
             var m = test.menuOf(test.row("Pixel 8"))
             m.items[2].clicked()
@@ -323,7 +373,7 @@ Script {
                              { kind: "weird" },
                              null])
             test.compare(test.main.payload.files.length, 2, "absolute paths only, once each, no texts")
-            test.compare(test.find("payloadSummary").text, "2 files")
+            test.compare(test.says("heroTitle"), "2 files")
             bridge.autoReply = false
             test.row(Ev.EVIL_NAME).clicked()
             bridge.emitEvent(Ev.reply(test.lastId(), false, "bad_file"))
@@ -347,22 +397,24 @@ Script {
             var box = probe.find(test.page, "theirApp")
             test.compare(box.currentIndex, 1, "croc")
             test.compare(box.description, "Works with Sukkula and croc.")
-            test.compare(probe.find(test.page, "codeStatus").text, "Getting a code…")
+            test.compare(test.pageSays("heroSubtitle"), "Getting a code…")
+            test.compare(probe.find(test.page, "anchor").mode, "waiting", "the anchor, at the same place")
             // Magic Wormhole cannot take two files.
             box.choose(0)
-            test.compare(test.commandsOfType("send").length, 5, "no second send")
+            test.compare(test.commandsOfType("send").length, 7, "no second send")
             test.compare(test.view.outgoing.protocol, "croc")
             bridge.emitEvent(Ev.crocCode(60, "gala-tulip-acorn"))
             bridge.emitEvent(Ev.transferStarted(60, "outgoing", { protocol: "croc", peer: "croc" }))
         },
         function () {
-            test.compare(probe.find(test.page, "sendCode").text, "gala-tulip-acorn")
+            test.compare(test.pageSays("heroTitle"), "gala-tulip-acorn", "the code is the title")
+            test.compare(test.pageSays("heroSubtitle"), "The receiver scans it or types it in.")
             var qr = probe.find(test.page, "sendQr")
             test.verify(qr.valid && qr.visible, "croc's QR code is drawn")
             test.compare(qr.size, 21)
-            test.compare(probe.find(test.page, "codeStatus").text, "Waiting for the receiver…")
-            test.compare(probe.find(test.page, "codeServer").text,
-                         "Uses croc's public relay. You can set your own in Settings.")
+            test.verify(qr.parent === probe.find(test.page, "anchorArea"), "in the anchor's place")
+            test.verify(!probe.find(test.page, "anchor").visible)
+            test.compare(probe.find(test.page, "codeServer"), null, "which server is Settings' business")
             // Leaving the page before anyone came gives the code up.
             window.pageStack.pop()
             return 50
@@ -380,12 +432,12 @@ Script {
         },
         function () {
             test.compare(probe.find(test.page, "theirApp").currentIndex, 0, "Magic Wormhole")
-            test.compare(probe.find(test.page, "codePayload").text, "a.txt")
+            test.compare(test.pageSays("heroTitle"), "a.txt", "what, until the code is there")
             bridge.emitEvent(Ev.wormholeCode(77, "7-guitarist-revenge"))
             bridge.emitEvent(Ev.transferStarted(77, "outgoing", { protocol: "wormhole", peer: "" }))
         },
         function () {
-            test.compare(probe.find(test.page, "sendCode").text, "7-guitarist-revenge")
+            test.compare(test.pageSays("heroTitle"), "7-guitarist-revenge")
             test.verify(probe.find(test.page, "sendQr").visible)
             probe.find(test.page, "copyCode").clicked()
             test.compare(Clipboard.text, "7-guitarist-revenge", "Copy")
@@ -405,39 +457,71 @@ Script {
         },
         function () {
             test.compare(test.view.outgoing.transferId, 78)
-            test.compare(probe.find(test.page, "sendCode").visible, false, "the old code is gone")
+            test.compare(test.pageSays("heroTitle"), "a.txt", "the old code is gone")
             bridge.emitEvent(Ev.crocCode(78, "gala-tulip-acorn"))
             bridge.emitEvent(Ev.transferStarted(78, "outgoing", { protocol: "croc", peer: "croc" }))
         },
         function () {
-            test.compare(probe.find(test.page, "sendCode").text, "gala-tulip-acorn")
+            test.compare(test.pageSays("heroTitle"), "gala-tulip-acorn")
             bridge.emitEvent(Ev.progress(78, 500, 1000))
         },
         function () {
-            // The receiver has come: progress, and no more code to show.
+            // The receiver has come: the ring fills where the QR code was.
             test.verify(!probe.find(test.page, "sendQr").visible)
-            var p = probe.find(test.page, "codeProgress")
-            test.verify(p.visible)
-            test.compare(probe.find(p, "progressPercent").text, "50%")
-            test.verify(!probe.find(test.page, "theirApp").enabled, "no switching once it goes")
+            var a = probe.find(test.page, "anchor")
+            test.verify(a.visible)
+            test.compare(a.mode, "progress")
+            test.compare(probe.find(a, "anchorPercent").text, "50%")
+            test.compare(test.pageSays("heroTitle"), "a.txt")
+            test.compare(test.pageSays("heroSubtitle"), "500 B of 1.0 kB")
+            test.verify(!probe.find(test.page, "theirApp").visible, "no switching once it goes")
+            test.verify(!probe.find(test.page, "copyCode").visible)
+            test.verify(probe.find(test.page, "cancelSend").visible)
+            test.verifyPlainText(test.page, "a send with a code")
             // Leaving now keeps it going, on the tab.
             window.pageStack.pop()
             return 50
         },
         function () {
             test.compare(test.lastOf("cancel"), { type: "cancel", transfer: 77 }, "nothing more given up")
-            var p = test.find("codeProgress")
-            test.verify(p.visible, "the tab's Far away row shows it")
-            test.compare(probe.find(p, "progressPercent").text, "50%")
+            test.compare(test.anchor().mode, "progress", "the tab shows it the same way")
+            test.compare(test.says("heroTitle"), "a.txt")
+            test.compare(test.says("heroSubtitle"), "500 B of 1.0 kB")
             test.verify(!test.find("sendWithCode").visible)
             bridge.emitEvent(Ev.finished(78, "done"))
         },
         function () {
-            test.compare(probe.find(test.find("codeProgress"), "progressStatus").text, "Sent")
-            return 150
+            test.compare(test.says("heroTitle"), "Sent")
+            test.compare(test.says("heroSubtitle"), "a.txt")
+            // Done: back to the start, nothing chosen.
+            test.find("sendDone").clicked()
+            test.verify(test.view.outgoing === null)
+            test.compare(test.main.payload.itemCount, 0)
+            test.compare(test.says("heroTitle"), "Ready to send")
+            // Sent from the code page: the same buttons there.
+            test.main.share([{ kind: "file", path: test.downloads + "b.txt" }])
+            bridge.nextTransfer = 80
+            test.find("sendWithCode").clicked()
+            test.page = window.pageStack.currentPage
+            bridge.emitEvent(Ev.wormholeCode(80, "8-guitarist-revenge"))
+            bridge.emitEvent(Ev.transferStarted(80, "outgoing", { protocol: "wormhole", peer: "" }))
+            bridge.emitEvent(Ev.progress(80, 10, 20))
+            bridge.emitEvent(Ev.finished(80, "done"))
         },
         function () {
+            test.compare(probe.find(test.page, "anchor").mode, "done")
+            test.compare(test.pageSays("heroTitle"), "Sent")
+            test.compare(test.pageSays("heroSubtitle"), "b.txt")
+            test.verify(probe.find(test.page, "sendAnother").visible && probe.find(test.page, "sendDone").visible,
+                        "never half a code page")
+            test.verify(!probe.find(test.page, "sendQr").visible && !probe.find(test.page, "theirApp").visible)
+            probe.find(test.page, "sendAnother").clicked()
+            return 50
+        },
+        function () {
+            test.compare(window.pageStack.currentPage.objectName, "mainPage", "the page goes")
             test.verify(test.view.outgoing === null)
+            test.compare(test.says("heroTitle"), "b.txt", "the file still chosen")
             test.verify(test.find("sendWithCode").visible, "ready for another")
             // F-C1: every protocol but Magic Wormhole and croc off.
             bridge.emitEvent(Ev.settings({ localsend: { enabled: false, pin: null },
@@ -447,6 +531,8 @@ Script {
         function () {
             test.compare(test.rows(), [], "nobody nearby")
             test.compare(test.find("nearbyHint").text, "Sending nearby is switched off in Settings.")
+            test.compare(test.anchor().mode, "idle", "nothing to look for")
+            test.verify(!test.find("lookingLabel").visible)
             test.verify(test.find("sendWithCode").visible, "codes still go")
             // Magic Wormhole switched off: croc takes one file too.
             bridge.emitEvent(Ev.settings({ localsend: { enabled: false, pin: null },

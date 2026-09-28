@@ -341,30 +341,6 @@
     </message>
 </context>
 <context>
-    <name>ProgressRow</name>
-    <message>
-        <source>%1 of %2</source>
-        <extracomment>Progress: %1 bytes so far, %2 bytes in all, both formatted.</extracomment>
-        <translation>%1 av %2</translation>
-    </message>
-    <message numerus="yes">
-        <source>%1 · about %n second(s) left</source>
-        <extracomment>Progress: how long is left, after how much is done; %1 is that, e.g. &quot;4.3 MB of 8.2 MB&quot;.</extracomment>
-        <translation>
-            <numerusform>%1 · ungefär %n sekund kvar</numerusform>
-            <numerusform>%1 · ungefär %n sekunder kvar</numerusform>
-        </translation>
-    </message>
-    <message numerus="yes">
-        <source>%1 · about %n minute(s) left</source>
-        <extracomment>Progress: how long is left, after how much is done; %1 is that.</extracomment>
-        <translation>
-            <numerusform>%1 · ungefär %n minut kvar</numerusform>
-            <numerusform>%1 · ungefär %n minuter kvar</numerusform>
-        </translation>
-    </message>
-</context>
-<context>
     <name>ReceiveView</name>
     <message>
         <source>Cancelled</source>
@@ -472,6 +448,26 @@ Receive tab: where received files are.</extracomment>
         <extracomment>Receive tab, under &quot;Ready to receive&quot;: one way of receiving nearby could not start; tapping opens Settings, which says why.</extracomment>
         <translation>Vissa enheter i närheten kan inte se dig. Tryck för att se varför.</translation>
     </message>
+    <message>
+        <source>Received</source>
+        <extracomment>Receive tab: files or a text arrived.</extracomment>
+        <translation>Mottaget</translation>
+    </message>
+    <message>
+        <source>Not received</source>
+        <extracomment>Receive tab: what was coming did not arrive; the line under it says why.</extracomment>
+        <translation>Inte mottaget</translation>
+    </message>
+    <message>
+        <source>%1 from %2</source>
+        <extracomment>Receive tab, under &quot;Received&quot;: what came from whom; %1 is what, e.g. &quot;3 photos&quot;, %2 the sender&apos;s name.</extracomment>
+        <translation>%1 från %2</translation>
+    </message>
+    <message>
+        <source>Cancel</source>
+        <extracomment>Stops a send or a receive under way.</extracomment>
+        <translation>Avbryt</translation>
+    </message>
 </context>
 <context>
     <name>ReceivedPage</name>
@@ -540,39 +536,9 @@ Receive tab: where received files are.</extracomment>
         <translation>Kopierat</translation>
     </message>
     <message>
-        <source>Getting a code…</source>
-        <extracomment>Send with a code: waiting for the server to hand out a code.</extracomment>
-        <translation>Hämtar en kod…</translation>
-    </message>
-    <message>
-        <source>Sending…</source>
-        <extracomment>Send with a code: the files are going.</extracomment>
-        <translation>Skickar…</translation>
-    </message>
-    <message>
-        <source>Sent</source>
-        <extracomment>A send arrived.</extracomment>
-        <translation>Skickat</translation>
-    </message>
-    <message>
-        <source>Cancelled</source>
-        <extracomment>A send was stopped by one of the two sides.</extracomment>
-        <translation>Avbrutet</translation>
-    </message>
-    <message>
-        <source>Failed: %1</source>
-        <extracomment>A send failed; %1 says why.</extracomment>
-        <translation>Misslyckades: %1</translation>
-    </message>
-    <message>
         <source>Send with a code</source>
         <extracomment>Page title: sending over the internet with a code.</extracomment>
         <translation>Skicka med kod</translation>
-    </message>
-    <message>
-        <source>Sending</source>
-        <extracomment>Send with a code: the row of the send once its receiver has come.</extracomment>
-        <translation>Skickar</translation>
     </message>
     <message>
         <source>Copy</source>
@@ -583,36 +549,6 @@ Receive tab: where received files are.</extracomment>
         <source>Share…</source>
         <extracomment>Opens the system share sheet with the code.</extracomment>
         <translation>Dela…</translation>
-    </message>
-    <message>
-        <source>Waiting for the receiver…</source>
-        <extracomment>Send with a code: the code is shown, nobody has used it yet.</extracomment>
-        <translation>Väntar på mottagaren…</translation>
-    </message>
-    <message>
-        <source>Uses the croc relay set in Settings.</source>
-        <extracomment>Send with a code, at the foot: croc goes through the user&apos;s own relay.</extracomment>
-        <translation>Använder croc-reläet från inställningarna.</translation>
-    </message>
-    <message>
-        <source>Uses croc&apos;s public relay. You can set your own in Settings.</source>
-        <extracomment>Send with a code, at the foot: croc goes through croc&apos;s public relay.</extracomment>
-        <translation>Använder crocs offentliga relä. Du kan ställa in ett eget i inställningarna.</translation>
-    </message>
-    <message>
-        <source>Uses the Magic Wormhole server set in Settings.</source>
-        <extracomment>Send with a code, at the foot: Magic Wormhole goes through the user&apos;s own server.</extracomment>
-        <translation>Använder Magic Wormhole-servern från inställningarna.</translation>
-    </message>
-    <message>
-        <source>Uses Magic Wormhole&apos;s public server. You can set your own in Settings.</source>
-        <extracomment>Send with a code, at the foot: Magic Wormhole goes through its public server.</extracomment>
-        <translation>Använder Magic Wormholes offentliga server. Du kan ställa in en egen i inställningarna.</translation>
-    </message>
-    <message>
-        <source>The receiver scans the QR code or types in the code.</source>
-        <extracomment>Send with a code: what to do with the code.</extracomment>
-        <translation>Mottagaren skannar QR-koden eller skriver in koden.</translation>
     </message>
     <message>
         <source>Receiver&apos;s app</source>
@@ -634,6 +570,36 @@ Receive tab: where received files are.</extracomment>
         <extracomment>Send with a code: who can take a Magic Wormhole code.</extracomment>
         <translation>Fungerar med Sukkula, Warp och wormhole-kommandot.</translation>
     </message>
+    <message>
+        <source>The receiver scans it or types it in.</source>
+        <extracomment>Send with a code, under the code: what the receiver does with it.</extracomment>
+        <translation>Mottagaren skannar den eller skriver in den.</translation>
+    </message>
+    <message>
+        <source>Cancel</source>
+        <extracomment>Stops a send or a receive under way.</extracomment>
+        <translation>Avbryt</translation>
+    </message>
+    <message>
+        <source>Send to another</source>
+        <extracomment>Send tab, after a send: back to the devices, the same files still chosen.</extracomment>
+        <translation>Skicka till en annan</translation>
+    </message>
+    <message>
+        <source>Done</source>
+        <extracomment>Send tab, after a send: back to the start, nothing chosen.</extracomment>
+        <translation>Klar</translation>
+    </message>
+    <message>
+        <source>Try again</source>
+        <extracomment>Send tab, after a send failed: sends the same files the same way again.</extracomment>
+        <translation>Försök igen</translation>
+    </message>
+    <message>
+        <source>Back</source>
+        <extracomment>Send tab, after a send failed: back to the devices, the same files still chosen.</extracomment>
+        <translation>Tillbaka</translation>
+    </message>
 </context>
 <context>
     <name>SendView</name>
@@ -643,24 +609,14 @@ Receive tab: where received files are.</extracomment>
         <translation>Ansluter…</translation>
     </message>
     <message>
-        <source>Waiting for an answer…</source>
-        <extracomment>Send tab: the other device has been asked and has not answered yet.</extracomment>
-        <translation>Väntar på svar…</translation>
-    </message>
-    <message>
         <source>Sent</source>
-        <extracomment>A send arrived.</extracomment>
+        <extracomment>Send tab: the files arrived.</extracomment>
         <translation>Skickat</translation>
     </message>
     <message>
         <source>Cancelled</source>
-        <extracomment>A send was stopped by one of the two sides.</extracomment>
+        <extracomment>A transfer was stopped by one of the two sides.</extracomment>
         <translation>Avbrutet</translation>
-    </message>
-    <message>
-        <source>Failed: %1</source>
-        <extracomment>A send failed; %1 says why.</extracomment>
-        <translation>Misslyckades: %1</translation>
     </message>
     <message>
         <source>Looking for devices nearby…</source>
@@ -669,9 +625,7 @@ Receive tab: where received files are.</extracomment>
     </message>
     <message>
         <source>Send with a code</source>
-        <extracomment>Send tab: sending over the internet with a code.
-----------
-Send tab: the row of a send with a code once its receiver has come.</extracomment>
+        <extracomment>Send tab: sending over the internet with a code.</extracomment>
         <translation>Skicka med kod</translation>
     </message>
     <message>
@@ -685,19 +639,9 @@ Send tab: the row of a send with a code once its receiver has come.</extracommen
         <translation>Magic Wormhole skickar en fil i taget. Välj croc för att skicka flera.</translation>
     </message>
     <message>
-        <source>Sending…</source>
-        <extracomment>Send tab: the files are going.</extracomment>
-        <translation>Skickar…</translation>
-    </message>
-    <message>
         <source>Clearing</source>
         <extracomment>Remorse: the chosen files are about to be cleared.</extracomment>
         <translation>Rensar</translation>
-    </message>
-    <message>
-        <source>What would you like to send?</source>
-        <extracomment>Send tab with nothing chosen yet.</extracomment>
-        <translation>Vad vill du skicka?</translation>
     </message>
     <message>
         <source>Looking for more</source>
@@ -731,12 +675,12 @@ Send tab: the row of a send with a code once its receiver has come.</extracommen
     </message>
     <message>
         <source>%1 is nearby</source>
-        <extracomment>Send tab, at the foot: one device nearby; %1 is its name.</extracomment>
+        <extracomment>Send tab, under &quot;Ready to send&quot;: one device nearby; %1 is its name.</extracomment>
         <translation>%1 är i närheten</translation>
     </message>
     <message numerus="yes">
         <source>%1 and %n more nearby</source>
-        <extracomment>Send tab, at the foot: devices nearby; %1 is one&apos;s name, %n how many more.</extracomment>
+        <extracomment>Send tab, under &quot;Ready to send&quot;: devices nearby; %1 is one&apos;s name, %n how many more.</extracomment>
         <translation>
             <numerusform>%1 och %n till i närheten</numerusform>
             <numerusform>%1 och %n till i närheten</numerusform>
@@ -752,13 +696,8 @@ Send tab: the row of a send with a code once its receiver has come.</extracommen
     </message>
     <message>
         <source>Choose files</source>
-        <extracomment>Send tab: the tile that opens the picker for pictures, videos, music and documents.</extracomment>
+        <extracomment>Send tab with nothing chosen: opens the picker for pictures, videos, music, documents and other files.</extracomment>
         <translation>Välj filer</translation>
-    </message>
-    <message>
-        <source>Browse folders</source>
-        <extracomment>Send tab: the tile that opens the file browser, for files the other picker does not list.</extracomment>
-        <translation>Bläddra i mappar</translation>
     </message>
     <message>
         <source>Devices must be on the same Wi-Fi and ready to receive.</source>
@@ -769,6 +708,66 @@ Send tab: the row of a send with a code once its receiver has come.</extracommen
         <source>Waiting for the receiver…</source>
         <extracomment>Send tab: a send with a code waits for the other side to scan or type the code.</extracomment>
         <translation>Väntar på mottagaren…</translation>
+    </message>
+    <message>
+        <source>Ready to send</source>
+        <extracomment>Send tab with nothing chosen: the title under the anchor.</extracomment>
+        <translation>Redo att skicka</translation>
+    </message>
+    <message>
+        <source>Not sent</source>
+        <extracomment>Send tab: the files did not arrive; the line under it says why.</extracomment>
+        <translation>Inte skickat</translation>
+    </message>
+    <message>
+        <source>Getting a code…</source>
+        <extracomment>Send with a code: waiting for the server to hand out a code.</extracomment>
+        <translation>Hämtar en kod…</translation>
+    </message>
+    <message>
+        <source>Waiting for them to accept…</source>
+        <extracomment>Send tab: the other device has been asked and has not answered yet.</extracomment>
+        <translation>Väntar på att de ska godkänna…</translation>
+    </message>
+    <message>
+        <source>%1 to %2</source>
+        <extracomment>Send tab, under &quot;Sent&quot;: what went where; %1 is what, e.g. &quot;3 photos&quot;, %2 the device&apos;s name.</extracomment>
+        <translation>%1 till %2</translation>
+    </message>
+    <message>
+        <source>Add files</source>
+        <extracomment>Send tab: chooses more files to send with those chosen.</extracomment>
+        <translation>Lägg till filer</translation>
+    </message>
+    <message>
+        <source>Clear</source>
+        <extracomment>Send tab: clears the chosen files.</extracomment>
+        <translation>Rensa</translation>
+    </message>
+    <message>
+        <source>Cancel</source>
+        <extracomment>Stops a send or a receive under way.</extracomment>
+        <translation>Avbryt</translation>
+    </message>
+    <message>
+        <source>Send to another</source>
+        <extracomment>Send tab, after a send: back to the devices, the same files still chosen.</extracomment>
+        <translation>Skicka till en annan</translation>
+    </message>
+    <message>
+        <source>Done</source>
+        <extracomment>Send tab, after a send: back to the start, nothing chosen.</extracomment>
+        <translation>Klar</translation>
+    </message>
+    <message>
+        <source>Try again</source>
+        <extracomment>Send tab, after a send failed: sends the same files the same way again.</extracomment>
+        <translation>Försök igen</translation>
+    </message>
+    <message>
+        <source>Back</source>
+        <extracomment>Send tab, after a send failed: back to the devices, the same files still chosen.</extracomment>
+        <translation>Tillbaka</translation>
     </message>
 </context>
 <context>
@@ -1047,6 +1046,30 @@ Send tab: the row of a send with a code once its receiver has come.</extracommen
         <source>Saved in Downloads › Sukkula: %1</source>
         <extracomment>Where received files went. %1 is the list of names they were saved under.</extracomment>
         <translation>Sparat i Downloads › Sukkula: %1</translation>
+    </message>
+</context>
+<context>
+    <name>TransferRate</name>
+    <message>
+        <source>%1 of %2</source>
+        <extracomment>Progress: %1 bytes so far, %2 bytes in all, both formatted.</extracomment>
+        <translation>%1 av %2</translation>
+    </message>
+    <message numerus="yes">
+        <source>%1 · about %n second(s) left</source>
+        <extracomment>Progress: how long is left, after how much is done; %1 is that, e.g. &quot;4.3 MB of 8.2 MB&quot;.</extracomment>
+        <translation>
+            <numerusform>%1 · ungefär %n sekund kvar</numerusform>
+            <numerusform>%1 · ungefär %n sekunder kvar</numerusform>
+        </translation>
+    </message>
+    <message numerus="yes">
+        <source>%1 · about %n minute(s) left</source>
+        <extracomment>Progress: how long is left, after how much is done; %1 is that.</extracomment>
+        <translation>
+            <numerusform>%1 · ungefär %n minut kvar</numerusform>
+            <numerusform>%1 · ungefär %n minuter kvar</numerusform>
+        </translation>
     </message>
 </context>
 <context>

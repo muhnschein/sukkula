@@ -341,30 +341,6 @@
     </message>
 </context>
 <context>
-    <name>ProgressRow</name>
-    <message>
-        <source>%1 of %2</source>
-        <extracomment>Progress: %1 bytes so far, %2 bytes in all, both formatted.</extracomment>
-        <translation>%1 von %2</translation>
-    </message>
-    <message numerus="yes">
-        <source>%1 · about %n second(s) left</source>
-        <extracomment>Progress: how long is left, after how much is done; %1 is that, e.g. &quot;4.3 MB of 8.2 MB&quot;.</extracomment>
-        <translation>
-            <numerusform>%1 · noch etwa %n Sekunde</numerusform>
-            <numerusform>%1 · noch etwa %n Sekunden</numerusform>
-        </translation>
-    </message>
-    <message numerus="yes">
-        <source>%1 · about %n minute(s) left</source>
-        <extracomment>Progress: how long is left, after how much is done; %1 is that.</extracomment>
-        <translation>
-            <numerusform>%1 · noch etwa %n Minute</numerusform>
-            <numerusform>%1 · noch etwa %n Minuten</numerusform>
-        </translation>
-    </message>
-</context>
-<context>
     <name>ReceiveView</name>
     <message>
         <source>Cancelled</source>
@@ -472,6 +448,26 @@ Receive tab: where received files are.</extracomment>
         <extracomment>Receive tab, under &quot;Ready to receive&quot;: one way of receiving nearby could not start; tapping opens Settings, which says why.</extracomment>
         <translation>Manche Geräte in der Nähe sehen dich nicht. Tippen, um zu sehen, warum.</translation>
     </message>
+    <message>
+        <source>Received</source>
+        <extracomment>Receive tab: files or a text arrived.</extracomment>
+        <translation>Empfangen</translation>
+    </message>
+    <message>
+        <source>Not received</source>
+        <extracomment>Receive tab: what was coming did not arrive; the line under it says why.</extracomment>
+        <translation>Nicht empfangen</translation>
+    </message>
+    <message>
+        <source>%1 from %2</source>
+        <extracomment>Receive tab, under &quot;Received&quot;: what came from whom; %1 is what, e.g. &quot;3 photos&quot;, %2 the sender&apos;s name.</extracomment>
+        <translation>%1 von %2</translation>
+    </message>
+    <message>
+        <source>Cancel</source>
+        <extracomment>Stops a send or a receive under way.</extracomment>
+        <translation>Abbrechen</translation>
+    </message>
 </context>
 <context>
     <name>ReceivedPage</name>
@@ -540,39 +536,9 @@ Receive tab: where received files are.</extracomment>
         <translation>Kopiert</translation>
     </message>
     <message>
-        <source>Getting a code…</source>
-        <extracomment>Send with a code: waiting for the server to hand out a code.</extracomment>
-        <translation>Code wird geholt…</translation>
-    </message>
-    <message>
-        <source>Sending…</source>
-        <extracomment>Send with a code: the files are going.</extracomment>
-        <translation>Sende…</translation>
-    </message>
-    <message>
-        <source>Sent</source>
-        <extracomment>A send arrived.</extracomment>
-        <translation>Gesendet</translation>
-    </message>
-    <message>
-        <source>Cancelled</source>
-        <extracomment>A send was stopped by one of the two sides.</extracomment>
-        <translation>Abgebrochen</translation>
-    </message>
-    <message>
-        <source>Failed: %1</source>
-        <extracomment>A send failed; %1 says why.</extracomment>
-        <translation>Fehlgeschlagen: %1</translation>
-    </message>
-    <message>
         <source>Send with a code</source>
         <extracomment>Page title: sending over the internet with a code.</extracomment>
         <translation>Mit Code senden</translation>
-    </message>
-    <message>
-        <source>Sending</source>
-        <extracomment>Send with a code: the row of the send once its receiver has come.</extracomment>
-        <translation>Senden</translation>
     </message>
     <message>
         <source>Copy</source>
@@ -583,36 +549,6 @@ Receive tab: where received files are.</extracomment>
         <source>Share…</source>
         <extracomment>Opens the system share sheet with the code.</extracomment>
         <translation>Teilen…</translation>
-    </message>
-    <message>
-        <source>Waiting for the receiver…</source>
-        <extracomment>Send with a code: the code is shown, nobody has used it yet.</extracomment>
-        <translation>Warte auf den Empfänger…</translation>
-    </message>
-    <message>
-        <source>Uses the croc relay set in Settings.</source>
-        <extracomment>Send with a code, at the foot: croc goes through the user&apos;s own relay.</extracomment>
-        <translation>Nutzt das croc-Relay aus den Einstellungen.</translation>
-    </message>
-    <message>
-        <source>Uses croc&apos;s public relay. You can set your own in Settings.</source>
-        <extracomment>Send with a code, at the foot: croc goes through croc&apos;s public relay.</extracomment>
-        <translation>Nutzt das öffentliche croc-Relay. Ein eigenes kannst du in den Einstellungen festlegen.</translation>
-    </message>
-    <message>
-        <source>Uses the Magic Wormhole server set in Settings.</source>
-        <extracomment>Send with a code, at the foot: Magic Wormhole goes through the user&apos;s own server.</extracomment>
-        <translation>Nutzt den Magic-Wormhole-Server aus den Einstellungen.</translation>
-    </message>
-    <message>
-        <source>Uses Magic Wormhole&apos;s public server. You can set your own in Settings.</source>
-        <extracomment>Send with a code, at the foot: Magic Wormhole goes through its public server.</extracomment>
-        <translation>Nutzt den öffentlichen Magic-Wormhole-Server. Einen eigenen kannst du in den Einstellungen festlegen.</translation>
-    </message>
-    <message>
-        <source>The receiver scans the QR code or types in the code.</source>
-        <extracomment>Send with a code: what to do with the code.</extracomment>
-        <translation>Der Empfänger scannt den QR-Code oder tippt den Code ein.</translation>
     </message>
     <message>
         <source>Receiver&apos;s app</source>
@@ -634,6 +570,36 @@ Receive tab: where received files are.</extracomment>
         <extracomment>Send with a code: who can take a Magic Wormhole code.</extracomment>
         <translation>Funktioniert mit Sukkula, Warp und dem wormhole-Befehl.</translation>
     </message>
+    <message>
+        <source>The receiver scans it or types it in.</source>
+        <extracomment>Send with a code, under the code: what the receiver does with it.</extracomment>
+        <translation>Der Empfänger scannt ihn oder tippt ihn ein.</translation>
+    </message>
+    <message>
+        <source>Cancel</source>
+        <extracomment>Stops a send or a receive under way.</extracomment>
+        <translation>Abbrechen</translation>
+    </message>
+    <message>
+        <source>Send to another</source>
+        <extracomment>Send tab, after a send: back to the devices, the same files still chosen.</extracomment>
+        <translation>An weiteres Gerät senden</translation>
+    </message>
+    <message>
+        <source>Done</source>
+        <extracomment>Send tab, after a send: back to the start, nothing chosen.</extracomment>
+        <translation>Fertig</translation>
+    </message>
+    <message>
+        <source>Try again</source>
+        <extracomment>Send tab, after a send failed: sends the same files the same way again.</extracomment>
+        <translation>Erneut versuchen</translation>
+    </message>
+    <message>
+        <source>Back</source>
+        <extracomment>Send tab, after a send failed: back to the devices, the same files still chosen.</extracomment>
+        <translation>Zurück</translation>
+    </message>
 </context>
 <context>
     <name>SendView</name>
@@ -643,24 +609,14 @@ Receive tab: where received files are.</extracomment>
         <translation>Verbinde…</translation>
     </message>
     <message>
-        <source>Waiting for an answer…</source>
-        <extracomment>Send tab: the other device has been asked and has not answered yet.</extracomment>
-        <translation>Warte auf Antwort…</translation>
-    </message>
-    <message>
         <source>Sent</source>
-        <extracomment>A send arrived.</extracomment>
+        <extracomment>Send tab: the files arrived.</extracomment>
         <translation>Gesendet</translation>
     </message>
     <message>
         <source>Cancelled</source>
-        <extracomment>A send was stopped by one of the two sides.</extracomment>
+        <extracomment>A transfer was stopped by one of the two sides.</extracomment>
         <translation>Abgebrochen</translation>
-    </message>
-    <message>
-        <source>Failed: %1</source>
-        <extracomment>A send failed; %1 says why.</extracomment>
-        <translation>Fehlgeschlagen: %1</translation>
     </message>
     <message>
         <source>Looking for devices nearby…</source>
@@ -669,9 +625,7 @@ Receive tab: where received files are.</extracomment>
     </message>
     <message>
         <source>Send with a code</source>
-        <extracomment>Send tab: sending over the internet with a code.
-----------
-Send tab: the row of a send with a code once its receiver has come.</extracomment>
+        <extracomment>Send tab: sending over the internet with a code.</extracomment>
         <translation>Mit Code senden</translation>
     </message>
     <message>
@@ -685,19 +639,9 @@ Send tab: the row of a send with a code once its receiver has come.</extracommen
         <translation>Magic Wormhole sendet eine Datei auf einmal. Wähle croc, um mehrere zu senden.</translation>
     </message>
     <message>
-        <source>Sending…</source>
-        <extracomment>Send tab: the files are going.</extracomment>
-        <translation>Sende…</translation>
-    </message>
-    <message>
         <source>Clearing</source>
         <extracomment>Remorse: the chosen files are about to be cleared.</extracomment>
         <translation>Wird geleert</translation>
-    </message>
-    <message>
-        <source>What would you like to send?</source>
-        <extracomment>Send tab with nothing chosen yet.</extracomment>
-        <translation>Was möchtest du senden?</translation>
     </message>
     <message>
         <source>Looking for more</source>
@@ -731,12 +675,12 @@ Send tab: the row of a send with a code once its receiver has come.</extracommen
     </message>
     <message>
         <source>%1 is nearby</source>
-        <extracomment>Send tab, at the foot: one device nearby; %1 is its name.</extracomment>
+        <extracomment>Send tab, under &quot;Ready to send&quot;: one device nearby; %1 is its name.</extracomment>
         <translation>%1 ist in der Nähe</translation>
     </message>
     <message numerus="yes">
         <source>%1 and %n more nearby</source>
-        <extracomment>Send tab, at the foot: devices nearby; %1 is one&apos;s name, %n how many more.</extracomment>
+        <extracomment>Send tab, under &quot;Ready to send&quot;: devices nearby; %1 is one&apos;s name, %n how many more.</extracomment>
         <translation>
             <numerusform>%1 und %n weiteres Gerät in der Nähe</numerusform>
             <numerusform>%1 und %n weitere Geräte in der Nähe</numerusform>
@@ -752,13 +696,8 @@ Send tab: the row of a send with a code once its receiver has come.</extracommen
     </message>
     <message>
         <source>Choose files</source>
-        <extracomment>Send tab: the tile that opens the picker for pictures, videos, music and documents.</extracomment>
+        <extracomment>Send tab with nothing chosen: opens the picker for pictures, videos, music, documents and other files.</extracomment>
         <translation>Dateien auswählen</translation>
-    </message>
-    <message>
-        <source>Browse folders</source>
-        <extracomment>Send tab: the tile that opens the file browser, for files the other picker does not list.</extracomment>
-        <translation>Ordner durchsuchen</translation>
     </message>
     <message>
         <source>Devices must be on the same Wi-Fi and ready to receive.</source>
@@ -769,6 +708,66 @@ Send tab: the row of a send with a code once its receiver has come.</extracommen
         <source>Waiting for the receiver…</source>
         <extracomment>Send tab: a send with a code waits for the other side to scan or type the code.</extracomment>
         <translation>Warte auf den Empfänger…</translation>
+    </message>
+    <message>
+        <source>Ready to send</source>
+        <extracomment>Send tab with nothing chosen: the title under the anchor.</extracomment>
+        <translation>Bereit zum Senden</translation>
+    </message>
+    <message>
+        <source>Not sent</source>
+        <extracomment>Send tab: the files did not arrive; the line under it says why.</extracomment>
+        <translation>Nicht gesendet</translation>
+    </message>
+    <message>
+        <source>Getting a code…</source>
+        <extracomment>Send with a code: waiting for the server to hand out a code.</extracomment>
+        <translation>Code wird geholt…</translation>
+    </message>
+    <message>
+        <source>Waiting for them to accept…</source>
+        <extracomment>Send tab: the other device has been asked and has not answered yet.</extracomment>
+        <translation>Warte auf Annahme…</translation>
+    </message>
+    <message>
+        <source>%1 to %2</source>
+        <extracomment>Send tab, under &quot;Sent&quot;: what went where; %1 is what, e.g. &quot;3 photos&quot;, %2 the device&apos;s name.</extracomment>
+        <translation>%1 an %2</translation>
+    </message>
+    <message>
+        <source>Add files</source>
+        <extracomment>Send tab: chooses more files to send with those chosen.</extracomment>
+        <translation>Dateien hinzufügen</translation>
+    </message>
+    <message>
+        <source>Clear</source>
+        <extracomment>Send tab: clears the chosen files.</extracomment>
+        <translation>Leeren</translation>
+    </message>
+    <message>
+        <source>Cancel</source>
+        <extracomment>Stops a send or a receive under way.</extracomment>
+        <translation>Abbrechen</translation>
+    </message>
+    <message>
+        <source>Send to another</source>
+        <extracomment>Send tab, after a send: back to the devices, the same files still chosen.</extracomment>
+        <translation>An weiteres Gerät senden</translation>
+    </message>
+    <message>
+        <source>Done</source>
+        <extracomment>Send tab, after a send: back to the start, nothing chosen.</extracomment>
+        <translation>Fertig</translation>
+    </message>
+    <message>
+        <source>Try again</source>
+        <extracomment>Send tab, after a send failed: sends the same files the same way again.</extracomment>
+        <translation>Erneut versuchen</translation>
+    </message>
+    <message>
+        <source>Back</source>
+        <extracomment>Send tab, after a send failed: back to the devices, the same files still chosen.</extracomment>
+        <translation>Zurück</translation>
     </message>
 </context>
 <context>
@@ -1047,6 +1046,30 @@ Send tab: the row of a send with a code once its receiver has come.</extracommen
         <source>Saved in Downloads › Sukkula: %1</source>
         <extracomment>Where received files went. %1 is the list of names they were saved under.</extracomment>
         <translation>Gespeichert in Downloads › Sukkula: %1</translation>
+    </message>
+</context>
+<context>
+    <name>TransferRate</name>
+    <message>
+        <source>%1 of %2</source>
+        <extracomment>Progress: %1 bytes so far, %2 bytes in all, both formatted.</extracomment>
+        <translation>%1 von %2</translation>
+    </message>
+    <message numerus="yes">
+        <source>%1 · about %n second(s) left</source>
+        <extracomment>Progress: how long is left, after how much is done; %1 is that, e.g. &quot;4.3 MB of 8.2 MB&quot;.</extracomment>
+        <translation>
+            <numerusform>%1 · noch etwa %n Sekunde</numerusform>
+            <numerusform>%1 · noch etwa %n Sekunden</numerusform>
+        </translation>
+    </message>
+    <message numerus="yes">
+        <source>%1 · about %n minute(s) left</source>
+        <extracomment>Progress: how long is left, after how much is done; %1 is that.</extracomment>
+        <translation>
+            <numerusform>%1 · noch etwa %n Minute</numerusform>
+            <numerusform>%1 · noch etwa %n Minuten</numerusform>
+        </translation>
     </message>
 </context>
 <context>

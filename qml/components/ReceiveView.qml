@@ -3,13 +3,15 @@ import QtQuick 2.6
 import Sailfish.Silica 1.0
 
 /*
- * The Receive tab (F-C1), at one glance: whether this phone is ready and
- * the name others see it by, under a radar that pulses while it waits;
- * what is coming in, with how far it has got and a cross to stop it
- * (F-C5); receiving with a code from far away, by scanning its QR code or
- * typing it in (F-MW2, F-CR2); and what came today. How each way of
- * receiving is doing is in Settings, beside its switch; a way that could
- * not start is said here in a line that leads there.
+ * The Receive tab (F-C1), at one glance, round the anchor (StatusHero):
+ * whether this phone is ready and the name others see it by, the anchor
+ * pulsing while it waits; what is coming in, the anchor filling as it
+ * comes, with Cancel (F-C5), then a check and where it went, or a cross
+ * and why, for a few seconds; receiving with a code from far away, by
+ * scanning its QR code or typing it in (F-MW2, F-CR2); and what came
+ * today. How each way of receiving is doing is in Settings, beside its
+ * switch; a way that could not start is said here in a line that leads
+ * there.
  *
  * Every offer still waits on the consent dialog (F-C2), which comes up
  * over whatever shows. Files that came together are one row ("3
@@ -17,8 +19,8 @@ import Sailfish.Silica 1.0
  * alone: nothing received is ever opened or drawn (S2, S8).
  *
  * Sender and file names are the peers' own (after S1, S2) and are shown
- * only in IconListItem's, ProgressRow's and this file's plain-text
- * labels.
+ * only in IconListItem's, ProgressRow's, StatusHero's and this file's
+ * plain-text labels.
  */
 Item {
     id: view
@@ -32,10 +34,9 @@ Item {
     property bool foreground: true
     /// Room at the top for the tabs.
     property real topInset: 0
-    /// The height of the list this is in: the radar takes what the rest
-    /// leaves of it.
+    /// The height of the list this is in, which places the anchor.
     property real viewHeight: 0
-    /// How long an ended transfer stays under "Receiving", in ms.
+    /// How long an ended transfer stays in the hero, in ms.
     property int linger: 4000
 
     /// Ended incoming transfers still under "Receiving": transferId -> when.
@@ -52,7 +53,7 @@ Item {
     readonly property bool anyFailed: view.stateOf("local_send") === "failed"
                                       || view.stateOf("quick_share") === "failed"
     readonly property bool codeOn: view.engine.protocolEnabled("wormhole") || view.engine.protocolEnabled("croc")
-    /// Something is under "Receiving".
+    /// Something is coming in, or has just ended.
     readonly property bool busy: (view.tick, view.countShown() > 0)
     /// Something came today.
     readonly property bool anyToday: (view.tick, view.countToday() > 0)
@@ -60,38 +61,34 @@ Item {
                                     && !view.busy
     /// A way of receiving nearby is on and could not start.
     readonly property bool someFailed: view.receiving && view.nearbyEnabled && view.anyFailed
-    /// The radar as the canvas drew it, round the theme's phone icon: the
-    /// disc 1.9 times the icon, the outer ring 1 / 0.432 times the disc.
-    readonly property real radarBase: Theme.iconSizeMedium * 1.9 / 0.432
-    /// The room under the tabs that the words under the radar and
-    /// everything below it leave.
-    readonly property real radarRoom: view.viewHeight - view.topInset - heroWords.height - rest.height
-                                      - 3 * Theme.paddingLarge
-    /// The outer ring: the canvas's size, and up to a third more where
-    /// there is room, with the pulses (to 1.15 times it) kept inside the
-    /// page's margins.
-    readonly property real radarSize: Math.min((view.width - 2 * Theme.horizontalPageMargin) / 1.15,
-                                               Math.max(view.radarBase,
-                                                        Math.min(view.radarBase * 1.35, view.radarRoom / 1.15)))
+    /// The transfer the hero shows: the first coming in, or ended a
+    /// moment ago; null while none is.
+    readonly property var heroTransfer: (view.tick, view.findHeroTransfer())
+    readonly property int heroId: view.heroTransfer ? view.heroTransfer.transferId : -1
+    /// The anchor's mode.
+    readonly property string heroMode: !view.heroTransfer ? (view.pulsing ? "ready" : "idle")
+        : view.heroTransfer.state === "active" ? (view.heroTransfer.bytes > 0 ? "progress" : "waiting")
+        : view.heroTransfer.state === "done" ? "done" : "failed"
 
     implicitHeight: column.height
 
-    /// CSS's ease-out, cubic-bezier(0, 0, 0.58, 1), which the canvas's
-    /// pulses use: x(s) = 1.74 s^2 - 0.74 s^3 is found for `t` by
-    /// halving, and y(s) = 3 s^2 - 2 s^3 is the eased value.
-    function easeOut(t) {
-        var lo = 0
-        var hi = 1
-        for (var i = 0; i < 16; i++) {
-            var s = (lo + hi) / 2
-            if (1.74 * s * s - 0.74 * s * s * s < t) {
-                lo = s
-            } else {
-                hi = s
+    onHeroIdChanged: rate.reset()
+
+    TransferRate {
+        id: rate
+        bytes: view.heroTransfer ? view.heroTransfer.bytes : 0
+        total: view.heroTransfer ? view.heroTransfer.total : 0
+        active: view.heroTransfer !== null && view.heroTransfer.state === "active"
+    }
+
+    function findHeroTransfer() {
+        for (var i = 0; i < view.engine.transfers.count; i++) {
+            var t = view.engine.transfers.get(i)
+            if (view.shows(t.direction, t.state, t.transferId)) {
+                return view.engine.transfer(t.transferId)
             }
         }
-        var m = (lo + hi) / 2
-        return 3 * m * m - 2 * m * m * m
+        return null
     }
 
     function stateOf(protocol) {
@@ -289,6 +286,65 @@ Item {
         return qsTr("Starting…")
     }
 
+    function heroTitle() {
+        var t = view.heroTransfer
+        if (!t) {
+            return view.hero()
+        }
+        switch (view.heroMode) {
+        case "done":
+            //: Receive tab: files or a text arrived.
+            return qsTr("Received")
+        case "failed":
+            //: Receive tab: what was coming did not arrive; the line under it says why.
+            return qsTr("Not received")
+        }
+        return t.peer
+    }
+
+    function heroSubtitle() {
+        var t = view.heroTransfer
+        if (!t) {
+            //: Receive tab, over this phone's name as devices nearby list it.
+            return view.nearbyEnabled ? qsTr("Others nearby see you as") : ""
+        }
+        switch (view.heroMode) {
+        case "waiting":
+            return view.receivingText(t)
+        case "progress":
+            return rate.sizeLine()
+        case "done":
+            return t.savedCount > 0
+                   //: Receive tab: files arrived.
+                   ? qsTr("Saved in Downloads › Sukkula")
+                   //: Receive tab: a text arrived; it is on the History page.
+                   : qsTr("Saved in History")
+        }
+        return t.state === "cancelled"
+               //: A transfer was stopped by one of the two sides.
+               ? qsTr("Cancelled")
+               : view.engine.errorText({ code: t.error })
+    }
+
+    function heroLine() {
+        var t = view.heroTransfer
+        if (!t) {
+            return view.nearbyEnabled ? view.engine.effectiveDeviceName : ""
+        }
+        var what = t.savedCount === 0 && t.fileCount === 0
+                   //: Receive tab: a text message arrived.
+                   ? qsTr("Text message")
+                   : view.engine.bundleName(view.namesOf(t), Math.max(t.savedCount, t.fileCount))
+        switch (view.heroMode) {
+        case "waiting":
+            return ""
+        case "progress":
+            return what
+        }
+        //: Receive tab, under "Received": what came from whom; %1 is what, e.g. "3 photos", %2 the sender's name.
+        return qsTr("%1 from %2").arg(what).arg(t.peer)
+    }
+
     Column {
         id: column
         width: parent.width
@@ -298,168 +354,54 @@ Item {
             height: view.topInset
         }
 
-        // ---- Ready -----------------------------------------------------
-
-        Item {
+        StatusHero {
             id: hero
             objectName: "receiveHero"
-            width: parent.width
-            visible: !view.busy
-            height: Math.max(heroColumn.height + 2 * Theme.paddingLarge,
-                             view.viewHeight - view.topInset - rest.height)
+            topInset: view.topInset
+            pageHeight: view.viewHeight
+            mode: view.heroMode
+            glyph: "phone"
+            value: view.heroTransfer && view.heroTransfer.total > 0 ? view.heroTransfer.bytes / view.heroTransfer.total : 0
+            running: view.current && view.foreground
+            title: view.heroTitle()
+            failed: view.heroMode === "failed"
+            subtitle: view.heroSubtitle()
+            line: view.heroLine()
 
-            Column {
-                id: heroColumn
-                width: parent.width
-                y: Math.max(Theme.paddingLarge, (hero.height - heroColumn.height) / 2)
-                spacing: Theme.paddingLarge
+            // A way that could not start: why is beside its switch.
+            BackgroundItem {
+                id: failedItem
+                objectName: "receiveFailed"
+                width: hero.width
+                height: failedLabel.height + 2 * Theme.paddingMedium
+                visible: view.someFailed && !view.heroTransfer
+                onClicked: view.openSettings()
 
-                // As the canvas drew it: two faint rings, a disc round the
-                // phone, and three pulses going out from the disc to past
-                // the outer ring, fading as they go, one every second while
-                // this phone waits to be sent to.
-                Item {
-                    id: radar
-                    objectName: "radar"
-                    /// How far round the 3 s cycle the first pulse is.
-                    property real phase: 0
-                    /// Line widths, the canvas's in its 176 px.
-                    readonly property real line: Math.max(1, radar.width / 176)
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    width: view.radarSize
-                    height: width
-                    opacity: view.nearbyReady ? 1 : 0.4
-
-                    NumberAnimation {
-                        target: radar
-                        property: "phase"
-                        from: 0
-                        to: 1
-                        duration: 3000
-                        loops: Animation.Infinite
-                        running: view.pulsing
-                    }
-
-                    Repeater {
-                        model: [1, 0.705]
-                        delegate: Rectangle {
-                            anchors.centerIn: parent
-                            width: radar.width * modelData
-                            height: width
-                            radius: width / 2
-                            color: "transparent"
-                            border.width: radar.line
-                            border.color: Theme.rgba(Theme.highlightColor, 0.24)
-                        }
-                    }
-
-                    Repeater {
-                        model: 3
-                        delegate: Rectangle {
-                            id: pulse
-                            objectName: "pulse"
-                            /// This pulse's way out, 0 to 1, eased.
-                            readonly property real progress: view.easeOut((radar.phase + index / 3) % 1)
-                            anchors.centerIn: parent
-                            width: radar.width
-                            height: width
-                            radius: width / 2
-                            visible: view.pulsing
-                            color: "transparent"
-                            border.width: 1.5 * radar.line
-                            border.color: Theme.highlightColor
-                            scale: 0.45 + 0.7 * pulse.progress
-                            opacity: 0.9 * (1 - pulse.progress)
-                        }
-                    }
-
-                    Rectangle {
-                        objectName: "radarCore"
-                        anchors.centerIn: parent
-                        width: radar.width * 0.432
-                        height: width
-                        radius: width / 2
-                        color: Theme.rgba(Theme.highlightColor, 0.1)
-                        border.width: 2 * radar.line
-                        border.color: Theme.highlightColor
-                    }
-                    Glyph {
-                        objectName: "radarGlyph"
-                        anchors.centerIn: parent
-                        kind: "phone"
-                        color: Theme.highlightColor
-                    }
+                Label {
+                    id: failedLabel
+                    objectName: "receiveFailedLine"
+                    x: Theme.horizontalPageMargin
+                    width: parent.width - 2 * Theme.horizontalPageMargin
+                    anchors.verticalCenter: parent.verticalCenter
+                    horizontalAlignment: Text.AlignHCenter
+                    text: view.nearbyReady
+                          //: Receive tab, under "Ready to receive": one way of receiving nearby could not start; tapping opens Settings, which says why.
+                          ? qsTr("Some devices nearby cannot see you. Tap to see why.")
+                          //: Receive tab, under "Others nearby cannot see you": tapping opens Settings, which says why.
+                          : qsTr("Tap to see why.")
+                    textFormat: Text.PlainText
+                    wrapMode: Text.Wrap
+                    font.pixelSize: Theme.fontSizeSmall
+                    color: failedItem.highlighted ? Theme.highlightColor : Theme.errorColor
                 }
+            }
 
-                Column {
-                    id: heroWords
-                    objectName: "heroWords"
-                    width: parent.width
-                    spacing: Theme.paddingSmall
-
-                    Label {
-                        objectName: "receiveState"
-                        x: Theme.horizontalPageMargin
-                        width: parent.width - 2 * Theme.horizontalPageMargin
-                        horizontalAlignment: Text.AlignHCenter
-                        text: view.hero()
-                        textFormat: Text.PlainText
-                        wrapMode: Text.Wrap
-                        font.pixelSize: Theme.fontSizeExtraLarge
-                        color: Theme.highlightColor
-                    }
-                    Label {
-                        objectName: "seenAs"
-                        x: Theme.horizontalPageMargin
-                        width: parent.width - 2 * Theme.horizontalPageMargin
-                        visible: view.nearbyEnabled
-                        horizontalAlignment: Text.AlignHCenter
-                        //: Receive tab, over this phone's name as devices nearby list it.
-                        text: qsTr("Others nearby see you as")
-                        textFormat: Text.PlainText
-                        wrapMode: Text.Wrap
-                        font.pixelSize: Theme.fontSizeSmall
-                        color: Theme.secondaryColor
-                    }
-                    Label {
-                        objectName: "deviceNameLabel"
-                        x: Theme.horizontalPageMargin
-                        width: parent.width - 2 * Theme.horizontalPageMargin
-                        visible: view.nearbyEnabled
-                        horizontalAlignment: Text.AlignHCenter
-                        text: view.engine.effectiveDeviceName
-                        textFormat: Text.PlainText
-                        truncationMode: TruncationMode.Fade
-                    }
-
-                    // A way that could not start: why is beside its switch.
-                    BackgroundItem {
-                        id: failedItem
-                        objectName: "receiveFailed"
-                        width: parent.width
-                        height: failedLabel.height + 2 * Theme.paddingMedium
-                        visible: view.someFailed
-                        onClicked: view.openSettings()
-
-                        Label {
-                            id: failedLabel
-                            objectName: "receiveFailedLine"
-                            x: Theme.horizontalPageMargin
-                            width: parent.width - 2 * Theme.horizontalPageMargin
-                            anchors.verticalCenter: parent.verticalCenter
-                            horizontalAlignment: Text.AlignHCenter
-                            text: view.nearbyReady
-                                  //: Receive tab, under "Ready to receive": one way of receiving nearby could not start; tapping opens Settings, which says why.
-                                  ? qsTr("Some devices nearby cannot see you. Tap to see why.")
-                                  //: Receive tab, under "Others nearby cannot see you": tapping opens Settings, which says why.
-                                  : qsTr("Tap to see why.")
-                            textFormat: Text.PlainText
-                            wrapMode: Text.Wrap
-                            font.pixelSize: Theme.fontSizeSmall
-                            color: failedItem.highlighted ? Theme.highlightColor : Theme.errorColor
-                        }
-                    }
-                }
+            Button {
+                objectName: "cancelReceive"
+                visible: view.heroTransfer !== null && view.heroTransfer.state === "active"
+                //: Stops a send or a receive under way.
+                text: qsTr("Cancel")
+                onClicked: view.engine.cancel(view.heroId)
             }
         }
 
@@ -470,8 +412,9 @@ Item {
 
             // ---- Coming in -----------------------------------------------
 
+            // More than one at a time: the others, under the hero's.
             SectionHeader {
-                visible: view.busy
+                visible: (view.tick, view.countShown() > 1)
                 //: Receive tab: the section of transfers coming in.
                 text: qsTr("Receiving")
             }
@@ -480,7 +423,8 @@ Item {
                 model: view.engine.transfers
                 delegate: ProgressRow {
                     objectName: "receiveProgress"
-                    visible: (view.tick, view.shows(model.direction, model.state, model.transferId))
+                    visible: (view.tick, view.shows(model.direction, model.state, model.transferId)
+                              && model.transferId !== view.heroId)
                     title: model.peer
                     status: (view.tick, view.receivingText(view.engine.transfer(model.transferId) || {}))
                     phase: model.state

@@ -3,29 +3,32 @@ import QtQuick 2.6
 import Sailfish.Silica 1.0
 
 /*
- * The Send tab (F-C6): what to send, then who to.
+ * The Send tab (F-C6): what to send, then who to, round the anchor
+ * (StatusHero), which stays where it is from step to step.
  *
- * With nothing chosen, two tiles open the platform's pickers: the content
- * picker, which bundles pictures, videos, music and documents (as
- * piirit's attach button does), and the file browser for anything else. A
- * line at the foot says who is nearby, since discovery runs from the
- * start. Files shared from another app arrive here already chosen.
+ * Nothing chosen: "Ready to send", who is nearby in the grey line -- the
+ * anchor's sweep going round while discovery runs, which it does from
+ * the start -- and "Choose files", the platform's content picker, which
+ * bundles pictures, videos, music and documents and the file system as
+ * piirit's attach button does. Files shared from another app arrive here
+ * already chosen.
  *
- * With files chosen, a row says what they are, with + to add more and a
- * cross to clear them (with a remorse to undo). Under "Nearby", every
- * device discovery found (F-LS1, F-QS1) and every paired Bluetooth device
- * (F-BT1), one row each: a device found over both Quick Share and
- * LocalSend, by the same name, is one row, which is a guess, so its menu
- * says which way to send. The protocol is only ever in the grey line.
- * Under "Far away", sending with a code, on a page of its own (F-MW1,
- * F-CR1).
+ * Files chosen: what they are ("3 photos", 8.2 MB) with Add files and
+ * Clear (with a remorse to undo). Under "Nearby", every device discovery
+ * found (F-LS1, F-QS1) and every paired Bluetooth device (F-BT1), one row
+ * each: a device found over both Quick Share and LocalSend, by the same
+ * name, is one row, which is a guess, so its menu says which way to send.
+ * The protocol is only ever in the grey line. Under "Far away", sending
+ * with a code, on a page of its own (F-MW1, F-CR1).
  *
- * Tapping a device sends to it at once. Its row then shows how far the
- * send has got, with a cross to stop it, and the other rows wait. After
- * the send the files stay chosen, so they can go to another device too.
+ * Tapping a device sends to it at once, and the tab is that send: the
+ * anchor waiting for an answer, then filling as the files go, with
+ * Cancel; then a check and "Send to another" (the files stay chosen) or
+ * "Done" (they go), or a cross, why, and "Try again" or "Back". A send
+ * cancelled here goes straight back to the devices.
  *
  * Peer names are the peers' own (after S2) and are shown only in
- * IconListItem's and ProgressRow's plain-text labels.
+ * IconListItem's and StatusHero's plain-text labels.
  */
 Item {
     id: view
@@ -41,10 +44,12 @@ Item {
     property bool discovering: false
     /// This is the tab on screen.
     property bool current: true
+    /// The app is in front.
+    property bool foreground: true
     /// Room at the top for the tabs.
     property real topInset: 0
-    /// How long an ended send stays in its row, in ms.
-    property int linger: 4000
+    /// The height of the list this is in, which places the anchor.
+    property real viewHeight: 0
     property bool alive: true
 
     /// Every device a send can go to, one per name: [{key, name,
@@ -53,8 +58,9 @@ Item {
     /// then the paired Bluetooth devices no LAN device shares a name with.
     property var devices: []
 
-    /// The send on screen, or null: {key, protocol, name, transferId}.
-    /// `key` is its device's, or "code" for a send with a code.
+    /// The send on screen, or null: {key, protocol, name, glyph, target,
+    /// transferId}. `key` is its device's, or "code" for a send with a
+    /// code.
     property var outgoing: null
     /// The engine's row for the send's transfer, or null.
     property var outgoingTransfer: null
@@ -67,10 +73,10 @@ Item {
     /// A send with a code was given up before its transfer was known: it
     /// is cancelled as soon as it is.
     property bool cancelWhenKnown: false
+    /// The send on screen was cancelled here: it goes once it has ended.
+    property bool cancelling: false
     /// The pickers (Pickers.qml), made on first use.
     property QtObject pickers: null
-    /// The picker used last, "content" or "files": + opens it again.
-    property string lastPicker: "content"
 
     readonly property bool hasPayload: view.payload.itemCount > 0
     readonly property bool hasOutgoing: view.outgoing !== null
@@ -79,10 +85,12 @@ Item {
         : view.outgoing.transferId >= 0 ? "active" : "starting"
     readonly property bool outgoingEnded: view.outgoingState === "done" || view.outgoingState === "failed"
                                        || view.outgoingState === "cancelled"
+    /// Bytes are going.
+    readonly property bool outgoingMoving: view.outgoingState === "active" && view.outgoingTransfer !== null
+                                           && view.outgoingTransfer.bytes > 0
     /// A send with a code whose receiver has not come yet.
     readonly property bool codeWaiting: view.hasOutgoing && view.outgoing.key === "code"
-        && (view.outgoingState === "starting" || (view.outgoingState === "active"
-            && (view.outgoingTransfer === null || view.outgoingTransfer.bytes <= 0)))
+        && (view.outgoingState === "starting" || (view.outgoingState === "active" && !view.outgoingMoving))
 
     readonly property bool wormholeOn: view.engine.protocolEnabled("wormhole")
     readonly property bool crocOn: view.engine.protocolEnabled("croc")
@@ -91,6 +99,8 @@ Item {
     readonly property bool nearbyOn: view.engine.protocolEnabled("local_send")
                                      || view.engine.protocolEnabled("quick_share")
                                      || view.engine.protocolEnabled("bluetooth")
+    /// Devices are being looked for: the anchor's sweep.
+    readonly property bool looking: view.discovering && view.nearbyOn
     /// How many devices discovery found, not counting the paired ones.
     readonly property int foundCount: {
         var n = 0
@@ -103,6 +113,16 @@ Item {
     }
     /// The files' kind in common, for the icon and the words.
     readonly property string payloadKind: view.engine.commonKind(view.payload.names(), view.payload.itemCount)
+    /// "3 photos", or the one file's name.
+    readonly property string payloadName: view.engine.bundleName(view.payload.names(), view.payload.itemCount)
+    /// "8.2 MB", or "" where a picker did not say.
+    readonly property string payloadSize: view.payload.totalSize >= 0 ? Format.formatFileSize(view.payload.totalSize)
+                                                                      : ""
+    /// The anchor's mode for the step on screen.
+    readonly property string heroMode: !view.hasOutgoing ? (view.looking ? "looking" : "idle")
+        : view.outgoingState === "done" ? "done"
+        : view.outgoingEnded ? "failed"
+        : view.outgoingMoving ? "progress" : "waiting"
 
     implicitHeight: column.height
 
@@ -232,10 +252,7 @@ Item {
     /// A device was tapped: sent to over its first way, or over
     /// `protocol` when its menu said which.
     function choose(device, protocol) {
-        if (view.hasOutgoing && !view.outgoingEnded) {
-            return
-        }
-        if (view.sending || !device || device.peers.length === 0 || !view.hasPayload) {
+        if (view.hasOutgoing || view.sending || !device || device.peers.length === 0 || !view.hasPayload) {
             return
         }
         var peer = device.peers[0]
@@ -244,8 +261,8 @@ Item {
                 peer = device.peers[i]
             }
         }
-        view.dismiss()
-        view.start({ key: device.key, protocol: peer.protocol, name: device.name, target: peer.target })
+        view.start({ key: device.key, protocol: peer.protocol, name: device.name,
+                     glyph: view.deviceGlyph(device), target: peer.target })
     }
 
     /// The protocol a send with a code starts with: Magic Wormhole for
@@ -277,7 +294,7 @@ Item {
             view.giveUpCode()
         }
         view.dismiss()
-        view.start({ key: "code", protocol: protocol, name: "", target: { protocol: protocol } })
+        view.start({ key: "code", protocol: protocol, name: "", glyph: "qr", target: { protocol: protocol } })
         return true
     }
 
@@ -292,7 +309,7 @@ Item {
         } else {
             view.cancelWhenKnown = true
         }
-        lingering.stop()
+        view.cancelling = false
         view.outgoing = null
         view.outgoingTransfer = null
         view.outgoingCode = ""
@@ -302,7 +319,9 @@ Item {
     function start(what) {
         view.sending = true
         view.cancelWhenKnown = false
-        view.outgoing = { key: what.key, protocol: what.protocol, name: what.name, transferId: -1 }
+        view.cancelling = false
+        view.outgoing = { key: what.key, protocol: what.protocol, name: what.name, glyph: what.glyph,
+                          target: what.target, transferId: -1 }
         view.outgoingTransfer = null
         view.outgoingCode = ""
         view.outgoingQr = null
@@ -326,7 +345,8 @@ Item {
             }
             var f = self.outgoing
             if (f) {
-                self.outgoing = { key: f.key, protocol: f.protocol, name: f.name, transferId: transfer }
+                self.outgoing = { key: f.key, protocol: f.protocol, name: f.name, glyph: f.glyph,
+                                  target: f.target, transferId: transfer }
                 self.refreshOutgoing()
             }
         })
@@ -342,67 +362,168 @@ Item {
         view.outgoingQr = c ? c.qr : null
     }
 
+    // A send cancelled here goes as soon as it has ended -- once the
+    // update that ended it is through; any other ending stays until a
+    // button says where to.
     onOutgoingEndedChanged: {
-        if (view.outgoingEnded) {
-            lingering.restart()
+        if (view.outgoingEnded && view.cancelling) {
+            dismissSoon.restart()
         }
     }
 
-    /// Back to the plain list once a send has ended. What was sent stays
+    Timer {
+        id: dismissSoon
+        interval: 0
+        onTriggered: view.dismiss()
+    }
+
+    /// Back to the devices once a send has ended. What was sent stays
     /// chosen.
     function dismiss() {
         if (!view.outgoingEnded) {
             return
         }
-        lingering.stop()
+        view.cancelling = false
         view.outgoing = null
         view.outgoingTransfer = null
         view.outgoingCode = ""
         view.outgoingQr = null
     }
 
+    /// "Done": back to the start, with nothing chosen.
+    function finish() {
+        if (!view.outgoingEnded) {
+            return
+        }
+        view.dismiss()
+        view.payload.clear()
+    }
+
+    /// "Try again": the same files to the same device, the same way; a
+    /// send with a code gets a new code.
+    function retry() {
+        if (!view.outgoingEnded) {
+            return
+        }
+        var last = view.outgoing
+        view.dismiss()
+        if (last.key === "code") {
+            view.openCode()
+        } else {
+            view.start({ key: last.key, protocol: last.protocol, name: last.name, glyph: last.glyph,
+                         target: last.target })
+        }
+    }
+
+    /// "Cancel": a send on its way is stopped, and one still waiting for
+    /// its code or its receiver is given up.
     function cancelSend() {
-        if (view.hasOutgoing && view.outgoing.transferId >= 0 && view.outgoingState === "active") {
+        if (!view.hasOutgoing || view.outgoingEnded) {
+            return
+        }
+        if (view.codeWaiting) {
+            view.giveUpCode()
+            return
+        }
+        if (view.outgoing.transferId >= 0 && view.outgoingState === "active") {
+            view.cancelling = true
             view.engine.cancel(view.outgoing.transferId)
         }
     }
 
-    Timer {
-        id: lingering
-        interval: view.linger
-        onTriggered: view.dismiss()
+    TransferRate {
+        id: rate
+        bytes: view.outgoingTransfer ? view.outgoingTransfer.bytes : 0
+        total: view.outgoingTransfer ? view.outgoingTransfer.total : 0
+        active: view.outgoingState === "active"
+    }
+    onOutgoingChanged: {
+        if (view.outgoing === null || view.outgoing.transferId < 0) {
+            rate.reset()
+        }
     }
 
-    function statusText() {
-        var t = view.outgoingTransfer
-        switch (view.outgoingState) {
-        case "starting":
-            //: Send tab: a send was asked for, the engine has not answered yet.
-            return qsTr("Connecting…")
-        case "active":
-            if (t && t.bytes > 0) {
-                //: Send tab: the files are going.
-                return qsTr("Sending…")
-            }
-            //: Send tab: the other device has been asked and has not answered yet.
-            return qsTr("Waiting for an answer…")
+    // ---- The hero's words -------------------------------------------------
+
+    function heroTitle() {
+        if (!view.hasPayload && !view.hasOutgoing) {
+            //: Send tab with nothing chosen: the title under the anchor.
+            return qsTr("Ready to send")
+        }
+        if (!view.hasOutgoing) {
+            return view.payloadName
+        }
+        switch (view.heroMode) {
         case "done":
-            //: A send arrived.
+            //: Send tab: the files arrived.
             return qsTr("Sent")
-        case "cancelled":
-            //: A send was stopped by one of the two sides.
-            return qsTr("Cancelled")
         case "failed":
-            //: A send failed; %1 says why.
-            return qsTr("Failed: %1").arg(view.engine.errorText({ code: t ? t.error : "" }))
+            //: Send tab: the files did not arrive; the line under it says why.
+            return qsTr("Not sent")
+        }
+        return view.outgoing.key === "code" ? view.payloadName : view.outgoing.name
+    }
+
+    function heroSubtitle() {
+        if (!view.hasPayload && !view.hasOutgoing) {
+            return view.nearbyText()
+        }
+        if (!view.hasOutgoing) {
+            return view.payloadSize
+        }
+        var code = view.outgoing.key === "code"
+        switch (view.heroMode) {
+        case "waiting":
+            if (view.outgoingState === "starting" || (code && view.outgoingCode === "")) {
+                return code
+                       //: Send with a code: waiting for the server to hand out a code.
+                       ? qsTr("Getting a code…")
+                       //: Send tab: a send was asked for, the engine has not answered yet.
+                       : qsTr("Connecting…")
+            }
+            return code
+                   //: Send tab: a send with a code waits for the other side to scan or type the code.
+                   ? qsTr("Waiting for the receiver…")
+                   //: Send tab: the other device has been asked and has not answered yet.
+                   : qsTr("Waiting for them to accept…")
+        case "progress":
+            return rate.sizeLine()
+        case "done":
+            return code ? view.withSize(view.payloadName)
+                        //: Send tab, under "Sent": what went where; %1 is what, e.g. "3 photos", %2 the device's name.
+                        : qsTr("%1 to %2").arg(view.payloadName).arg(view.outgoing.name)
+        case "failed":
+            return view.outgoingState === "cancelled"
+                   //: A transfer was stopped by one of the two sides.
+                   ? qsTr("Cancelled")
+                   : view.engine.errorText({ code: view.outgoingTransfer ? view.outgoingTransfer.error : "" })
         }
         return ""
     }
 
+    function heroLine() {
+        if (!view.hasOutgoing || view.outgoing.key === "code") {
+            return ""
+        }
+        switch (view.heroMode) {
+        case "waiting":
+        case "failed":
+            return view.withSize(view.payloadName)
+        case "progress":
+            return view.payloadName
+        }
+        return ""
+    }
+
+    /// "3 photos · 8.2 MB", or the name alone where the size is not known.
+    function withSize(name) {
+        return view.payloadSize.length > 0 ? name + " · " + view.payloadSize : name
+    }
+
     // ---- Choosing -------------------------------------------------------
 
-    /// Opens the picker for "content" or "files".
-    function pick(kind) {
+    /// Opens the content picker, several files at a time.
+    function pick() {
         if (view.payload.itemCount >= view.payload.maxFiles) {
             //: Send tab: the most files one send can carry are chosen already; %n is that many.
             view.banner.show(qsTr("A send can include up to %n file(s).", "", view.payload.maxFiles))
@@ -416,8 +537,7 @@ Item {
             }
         }
         if (view.pickers !== null) {
-            view.lastPicker = kind
-            pageStack.push(view.pickers.component(kind))
+            pageStack.push(view.pickers.content)
             return
         }
         // No dialogs for several files here: the file browser, one at a time.
@@ -477,163 +597,82 @@ Item {
             height: view.topInset
         }
 
-        // ---- Nothing chosen: what to send ------------------------------
+        StatusHero {
+            id: hero
+            objectName: "sendHero"
+            topInset: view.topInset
+            pageHeight: view.viewHeight
+            mode: view.heroMode
+            glyph: !view.hasOutgoing ? (view.hasPayload ? view.payloadKind : "phone") : view.outgoing.glyph
+            value: view.outgoingTransfer && view.outgoingTransfer.total > 0
+                   ? view.outgoingTransfer.bytes / view.outgoingTransfer.total : 0
+            running: view.current && view.foreground
+            title: view.heroTitle()
+            failed: view.heroMode === "failed"
+            subtitle: view.heroSubtitle()
+            line: view.heroLine()
 
-        Label {
-            objectName: "sendQuestion"
-            x: Theme.horizontalPageMargin
-            width: parent.width - 2 * Theme.horizontalPageMargin
-            visible: !view.hasPayload
-            topPadding: Theme.paddingLarge
-            bottomPadding: Theme.paddingLarge
-            //: Send tab with nothing chosen yet.
-            text: qsTr("What would you like to send?")
-            textFormat: Text.PlainText
-            wrapMode: Text.Wrap
-            font.pixelSize: Theme.fontSizeExtraLarge
-            color: Theme.highlightColor
-        }
-
-        Repeater {
-            model: view.hasPayload ? [] : [
-                //: Send tab: the tile that opens the picker for pictures, videos, music and documents.
-                { kind: "content", glyph: "attach", name: "pickContent", title: qsTr("Choose files") },
-                //: Send tab: the tile that opens the file browser, for files the other picker does not list.
-                { kind: "files", glyph: "folder", name: "pickFiles", title: qsTr("Browse folders") }
-            ]
-            delegate: Item {
-                width: column.width
-                height: tile.height + Theme.paddingSmall
-
-                BackgroundItem {
-                    id: tile
-                    objectName: modelData.name
-                    x: Theme.horizontalPageMargin
-                    width: parent.width - 2 * Theme.horizontalPageMargin
-                    height: Theme.itemSizeLarge
-                    onClicked: view.pick(modelData.kind)
-
-                    Rectangle {
-                        anchors.fill: parent
-                        radius: Theme.paddingSmall
-                        color: Theme.rgba(Theme.primaryColor, 0.05)
-                    }
-                    Glyph {
-                        id: tileGlyph
-                        x: Theme.paddingLarge
-                        anchors.verticalCenter: parent.verticalCenter
-                        kind: modelData.glyph
-                        color: tile.highlighted ? Theme.highlightColor : Theme.primaryColor
-                    }
-                    Label {
-                        anchors {
-                            left: tileGlyph.right
-                            leftMargin: Theme.paddingLarge
-                            right: parent.right
-                            rightMargin: Theme.paddingLarge
-                            verticalCenter: parent.verticalCenter
-                        }
-                        text: modelData.title
-                        textFormat: Text.PlainText
-                        truncationMode: TruncationMode.Fade
-                        color: tile.highlighted ? Theme.highlightColor : Theme.primaryColor
-                    }
-                }
+            Button {
+                objectName: "chooseFiles"
+                visible: !view.hasPayload && !view.hasOutgoing
+                //: Send tab with nothing chosen: opens the picker for pictures, videos, music, documents and other files.
+                text: qsTr("Choose files")
+                onClicked: view.pick()
             }
-        }
-
-        // Who is about, while nothing is chosen yet: a line of its own, well
-        // clear of the tiles.
-        Row {
-            objectName: "nearbyFoot"
-            anchors.horizontalCenter: parent.horizontalCenter
-            visible: !view.hasPayload && nearbyLine.text.length > 0
-            spacing: Theme.paddingMedium
-            topPadding: 2 * Theme.paddingLarge
-            bottomPadding: Theme.paddingLarge
-
-            BusyIndicator {
-                anchors.verticalCenter: parent.verticalCenter
-                size: BusyIndicatorSize.ExtraSmall
-                running: view.discovering && view.current && view.foundCount === 0
-                visible: running
-            }
-            Label {
-                id: nearbyLine
-                objectName: "nearbyLine"
-                width: Math.min(implicitWidth, column.width - 2 * Theme.horizontalPageMargin
-                                - Theme.iconSizeExtraSmall - Theme.paddingMedium)
-                anchors.verticalCenter: parent.verticalCenter
-                text: view.nearbyText()
-                textFormat: Text.PlainText
-                truncationMode: TruncationMode.Fade
-                font.pixelSize: Theme.fontSizeSmall
-                color: Theme.secondaryColor
-            }
-        }
-
-        // ---- Files chosen: what they are --------------------------------
-
-        Item {
-            objectName: "payloadRow"
-            width: parent.width
-            height: Theme.itemSizeLarge
-            visible: view.hasPayload
-
-            Glyph {
-                id: payloadGlyph
-                x: Theme.horizontalPageMargin
-                anchors.verticalCenter: parent.verticalCenter
-                kind: view.payloadKind
-                color: Theme.primaryColor
-            }
-            Column {
-                anchors {
-                    left: payloadGlyph.right
-                    leftMargin: Theme.paddingLarge
-                    right: addMore.left
-                    rightMargin: Theme.paddingSmall
-                    verticalCenter: parent.verticalCenter
-                }
-                Label {
-                    objectName: "payloadSummary"
-                    width: parent.width
-                    text: view.engine.bundleName(view.payload.names(), view.payload.itemCount)
-                    textFormat: Text.PlainText
-                    truncationMode: TruncationMode.Fade
-                }
-                Label {
-                    objectName: "payloadSize"
-                    width: parent.width
-                    visible: view.payload.totalSize >= 0
-                    text: Format.formatFileSize(Math.max(0, view.payload.totalSize))
-                    textFormat: Text.PlainText
-                    font.pixelSize: Theme.fontSizeSmall
-                    color: Theme.secondaryColor
-                }
-            }
-            IconButton {
-                id: addMore
+            Button {
                 objectName: "addMore"
-                anchors {
-                    right: clear.left
-                    verticalCenter: parent.verticalCenter
-                }
-                enabled: !(view.hasOutgoing && !view.outgoingEnded)
-                icon.source: "image://theme/icon-m-add"
-                onClicked: view.pick(view.lastPicker)
+                visible: view.hasPayload && !view.hasOutgoing
+                width: hero.pairWidth
+                //: Send tab: chooses more files to send with those chosen.
+                text: qsTr("Add files")
+                onClicked: view.pick()
             }
-            IconButton {
-                id: clear
+            Button {
                 objectName: "clearPayload"
-                anchors {
-                    right: parent.right
-                    rightMargin: Theme.horizontalPageMargin - Theme.paddingMedium
-                    verticalCenter: parent.verticalCenter
-                }
-                enabled: !(view.hasOutgoing && !view.outgoingEnded)
-                icon.source: "image://theme/icon-m-clear"
+                visible: view.hasPayload && !view.hasOutgoing
+                width: hero.pairWidth
+                //: Send tab: clears the chosen files.
+                text: qsTr("Clear")
                 onClicked: view.clearPayload()
+            }
+            Button {
+                objectName: "cancelSend"
+                visible: view.hasOutgoing && !view.outgoingEnded
+                //: Stops a send or a receive under way.
+                text: qsTr("Cancel")
+                onClicked: view.cancelSend()
+            }
+            Button {
+                objectName: "sendAnother"
+                visible: view.heroMode === "done"
+                width: hero.pairWidth
+                //: Send tab, after a send: back to the devices, the same files still chosen.
+                text: qsTr("Send to another")
+                onClicked: view.dismiss()
+            }
+            Button {
+                objectName: "sendDone"
+                visible: view.heroMode === "done"
+                width: hero.pairWidth
+                //: Send tab, after a send: back to the start, nothing chosen.
+                text: qsTr("Done")
+                onClicked: view.finish()
+            }
+            Button {
+                objectName: "sendRetry"
+                visible: view.heroMode === "failed"
+                width: hero.pairWidth
+                //: Send tab, after a send failed: sends the same files the same way again.
+                text: qsTr("Try again")
+                onClicked: view.retry()
+            }
+            Button {
+                objectName: "sendBack"
+                visible: view.heroMode === "failed"
+                width: hero.pairWidth
+                //: Send tab, after a send failed: back to the devices, the same files still chosen.
+                text: qsTr("Back")
+                onClicked: view.dismiss()
             }
         }
 
@@ -642,13 +681,14 @@ Item {
         Item {
             width: parent.width
             height: nearbyHeader.height
-            visible: view.hasPayload
+            visible: view.hasPayload && !view.hasOutgoing
 
             Row {
+                objectName: "lookingRow"
                 x: Theme.horizontalPageMargin
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: Theme.paddingMedium
-                visible: view.discovering && view.nearbyOn && !(view.hasOutgoing && !view.outgoingEnded)
+                visible: view.looking
 
                 BusyIndicator {
                     anchors.verticalCenter: parent.verticalCenter
@@ -656,9 +696,13 @@ Item {
                     running: parent.visible && view.current
                 }
                 Label {
+                    objectName: "lookingLabel"
                     anchors.verticalCenter: parent.verticalCenter
-                    //: Send tab, beside "Nearby": discovery is still running.
-                    text: qsTr("Looking for more")
+                    text: view.devices.length > 0
+                          //: Send tab, beside "Nearby": discovery is still running.
+                          ? qsTr("Looking for more")
+                          //: Send tab: discovery is running and has found nobody yet.
+                          : qsTr("Looking for devices nearby…")
                     textFormat: Text.PlainText
                     font.pixelSize: Theme.fontSizeSmall
                     color: Theme.secondaryColor
@@ -672,90 +716,54 @@ Item {
         }
 
         Repeater {
-            model: view.hasPayload ? view.devices : []
-            delegate: Item {
-                id: deviceSlot
-                readonly property bool sendingHere: view.hasOutgoing && view.outgoing.key === modelData.key
-                width: column.width
-                height: deviceSlot.sendingHere ? deviceProgress.height : deviceRow.height
-
-                IconListItem {
-                    id: deviceRow
-                    objectName: "deviceRow"
-                    visible: !deviceSlot.sendingHere
-                    glyph: view.deviceGlyph(modelData)
-                    title: modelData.name
-                    subtitle: view.deviceLine(modelData)
-                    dimmed: view.hasOutgoing && !view.outgoingEnded
-                    menu: deviceMenu
-                    onClicked: view.choose(modelData)
-
-                    Component {
-                        id: deviceMenu
-                        ContextMenu {
-                            Repeater {
-                                model: modelData.peers
-                                delegate: MenuItem {
-                                    objectName: "sendWith"
-                                    //: A device's menu: send to it over this protocol; %1 is its name, e.g. "Quick Share".
-                                    text: qsTr("Send with %1").arg(view.engine.protocolName(modelData.protocol))
-                                    onClicked: view.choose(deviceSlot.device, modelData.protocol)
-                                }
-                            }
-                            MenuItem {
-                                objectName: "aboutDevice"
-                                //: A device's menu: the page with what Sukkula knows about it.
-                                text: qsTr("About this device")
-                                onClicked: view.openDevice(deviceSlot.device)
-                            }
-                        }
-                    }
-                }
-
-                ProgressRow {
-                    id: deviceProgress
-                    objectName: "sendProgress"
-                    visible: deviceSlot.sendingHere
-                    title: modelData.name
-                    status: deviceSlot.sendingHere ? view.statusText() : ""
-                    phase: deviceSlot.sendingHere ? view.outgoingState : "active"
-                    bytes: deviceSlot.sendingHere && view.outgoingTransfer ? view.outgoingTransfer.bytes : 0
-                    total: deviceSlot.sendingHere && view.outgoingTransfer ? view.outgoingTransfer.total : 0
-                    onCancelClicked: view.cancelSend()
-                }
+            model: view.hasPayload && !view.hasOutgoing ? view.devices : []
+            delegate: IconListItem {
+                id: deviceRow
+                objectName: "deviceRow"
+                glyph: view.deviceGlyph(modelData)
+                title: modelData.name
+                subtitle: view.deviceLine(modelData)
+                menu: deviceMenu
+                onClicked: view.choose(modelData)
 
                 /// The device this row is, for its menu.
                 readonly property var device: modelData
-            }
-        }
 
-        // A send to a device that has since gone from the list stays in view.
-        ProgressRow {
-            objectName: "sendProgress"
-            visible: view.hasOutgoing && view.outgoing.key !== "code" && view.indexOfDevice(view.outgoing.key) < 0
-            title: view.hasOutgoing ? view.outgoing.name : ""
-            status: visible ? view.statusText() : ""
-            phase: visible ? view.outgoingState : "active"
-            bytes: visible && view.outgoingTransfer ? view.outgoingTransfer.bytes : 0
-            total: visible && view.outgoingTransfer ? view.outgoingTransfer.total : 0
-            onCancelClicked: view.cancelSend()
+                Component {
+                    id: deviceMenu
+                    ContextMenu {
+                        Repeater {
+                            model: deviceRow.device.peers
+                            delegate: MenuItem {
+                                objectName: "sendWith"
+                                //: A device's menu: send to it over this protocol; %1 is its name, e.g. "Quick Share".
+                                text: qsTr("Send with %1").arg(view.engine.protocolName(modelData.protocol))
+                                onClicked: view.choose(deviceRow.device, modelData.protocol)
+                            }
+                        }
+                        MenuItem {
+                            objectName: "aboutDevice"
+                            //: A device's menu: the page with what Sukkula knows about it.
+                            text: qsTr("About this device")
+                            onClicked: view.openDevice(deviceRow.device)
+                        }
+                    }
+                }
+            }
         }
 
         Label {
             objectName: "nearbyHint"
             x: Theme.horizontalPageMargin
             width: parent.width - 2 * Theme.horizontalPageMargin
-            visible: view.hasPayload
+            visible: view.hasPayload && !view.hasOutgoing
             topPadding: Theme.paddingLarge
             bottomPadding: Theme.paddingLarge
             text: !view.nearbyOn
                   //: Send tab: Quick Share, LocalSend and Bluetooth are all switched off.
                   ? qsTr("Sending nearby is switched off in Settings.")
-                  : view.devices.length === 0 && view.discovering
-                    //: Send tab: discovery is running and has found nobody yet.
-                    ? qsTr("Looking for devices nearby…")
-                    //: Send tab, under the devices nearby: why one may be missing.
-                    : qsTr("Devices must be on the same Wi-Fi and ready to receive.")
+                  //: Send tab, under the devices nearby: why one may be missing.
+                  : qsTr("Devices must be on the same Wi-Fi and ready to receive.")
             textFormat: Text.PlainText
             wrapMode: Text.Wrap
             font.pixelSize: Theme.fontSizeSmall
@@ -765,34 +773,18 @@ Item {
         // ---- Who to: far away -----------------------------------------
 
         SectionHeader {
-            visible: view.hasPayload && view.codeOn
+            visible: view.hasPayload && !view.hasOutgoing && view.codeOn
             //: Send tab: the section for sending over the internet with a code.
             text: qsTr("Far away")
         }
 
         IconListItem {
             objectName: "sendWithCode"
-            visible: view.hasPayload && view.codeOn && !(view.hasOutgoing && view.outgoing.key === "code"
-                                                         && !view.codeWaiting)
-            glyph: "code"
+            visible: view.hasPayload && !view.hasOutgoing && view.codeOn
+            glyph: "qr"
             //: Send tab: sending over the internet with a code.
             title: qsTr("Send with a code")
-            //: Send tab: a send with a code waits for the other side to scan or type the code.
-            subtitle: view.codeWaiting ? qsTr("Waiting for the receiver…") : ""
-            dimmed: view.hasOutgoing && !view.outgoingEnded && view.outgoing.key !== "code"
             onClicked: view.openCode()
-        }
-
-        ProgressRow {
-            objectName: "codeProgress"
-            visible: view.hasOutgoing && view.outgoing.key === "code" && !view.codeWaiting
-            //: Send tab: the row of a send with a code once its receiver has come.
-            title: qsTr("Send with a code")
-            status: visible ? view.statusText() : ""
-            phase: visible ? view.outgoingState : "active"
-            bytes: visible && view.outgoingTransfer ? view.outgoingTransfer.bytes : 0
-            total: visible && view.outgoingTransfer ? view.outgoingTransfer.total : 0
-            onCancelClicked: view.cancelSend()
         }
 
         Item {
@@ -801,16 +793,7 @@ Item {
         }
     }
 
-    function indexOfDevice(key) {
-        for (var i = 0; i < view.devices.length; i++) {
-            if (view.devices[i].key === key) {
-                return i
-            }
-        }
-        return -1
-    }
-
-    /// The line at the foot while nothing is chosen: who is about.
+    /// The line under "Ready to send": who is about.
     function nearbyText() {
         var found = []
         for (var i = 0; i < view.devices.length; i++) {
@@ -819,11 +802,11 @@ Item {
             }
         }
         if (found.length === 1) {
-            //: Send tab, at the foot: one device nearby; %1 is its name.
+            //: Send tab, under "Ready to send": one device nearby; %1 is its name.
             return qsTr("%1 is nearby").arg(found[0])
         }
         if (found.length > 1) {
-            //: Send tab, at the foot: devices nearby; %1 is one's name, %n how many more.
+            //: Send tab, under "Ready to send": devices nearby; %1 is one's name, %n how many more.
             return qsTr("%1 and %n more nearby", "", found.length - 1).arg(found[0])
         }
         if (!view.nearbyOn) {
