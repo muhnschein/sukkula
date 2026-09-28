@@ -25,14 +25,14 @@ Everything the spec asks for in v1.0:
   nearby by name, one row for a device found two ways, About this device
   with its pinned certificate, and sending with a code on a page of its
   own with Copy, Share and "Their app"); Receive shows whether the phone
-  is ready, what comes in and what came today, and how others can reach
-  it. The cover offers Send and Receive, and receiving stops a few
+  is ready, round a radar, what comes in and what came today, with how
+  each way of receiving is doing in Settings. The cover offers Send and Receive, and receiving stops a few
   seconds after the app leaves the front. History lists what went and
   came. Sukkula sends files only (spec v0.7).
 - Scanning a Magic Wormhole or croc code off the sender's screen (spec
-  v0.6): the Receive tab's "Scan a code" opens one page for both, the
-  viewfinder with the code a tap away to type, and the engine tells a
-  code's protocol (`receive_code`); `src/scanner.cpp`, `sukkula_scan_qr`,
+  v0.6): the Receive tab's "Scan a QR code" opens the viewfinder and
+  "Type in a code" a page to type or paste it, each for both, and the
+  engine tells a typed code's protocol (`receive_code`); `src/scanner.cpp`, `sukkula_scan_qr`,
   and `third_party/rqrr` (0.11.0 plus 2 patches) behind it; croc's code
   as a QR code on the send side.
 - The RPM spec for the Jolla Phone 2026 (Sailfish OS 5.2+, aarch64 only).

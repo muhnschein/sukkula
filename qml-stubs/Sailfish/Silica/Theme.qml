@@ -25,6 +25,8 @@ QtObject {
     property real iconSizeMedium: 64
     property real iconSizeLarge: 96
     property real opacityFaint: 0.2
+    // Silica's hairline, as TabBar draws its underline with.
+    property real _lineWidth: 2
     property real opacityLow: 0.4
     property real opacityHigh: 0.6
     property real opacityOverlay: 0.8

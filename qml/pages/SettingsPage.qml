@@ -12,6 +12,11 @@ import "../components"
  * servers folded away (F-MW4, F-CR3) (F-C1, spec v0.7); and debug logging,
  * off by default (S9).
  *
+ * Under each way of receiving nearby, how it is doing: waiting for the
+ * Receive tab, starting, ready, or -- in red, with the engine's detail --
+ * why it could not start. The Receive tab only says that one could not,
+ * and leads here.
+ *
  * The fields are checked here the way sukkula-core checks them
  * (config.rs), so a bad value is caught while it can still be fixed; the
  * engine checks again and has the last word. There is no auto-accept
@@ -88,6 +93,50 @@ Page {
 
     function trimmed(text) {
         return text.replace(/^\s+|\s+$/g, "")
+    }
+
+    /// The engine's word on how a way of receiving is doing, or null.
+    function statusOf(protocol) {
+        var statuses = page.engine.protocolStatuses
+        for (var i = 0; i < statuses.length; i++) {
+            if (statuses[i].protocol === protocol) {
+                return statuses[i]
+            }
+        }
+        return null
+    }
+
+    /// How a way of receiving nearby is doing, in a line for under its
+    /// switch: nothing while it is off, here or in the engine, or failed.
+    function statusText(protocol, on) {
+        if (!on || !page.engine.protocolEnabled(protocol)) {
+            return ""
+        }
+        if (!page.engine.receiving) {
+            //: Settings, under a way of receiving nearby: it runs only while the Receive tab is on screen.
+            return qsTr("Receives while the Receive tab is open")
+        }
+        var status = page.statusOf(protocol)
+        switch (status ? status.state : "") {
+        case "starting":
+            //: Settings, under a way of receiving nearby: it is starting up.
+            return qsTr("Starting…")
+        case "ready":
+            //: Settings, under a way of receiving nearby: others can send to this phone this way.
+            return qsTr("Ready to receive")
+        }
+        return ""
+    }
+
+    /// A switch's grey line, with how it is doing under it.
+    function describe(what, status) {
+        return status.length > 0 ? what + "\n" + status : what
+    }
+
+    /// [the engine's status] when a way on here could not start, else [].
+    function failure(protocol, on) {
+        var status = page.statusOf(protocol)
+        return on && page.engine.receiving && status && status.state === "failed" ? [status] : []
     }
 
     function load() {
@@ -172,6 +221,40 @@ Page {
     // share replaces (harbour-sukkula.qml, navigate()).
     Component.onDestruction: page.save()
 
+    // Under a switch: why its way of receiving could not start, and the
+    // engine's detail.
+    Component {
+        id: failedLine
+
+        Column {
+            objectName: "protocolFailed"
+            width: column.width
+            bottomPadding: Theme.paddingMedium
+
+            Label {
+                objectName: "protocolFailedLine"
+                x: page.indent + Theme.horizontalPageMargin
+                width: parent.width - x - Theme.horizontalPageMargin
+                //: Settings, under a way of receiving nearby: it could not start; %1 says why.
+                text: qsTr("Could not start: %1").arg(page.engine.errorText({ code: modelData.errorCode }))
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                font.pixelSize: Theme.fontSizeSmall
+                color: Theme.errorColor
+            }
+            Label {
+                x: page.indent + Theme.horizontalPageMargin
+                width: parent.width - x - Theme.horizontalPageMargin
+                visible: text.length > 0
+                text: modelData.errorDetail
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                font.pixelSize: Theme.fontSizeExtraSmall
+                color: Theme.secondaryColor
+            }
+        }
+    }
+
     SilicaFlickable {
         anchors.fill: parent
         contentHeight: column.height + Theme.paddingLarge
@@ -194,37 +277,6 @@ Page {
                 textFormat: Text.PlainText
                 wrapMode: Text.Wrap
                 color: Theme.errorColor
-            }
-
-            // What failed to start, with the engine's detail line.
-            Repeater {
-                model: page.engine.protocolStatuses
-                delegate: Column {
-                    width: column.width
-                    visible: modelData.state === "failed"
-
-                    Label {
-                        x: Theme.horizontalPageMargin
-                        width: parent.width - 2 * Theme.horizontalPageMargin
-                        //: A protocol could not start; %1 is its name, %2 why.
-                        text: qsTr("%1 could not start: %2").arg(page.engine.protocolName(modelData.protocol))
-                                                          .arg(page.engine.errorText({ code: modelData.errorCode }))
-                        textFormat: Text.PlainText
-                        wrapMode: Text.Wrap
-                        font.pixelSize: Theme.fontSizeSmall
-                        color: Theme.errorColor
-                    }
-                    Label {
-                        x: Theme.horizontalPageMargin
-                        width: parent.width - 2 * Theme.horizontalPageMargin
-                        visible: text.length > 0
-                        text: modelData.errorDetail
-                        textFormat: Text.PlainText
-                        wrapMode: Text.Wrap
-                        font.pixelSize: Theme.fontSizeExtraSmall
-                        color: Theme.secondaryColor
-                    }
-                }
             }
 
             SectionHeader {
@@ -253,7 +305,12 @@ Page {
                 //: Settings: the Quick Share switch, by who it reaches.
                 text: qsTr("Android phones")
                 //: Settings: under "Android phones".
-                description: qsTr("Quick Share, on the same Wi-Fi")
+                description: page.describe(qsTr("Quick Share, on the same Wi-Fi"),
+                                           page.statusText("quick_share", quickShareSwitch.checked))
+            }
+            Repeater {
+                model: page.failure("quick_share", quickShareSwitch.checked)
+                delegate: failedLine
             }
             ComboBox {
                 id: visibilityBox
@@ -294,7 +351,12 @@ Page {
                 //: Settings: the LocalSend switch, by who it reaches.
                 text: qsTr("Computers and other phones")
                 //: Settings: under "Computers and other phones".
-                description: qsTr("LocalSend, on the same Wi-Fi")
+                description: page.describe(qsTr("LocalSend, on the same Wi-Fi"),
+                                           page.statusText("local_send", localSendSwitch.checked))
+            }
+            Repeater {
+                model: page.failure("local_send", localSendSwitch.checked)
+                delegate: failedLine
             }
             TextField {
                 id: pinField
@@ -374,6 +436,19 @@ Page {
                     rotation: page.serversOpen ? 180 : 0
                 }
             }
+            Label {
+                objectName: "serversNote"
+                x: Theme.horizontalPageMargin
+                width: parent.width - 2 * Theme.horizontalPageMargin
+                visible: page.serversOpen && (page.engine.hasProtocol("wormhole") || page.engine.hasProtocol("croc"))
+                bottomPadding: Theme.paddingMedium
+                //: Settings, over the fields for one's own servers.
+                text: qsTr("Only for servers you run yourself. A field left empty uses the public server.")
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                font.pixelSize: Theme.fontSizeSmall
+                color: Theme.secondaryHighlightColor
+            }
             TextField {
                 id: mailboxField
                 objectName: "mailboxField"
@@ -383,8 +458,7 @@ Page {
                 label: page.mailboxValid ? qsTr("Magic Wormhole mailbox server")
                                          //: Settings: the mailbox URL is not usable.
                                          : qsTr("Must start with ws:// or wss://")
-                //: Settings: an empty server field means the built-in default.
-                placeholderText: qsTr("Default server")
+                placeholderText: qsTr("Magic Wormhole mailbox server")
                 inputMethodHints: Qt.ImhUrlCharactersOnly | Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
                 maximumLength: 256
                 errorHighlight: !page.mailboxValid
@@ -398,8 +472,7 @@ Page {
                 label: page.relayValid ? qsTr("Magic Wormhole transit relay")
                                        //: Settings: the relay URL is not usable.
                                        : qsTr("Must look like tcp://host:port")
-                //: Settings: an empty server field means the built-in default.
-                placeholderText: qsTr("Default server")
+                placeholderText: qsTr("Magic Wormhole transit relay")
                 inputMethodHints: Qt.ImhUrlCharactersOnly | Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
                 maximumLength: 256
                 errorHighlight: !page.relayValid
@@ -413,8 +486,7 @@ Page {
                 label: page.crocRelayValid ? qsTr("croc relay")
                                            //: Settings: the croc relay is not usable.
                                            : qsTr("Must look like host or host:port")
-                //: Settings: an empty server field means the built-in default.
-                placeholderText: qsTr("Default server")
+                placeholderText: qsTr("croc relay")
                 inputMethodHints: Qt.ImhUrlCharactersOnly | Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
                 maximumLength: 256
                 errorHighlight: !page.crocRelayValid
@@ -428,8 +500,7 @@ Page {
                 label: page.crocPasswordValid ? qsTr("croc relay password")
                                               //: Settings: the croc relay password is not usable.
                                               : qsTr("Up to 64 plain letters, digits and signs")
-                //: Settings: an empty croc relay password means croc's own.
-                placeholderText: qsTr("Default password")
+                placeholderText: qsTr("croc relay password")
                 inputMethodHints: Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
                 maximumLength: 64
                 errorHighlight: !page.crocPasswordValid

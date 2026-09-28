@@ -417,10 +417,6 @@
         <translation>Startar…</translation>
     </message>
     <message>
-        <source>%1 could not start: %2</source>
-        <translation>%1 kunde inte starta: %2</translation>
-    </message>
-    <message>
         <source>Receiving %1…</source>
         <extracomment>Receive tab: files are coming; %1 is what, e.g. &quot;3 photos&quot; or a file&apos;s name.</extracomment>
         <translation>Tar emot %1…</translation>
@@ -457,51 +453,6 @@ Receive tab: where received files are.</extracomment>
         <translation>Ingen i närheten kan se den här telefonen</translation>
     </message>
     <message>
-        <source>Android phones nearby</source>
-        <extracomment>Receive tab, how others can reach this phone: Quick Share&apos;s row.</extracomment>
-        <translation>Android-telefoner i närheten</translation>
-    </message>
-    <message>
-        <source>Quick Share, hidden</source>
-        <extracomment>Receive tab, Quick Share&apos;s row: nobody can find this phone.</extracomment>
-        <translation>Quick Share, dold</translation>
-    </message>
-    <message>
-        <source>Quick Share, visible to everyone</source>
-        <extracomment>Receive tab, Quick Share&apos;s row: anyone nearby can find this phone.</extracomment>
-        <translation>Quick Share, synlig för alla</translation>
-    </message>
-    <message>
-        <source>Computers and other phones nearby</source>
-        <extracomment>Receive tab, how others can reach this phone: LocalSend&apos;s row.</extracomment>
-        <translation>Datorer och andra telefoner i närheten</translation>
-    </message>
-    <message>
-        <source>LocalSend, with a PIN</source>
-        <extracomment>Receive tab, LocalSend&apos;s row: senders must type a PIN.</extracomment>
-        <translation>LocalSend, med PIN-kod</translation>
-    </message>
-    <message>
-        <source>LocalSend, no PIN</source>
-        <extracomment>Receive tab, LocalSend&apos;s row: no PIN is asked for.</extracomment>
-        <translation>LocalSend, ingen PIN-kod</translation>
-    </message>
-    <message>
-        <source>Anyone with a code</source>
-        <extracomment>Receive tab, how others can reach this phone: receiving with a code.</extracomment>
-        <translation>Alla med en kod</translation>
-    </message>
-    <message>
-        <source>%1 and %2</source>
-        <extracomment>Two protocols&apos; names, e.g. &quot;Magic Wormhole and croc&quot;.</extracomment>
-        <translation>%1 och %2</translation>
-    </message>
-    <message>
-        <source>In the phone&apos;s own Bluetooth settings</source>
-        <extracomment>Receive tab, Bluetooth&apos;s row: Sukkula does not receive over Bluetooth, the phone does.</extracomment>
-        <translation>I telefonens egna Bluetooth-inställningar</translation>
-    </message>
-    <message>
         <source>Nearby, this phone shows up as</source>
         <extracomment>Receive tab, over this phone&apos;s name.</extracomment>
         <translation>I närheten syns den här telefonen som</translation>
@@ -517,16 +468,6 @@ Receive tab: where received files are.</extracomment>
         <translation>På avstånd</translation>
     </message>
     <message>
-        <source>Scan a code</source>
-        <extracomment>Receive tab: opens the camera to read the sender&apos;s QR code.</extracomment>
-        <translation>Skanna en kod</translation>
-    </message>
-    <message>
-        <source>Or type the one you were given</source>
-        <extracomment>Receive tab: under &quot;Scan a code&quot;.</extracomment>
-        <translation>Eller skriv den du fått</translation>
-    </message>
-    <message>
         <source>Received today</source>
         <extracomment>Receive tab: the section of what arrived today.</extracomment>
         <translation>Mottaget i dag</translation>
@@ -537,14 +478,34 @@ Receive tab: where received files are.</extracomment>
         <translation>Textmeddelande</translation>
     </message>
     <message>
-        <source>How others can reach this phone</source>
-        <extracomment>Receive tab, at the foot: unfolds one row per way others can send to this phone.</extracomment>
-        <translation>Hur andra når den här telefonen</translation>
+        <source>Not every device nearby can see this phone. Tap to see why.</source>
+        <extracomment>Receive tab, under &quot;Ready to receive&quot;: one way of receiving nearby could not start; tapping opens Settings, which says why.</extracomment>
+        <translation>Inte alla enheter i närheten kan se den här telefonen. Tryck för att se varför.</translation>
     </message>
     <message>
-        <source>Tap one to change it in Settings.</source>
-        <extracomment>Receive tab, under how others can reach this phone.</extracomment>
-        <translation>Tryck på en rad för att ändra den i inställningarna.</translation>
+        <source>Tap to see why.</source>
+        <extracomment>Receive tab, under &quot;Nobody nearby can see this phone&quot;: tapping opens Settings, which says why.</extracomment>
+        <translation>Tryck för att se varför.</translation>
+    </message>
+    <message>
+        <source>Scan a QR code</source>
+        <extracomment>Receive tab: opens the camera to read the sender&apos;s QR code.</extracomment>
+        <translation>Skanna en QR-kod</translation>
+    </message>
+    <message>
+        <source>The one on the sender&apos;s screen</source>
+        <extracomment>Receive tab: under &quot;Scan a QR code&quot;.</extracomment>
+        <translation>Den på avsändarens skärm</translation>
+    </message>
+    <message>
+        <source>Type in a code</source>
+        <extracomment>Receive tab: opens the page to type or paste a code.</extracomment>
+        <translation>Skriv in en kod</translation>
+    </message>
+    <message>
+        <source>The words the sender&apos;s app shows</source>
+        <extracomment>Receive tab: under &quot;Type in a code&quot;.</extracomment>
+        <translation>Orden som avsändarens app visar</translation>
     </message>
 </context>
 <context>
@@ -573,34 +534,19 @@ Receive tab: where received files are.</extracomment>
         <translation>Det är en Magic Wormhole-kod, och Magic Wormhole är avstängt i inställningarna.</translation>
     </message>
     <message>
-        <source>Receive with a code</source>
-        <extracomment>Page title: receive over Magic Wormhole or croc.</extracomment>
-        <translation>Ta emot med kod</translation>
+        <source>Scan a QR code</source>
+        <extracomment>Page title: receive over Magic Wormhole or croc by scanning the sender&apos;s QR code.</extracomment>
+        <translation>Skanna en QR-kod</translation>
     </message>
     <message>
-        <source>The camera is not available. Type the code instead.</source>
-        <extracomment>This phone has no camera Sukkula can use; the code can still be typed.</extracomment>
-        <translation>Kameran är inte tillgänglig. Skriv koden i stället.</translation>
+        <source>The camera is not available.</source>
+        <extracomment>This phone has no camera Sukkula can use; the code can still be typed in.</extracomment>
+        <translation>Kameran är inte tillgänglig.</translation>
     </message>
     <message>
-        <source>Enter code</source>
-        <extracomment>Opens the field to type or paste the code instead of scanning it.</extracomment>
-        <translation>Ange kod</translation>
-    </message>
-    <message>
-        <source>Code</source>
-        <extracomment>The text field for a Magic Wormhole or croc code.</extracomment>
-        <translation>Kod</translation>
-    </message>
-    <message>
-        <source>Receive</source>
-        <extracomment>Starts receiving with the typed code.</extracomment>
-        <translation>Ta emot</translation>
-    </message>
-    <message>
-        <source>Code, from the clipboard</source>
-        <extracomment>The code field, filled in from the clipboard.</extracomment>
-        <translation>Kod, från urklipp</translation>
+        <source>Type in a code</source>
+        <extracomment>On the scan page when there is no camera: opens the page to type the code in instead.</extracomment>
+        <translation>Skriv in en kod</translation>
     </message>
 </context>
 <context>
@@ -614,11 +560,6 @@ Receive tab: where received files are.</extracomment>
         <source>That QR code holds no Magic Wormhole or croc code.</source>
         <extracomment>A QR code was read, and it is not a Magic Wormhole or croc code.</extracomment>
         <translation>Den QR-koden innehåller ingen Magic Wormhole- eller croc-kod.</translation>
-    </message>
-    <message>
-        <source>Or point the camera at the code</source>
-        <extracomment>The code is being typed; the camera still reads.</extracomment>
-        <translation>Eller rikta kameran mot koden</translation>
     </message>
     <message>
         <source>Point the camera at the sender&apos;s QR code</source>
@@ -910,11 +851,6 @@ Send tab: the row of a send with a code once its receiver has come.</extracommen
         <translation>Rätta det markerade fältet för att spara.</translation>
     </message>
     <message>
-        <source>%1 could not start: %2</source>
-        <extracomment>A protocol could not start; %1 is its name, %2 why.</extracomment>
-        <translation>%1 kunde inte starta: %2</translation>
-    </message>
-    <message>
         <source>Up to 16 letters and digits</source>
         <extracomment>Settings: the PIN field holds something else than 1 to 16 letters and digits.</extracomment>
         <translation>Upp till 16 bokstäver och siffror</translation>
@@ -950,11 +886,6 @@ Send tab: the row of a send with a code once its receiver has come.</extracommen
         <translation>Måste börja med ws:// eller wss://</translation>
     </message>
     <message>
-        <source>Default server</source>
-        <extracomment>Settings: an empty server field means the built-in default.</extracomment>
-        <translation>Standardserver</translation>
-    </message>
-    <message>
         <source>Must look like tcp://host:port</source>
         <extracomment>Settings: the relay URL is not usable.</extracomment>
         <translation>Måste se ut som tcp://host:port</translation>
@@ -983,11 +914,6 @@ Send tab: the row of a send with a code once its receiver has come.</extracommen
         <source>Up to 64 plain letters, digits and signs</source>
         <extracomment>Settings: the croc relay password is not usable.</extracomment>
         <translation>Högst 64 enkla bokstäver, siffror och tecken</translation>
-    </message>
-    <message>
-        <source>Default password</source>
-        <extracomment>Settings: an empty croc relay password means croc&apos;s own.</extracomment>
-        <translation>Standardlösenord</translation>
     </message>
     <message>
         <source>Name shown to other devices</source>
@@ -1068,6 +994,31 @@ Send tab: the row of a send with a code once its receiver has come.</extracommen
         <source>croc relay password</source>
         <extracomment>Settings: the croc relay&apos;s password (F-CR3).</extracomment>
         <translation>croc-reläns lösenord</translation>
+    </message>
+    <message>
+        <source>Receives while the Receive tab is open</source>
+        <extracomment>Settings, under a way of receiving nearby: it runs only while the Receive tab is on screen.</extracomment>
+        <translation>Tar emot medan fliken Ta emot är öppen</translation>
+    </message>
+    <message>
+        <source>Starting…</source>
+        <extracomment>Settings, under a way of receiving nearby: it is starting up.</extracomment>
+        <translation>Startar…</translation>
+    </message>
+    <message>
+        <source>Ready to receive</source>
+        <extracomment>Settings, under a way of receiving nearby: others can send to this phone this way.</extracomment>
+        <translation>Redo att ta emot</translation>
+    </message>
+    <message>
+        <source>Could not start: %1</source>
+        <extracomment>Settings, under a way of receiving nearby: it could not start; %1 says why.</extracomment>
+        <translation>Kunde inte starta: %1</translation>
+    </message>
+    <message>
+        <source>Only for servers you run yourself. A field left empty uses the public server.</source>
+        <extracomment>Settings, over the fields for one&apos;s own servers.</extracomment>
+        <translation>Bara för servrar du själv driver. Ett tomt fält använder den offentliga servern.</translation>
     </message>
 </context>
 <context>
@@ -1153,6 +1104,36 @@ Send tab: the row of a send with a code once its receiver has come.</extracommen
         <source>Failed: %1</source>
         <extracomment>A transfer failed; %1 says why.</extracomment>
         <translation>Misslyckades: %1</translation>
+    </message>
+</context>
+<context>
+    <name>TypeCodePage</name>
+    <message>
+        <source>Type in a code</source>
+        <extracomment>Page title: receive over Magic Wormhole or croc with a code typed in.</extracomment>
+        <translation>Skriv in en kod</translation>
+    </message>
+    <message>
+        <source>The sender&apos;s app shows it as a few words, like 7-guitarist-revenge.</source>
+        <extracomment>Type in a code: what to type; the example is a Magic Wormhole code.</extracomment>
+        <translation>Avsändarens app visar den som några ord, till exempel 7-guitarist-revenge.</translation>
+    </message>
+    <message>
+        <source>Code, from the clipboard</source>
+        <extracomment>The code field, filled in from the clipboard.</extracomment>
+        <translation>Kod, från urklipp</translation>
+    </message>
+    <message>
+        <source>Code</source>
+        <extracomment>The text field for a Magic Wormhole or croc code.
+----------
+The code field when empty.</extracomment>
+        <translation>Kod</translation>
+    </message>
+    <message>
+        <source>Receive</source>
+        <extracomment>Starts receiving with the typed code.</extracomment>
+        <translation>Ta emot</translation>
     </message>
 </context>
 <context>

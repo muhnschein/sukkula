@@ -17,7 +17,7 @@ import Sailfish.Silica 1.0
  * only said to be no code: nothing of it is shown.
  *
  * The only file that names a Camera: ScanPage.qml loads it by URL, so a
- * phone without one costs the viewfinder and not the typed code.
+ * phone without one costs the viewfinder and nothing else.
  *
  * Focus is asked for three ways, as piirit found a camera left to itself
  * too soft for any code to read: continuous autofocus in the video
@@ -31,8 +31,6 @@ Item {
     property QtObject engine
     /// The view is the one on screen. The camera runs only then.
     property bool active: false
-    /// The page's typed code is open; the camera keeps looking behind it.
-    property bool typing: false
     /// A code was read and handed out; nothing more is read until reset().
     property bool done: false
     /// A QR code was read that holds no code to receive with.
@@ -229,10 +227,7 @@ Item {
               : view.sawOther
                 //: A QR code was read, and it is not a Magic Wormhole or croc code.
                 ? qsTr("That QR code holds no Magic Wormhole or croc code.")
-                : view.typing
-                  //: The code is being typed; the camera still reads.
-                  ? qsTr("Or point the camera at the code")
-                  //: How to scan.
-                  : qsTr("Point the camera at the sender's QR code")
+                //: How to scan.
+                : qsTr("Point the camera at the sender's QR code")
     }
 }

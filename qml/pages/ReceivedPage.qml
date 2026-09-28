@@ -74,8 +74,6 @@ Page {
                         id: icon
                         x: Theme.horizontalPageMargin
                         anchors.verticalCenter: parent.verticalCenter
-                        width: Theme.iconSizeMedium
-                        height: width
                         kind: page.engine.kindOf(modelData)
                         color: Theme.primaryColor
                     }
@@ -108,26 +106,16 @@ Page {
                 }
             }
 
-            Row {
+            Label {
                 x: Theme.horizontalPageMargin
-                spacing: Theme.paddingMedium
+                width: parent.width - 2 * Theme.horizontalPageMargin
                 topPadding: Theme.paddingLarge
-
-                Glyph {
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: Theme.iconSizeSmall
-                    height: width
-                    kind: "folder"
-                    color: Theme.secondaryColor
-                }
-                Label {
-                    anchors.verticalCenter: parent.verticalCenter
-                    //: Where received files are.
-                    text: qsTr("Saved in Downloads › Sukkula")
-                    textFormat: Text.PlainText
-                    font.pixelSize: Theme.fontSizeSmall
-                    color: Theme.secondaryColor
-                }
+                //: Where received files are.
+                text: qsTr("Saved in Downloads › Sukkula")
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                font.pixelSize: Theme.fontSizeSmall
+                color: Theme.secondaryColor
             }
         }
 

@@ -417,10 +417,6 @@
         <translation>Startet…</translation>
     </message>
     <message>
-        <source>%1 could not start: %2</source>
-        <translation>%1 konnte nicht starten: %2</translation>
-    </message>
-    <message>
         <source>Receiving %1…</source>
         <extracomment>Receive tab: files are coming; %1 is what, e.g. &quot;3 photos&quot; or a file&apos;s name.</extracomment>
         <translation>Empfange %1…</translation>
@@ -457,51 +453,6 @@ Receive tab: where received files are.</extracomment>
         <translation>Niemand in der Nähe sieht dieses Telefon</translation>
     </message>
     <message>
-        <source>Android phones nearby</source>
-        <extracomment>Receive tab, how others can reach this phone: Quick Share&apos;s row.</extracomment>
-        <translation>Android-Telefone in der Nähe</translation>
-    </message>
-    <message>
-        <source>Quick Share, hidden</source>
-        <extracomment>Receive tab, Quick Share&apos;s row: nobody can find this phone.</extracomment>
-        <translation>Quick Share, versteckt</translation>
-    </message>
-    <message>
-        <source>Quick Share, visible to everyone</source>
-        <extracomment>Receive tab, Quick Share&apos;s row: anyone nearby can find this phone.</extracomment>
-        <translation>Quick Share, für alle sichtbar</translation>
-    </message>
-    <message>
-        <source>Computers and other phones nearby</source>
-        <extracomment>Receive tab, how others can reach this phone: LocalSend&apos;s row.</extracomment>
-        <translation>Computer und andere Telefone in der Nähe</translation>
-    </message>
-    <message>
-        <source>LocalSend, with a PIN</source>
-        <extracomment>Receive tab, LocalSend&apos;s row: senders must type a PIN.</extracomment>
-        <translation>LocalSend, mit PIN</translation>
-    </message>
-    <message>
-        <source>LocalSend, no PIN</source>
-        <extracomment>Receive tab, LocalSend&apos;s row: no PIN is asked for.</extracomment>
-        <translation>LocalSend, ohne PIN</translation>
-    </message>
-    <message>
-        <source>Anyone with a code</source>
-        <extracomment>Receive tab, how others can reach this phone: receiving with a code.</extracomment>
-        <translation>Alle mit einem Code</translation>
-    </message>
-    <message>
-        <source>%1 and %2</source>
-        <extracomment>Two protocols&apos; names, e.g. &quot;Magic Wormhole and croc&quot;.</extracomment>
-        <translation>%1 und %2</translation>
-    </message>
-    <message>
-        <source>In the phone&apos;s own Bluetooth settings</source>
-        <extracomment>Receive tab, Bluetooth&apos;s row: Sukkula does not receive over Bluetooth, the phone does.</extracomment>
-        <translation>In den Bluetooth-Einstellungen des Telefons</translation>
-    </message>
-    <message>
         <source>Nearby, this phone shows up as</source>
         <extracomment>Receive tab, over this phone&apos;s name.</extracomment>
         <translation>In der Nähe erscheint dieses Telefon als</translation>
@@ -517,16 +468,6 @@ Receive tab: where received files are.</extracomment>
         <translation>Aus der Ferne</translation>
     </message>
     <message>
-        <source>Scan a code</source>
-        <extracomment>Receive tab: opens the camera to read the sender&apos;s QR code.</extracomment>
-        <translation>Code scannen</translation>
-    </message>
-    <message>
-        <source>Or type the one you were given</source>
-        <extracomment>Receive tab: under &quot;Scan a code&quot;.</extracomment>
-        <translation>Oder den erhaltenen eintippen</translation>
-    </message>
-    <message>
         <source>Received today</source>
         <extracomment>Receive tab: the section of what arrived today.</extracomment>
         <translation>Heute empfangen</translation>
@@ -537,14 +478,34 @@ Receive tab: where received files are.</extracomment>
         <translation>Textnachricht</translation>
     </message>
     <message>
-        <source>How others can reach this phone</source>
-        <extracomment>Receive tab, at the foot: unfolds one row per way others can send to this phone.</extracomment>
-        <translation>Wie andere dieses Telefon erreichen</translation>
+        <source>Not every device nearby can see this phone. Tap to see why.</source>
+        <extracomment>Receive tab, under &quot;Ready to receive&quot;: one way of receiving nearby could not start; tapping opens Settings, which says why.</extracomment>
+        <translation>Nicht jedes Gerät in der Nähe kann dieses Telefon sehen. Tippen, um zu sehen, warum.</translation>
     </message>
     <message>
-        <source>Tap one to change it in Settings.</source>
-        <extracomment>Receive tab, under how others can reach this phone.</extracomment>
-        <translation>Tippe auf eine Zeile, um sie in den Einstellungen zu ändern.</translation>
+        <source>Tap to see why.</source>
+        <extracomment>Receive tab, under &quot;Nobody nearby can see this phone&quot;: tapping opens Settings, which says why.</extracomment>
+        <translation>Tippen, um zu sehen, warum.</translation>
+    </message>
+    <message>
+        <source>Scan a QR code</source>
+        <extracomment>Receive tab: opens the camera to read the sender&apos;s QR code.</extracomment>
+        <translation>QR-Code scannen</translation>
+    </message>
+    <message>
+        <source>The one on the sender&apos;s screen</source>
+        <extracomment>Receive tab: under &quot;Scan a QR code&quot;.</extracomment>
+        <translation>Den auf dem Bildschirm des Senders</translation>
+    </message>
+    <message>
+        <source>Type in a code</source>
+        <extracomment>Receive tab: opens the page to type or paste a code.</extracomment>
+        <translation>Code eintippen</translation>
+    </message>
+    <message>
+        <source>The words the sender&apos;s app shows</source>
+        <extracomment>Receive tab: under &quot;Type in a code&quot;.</extracomment>
+        <translation>Die Wörter, die die App des Senders zeigt</translation>
     </message>
 </context>
 <context>
@@ -573,34 +534,19 @@ Receive tab: where received files are.</extracomment>
         <translation>Das ist ein Magic-Wormhole-Code, und Magic Wormhole ist in den Einstellungen ausgeschaltet.</translation>
     </message>
     <message>
-        <source>Receive with a code</source>
-        <extracomment>Page title: receive over Magic Wormhole or croc.</extracomment>
-        <translation>Mit Code empfangen</translation>
+        <source>Scan a QR code</source>
+        <extracomment>Page title: receive over Magic Wormhole or croc by scanning the sender&apos;s QR code.</extracomment>
+        <translation>QR-Code scannen</translation>
     </message>
     <message>
-        <source>The camera is not available. Type the code instead.</source>
-        <extracomment>This phone has no camera Sukkula can use; the code can still be typed.</extracomment>
-        <translation>Die Kamera ist nicht verfügbar. Gib den Code stattdessen ein.</translation>
+        <source>The camera is not available.</source>
+        <extracomment>This phone has no camera Sukkula can use; the code can still be typed in.</extracomment>
+        <translation>Die Kamera ist nicht verfügbar.</translation>
     </message>
     <message>
-        <source>Enter code</source>
-        <extracomment>Opens the field to type or paste the code instead of scanning it.</extracomment>
-        <translation>Code eingeben</translation>
-    </message>
-    <message>
-        <source>Code</source>
-        <extracomment>The text field for a Magic Wormhole or croc code.</extracomment>
-        <translation>Code</translation>
-    </message>
-    <message>
-        <source>Receive</source>
-        <extracomment>Starts receiving with the typed code.</extracomment>
-        <translation>Empfangen</translation>
-    </message>
-    <message>
-        <source>Code, from the clipboard</source>
-        <extracomment>The code field, filled in from the clipboard.</extracomment>
-        <translation>Code, aus der Zwischenablage</translation>
+        <source>Type in a code</source>
+        <extracomment>On the scan page when there is no camera: opens the page to type the code in instead.</extracomment>
+        <translation>Code eintippen</translation>
     </message>
 </context>
 <context>
@@ -614,11 +560,6 @@ Receive tab: where received files are.</extracomment>
         <source>That QR code holds no Magic Wormhole or croc code.</source>
         <extracomment>A QR code was read, and it is not a Magic Wormhole or croc code.</extracomment>
         <translation>Dieser QR-Code enthält keinen Magic-Wormhole- oder croc-Code.</translation>
-    </message>
-    <message>
-        <source>Or point the camera at the code</source>
-        <extracomment>The code is being typed; the camera still reads.</extracomment>
-        <translation>Oder richte die Kamera auf den Code</translation>
     </message>
     <message>
         <source>Point the camera at the sender&apos;s QR code</source>
@@ -910,11 +851,6 @@ Send tab: the row of a send with a code once its receiver has come.</extracommen
         <translation>Korrigiere das markierte Feld, um zu speichern.</translation>
     </message>
     <message>
-        <source>%1 could not start: %2</source>
-        <extracomment>A protocol could not start; %1 is its name, %2 why.</extracomment>
-        <translation>%1 konnte nicht starten: %2</translation>
-    </message>
-    <message>
         <source>Up to 16 letters and digits</source>
         <extracomment>Settings: the PIN field holds something else than 1 to 16 letters and digits.</extracomment>
         <translation>Bis zu 16 Buchstaben und Ziffern</translation>
@@ -950,11 +886,6 @@ Send tab: the row of a send with a code once its receiver has come.</extracommen
         <translation>Muss mit ws:// oder wss:// beginnen</translation>
     </message>
     <message>
-        <source>Default server</source>
-        <extracomment>Settings: an empty server field means the built-in default.</extracomment>
-        <translation>Standardserver</translation>
-    </message>
-    <message>
         <source>Must look like tcp://host:port</source>
         <extracomment>Settings: the relay URL is not usable.</extracomment>
         <translation>Muss wie tcp://host:port aussehen</translation>
@@ -983,11 +914,6 @@ Send tab: the row of a send with a code once its receiver has come.</extracommen
         <source>Up to 64 plain letters, digits and signs</source>
         <extracomment>Settings: the croc relay password is not usable.</extracomment>
         <translation>Bis zu 64 einfache Buchstaben, Ziffern und Zeichen</translation>
-    </message>
-    <message>
-        <source>Default password</source>
-        <extracomment>Settings: an empty croc relay password means croc&apos;s own.</extracomment>
-        <translation>Standardpasswort</translation>
     </message>
     <message>
         <source>Name shown to other devices</source>
@@ -1068,6 +994,31 @@ Send tab: the row of a send with a code once its receiver has come.</extracommen
         <source>croc relay password</source>
         <extracomment>Settings: the croc relay&apos;s password (F-CR3).</extracomment>
         <translation>croc-Relay-Passwort</translation>
+    </message>
+    <message>
+        <source>Receives while the Receive tab is open</source>
+        <extracomment>Settings, under a way of receiving nearby: it runs only while the Receive tab is on screen.</extracomment>
+        <translation>Empfängt, solange der Tab „Empfangen“ offen ist</translation>
+    </message>
+    <message>
+        <source>Starting…</source>
+        <extracomment>Settings, under a way of receiving nearby: it is starting up.</extracomment>
+        <translation>Startet…</translation>
+    </message>
+    <message>
+        <source>Ready to receive</source>
+        <extracomment>Settings, under a way of receiving nearby: others can send to this phone this way.</extracomment>
+        <translation>Bereit zum Empfangen</translation>
+    </message>
+    <message>
+        <source>Could not start: %1</source>
+        <extracomment>Settings, under a way of receiving nearby: it could not start; %1 says why.</extracomment>
+        <translation>Konnte nicht starten: %1</translation>
+    </message>
+    <message>
+        <source>Only for servers you run yourself. A field left empty uses the public server.</source>
+        <extracomment>Settings, over the fields for one&apos;s own servers.</extracomment>
+        <translation>Nur für Server, die du selbst betreibst. Ein leeres Feld nutzt den öffentlichen Server.</translation>
     </message>
 </context>
 <context>
@@ -1153,6 +1104,36 @@ Send tab: the row of a send with a code once its receiver has come.</extracommen
         <source>Failed: %1</source>
         <extracomment>A transfer failed; %1 says why.</extracomment>
         <translation>Fehlgeschlagen: %1</translation>
+    </message>
+</context>
+<context>
+    <name>TypeCodePage</name>
+    <message>
+        <source>Type in a code</source>
+        <extracomment>Page title: receive over Magic Wormhole or croc with a code typed in.</extracomment>
+        <translation>Code eintippen</translation>
+    </message>
+    <message>
+        <source>The sender&apos;s app shows it as a few words, like 7-guitarist-revenge.</source>
+        <extracomment>Type in a code: what to type; the example is a Magic Wormhole code.</extracomment>
+        <translation>Die App des Senders zeigt ihn als ein paar Wörter, etwa 7-guitarist-revenge.</translation>
+    </message>
+    <message>
+        <source>Code, from the clipboard</source>
+        <extracomment>The code field, filled in from the clipboard.</extracomment>
+        <translation>Code, aus der Zwischenablage</translation>
+    </message>
+    <message>
+        <source>Code</source>
+        <extracomment>The text field for a Magic Wormhole or croc code.
+----------
+The code field when empty.</extracomment>
+        <translation>Code</translation>
+    </message>
+    <message>
+        <source>Receive</source>
+        <extracomment>Starts receiving with the typed code.</extracomment>
+        <translation>Empfangen</translation>
     </message>
 </context>
 <context>

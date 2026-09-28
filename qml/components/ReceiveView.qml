@@ -4,10 +4,13 @@ import Sailfish.Silica 1.0
 
 /*
  * The Receive tab (F-C1), at one glance: whether this phone is ready and
- * the name others see it by; what is coming in, with how far it has got
- * and a cross to stop it (F-C5); receiving with a code from far away
- * (F-MW2, F-CR2); what came today; and, folded away at the foot, how
- * others can reach this phone, one row per way.
+ * the name others see it by, round a radar that pulses while it waits and
+ * takes whatever room the rest leaves; what is coming in, with how far it
+ * has got and a cross to stop it (F-C5); receiving with a code from far
+ * away, by scanning its QR code or typing it in (F-MW2, F-CR2); and what
+ * came today. How each way of receiving is doing is in Settings, beside
+ * its switch; a way that could not start is said here in a line that
+ * leads there.
  *
  * Every offer still waits on the consent dialog (F-C2), which comes up
  * over whatever shows. Files that came together are one row ("3
@@ -30,10 +33,11 @@ Item {
     property bool foreground: true
     /// Room at the top for the tabs.
     property real topInset: 0
+    /// The height of the list this is in: the radar takes what the rest
+    /// leaves of it.
+    property real viewHeight: 0
     /// How long an ended transfer stays under "Receiving", in ms.
     property int linger: 4000
-    /// How others can reach this phone is unfolded.
-    property bool reachOpen: false
 
     /// Ended incoming transfers still under "Receiving": transferId -> when.
     property var ended: ({})
@@ -55,6 +59,14 @@ Item {
     readonly property bool anyToday: (view.tick, view.countToday() > 0)
     readonly property bool pulsing: view.current && view.foreground && view.receiving && view.nearbyReady
                                     && !view.busy
+    /// A way of receiving nearby is on and could not start.
+    readonly property bool someFailed: view.receiving && view.nearbyEnabled && view.anyFailed
+    /// The room the radar may take: the list's height, less the tabs, the
+    /// words under the radar and everything below it.
+    readonly property real radarSize: Math.max(Theme.itemSizeExtraLarge * 1.6,
+                                               Math.min(view.width - 2 * Theme.horizontalPageMargin,
+                                                        view.viewHeight - view.topInset - heroWords.height
+                                                        - rest.height - 3 * Theme.paddingLarge))
 
     implicitHeight: column.height
 
@@ -65,14 +77,6 @@ Item {
             }
         }
         return ""
-    }
-    function statusOf(protocol) {
-        for (var i = 0; i < view.statuses.length; i++) {
-            if (view.statuses[i].protocol === protocol) {
-                return view.statuses[i]
-            }
-        }
-        return null
     }
 
     /// An incoming transfer is under "Receiving": running, or ended a
@@ -169,9 +173,15 @@ Item {
         }
     }
 
-    /// The camera, to read or type a code: which protocol, the code says.
+    /// The camera, to read a code off the sender's screen: which protocol,
+    /// the QR code says.
     function scanCode() {
         pageStack.push(Qt.resolvedUrl("../pages/ScanPage.qml"), { engine: view.engine })
+    }
+
+    /// A code typed in or pasted: which protocol, the engine tells.
+    function typeCode() {
+        pageStack.push(Qt.resolvedUrl("../pages/TypeCodePage.qml"), { engine: view.engine })
     }
 
     function openSettings() {
@@ -255,78 +265,6 @@ Item {
         return qsTr("Starting…")
     }
 
-    /// How others can reach this phone: one row per way, [{name, title,
-    /// line, state, failed}].
-    function reachRows() {
-        var rows = []
-        var s = view.engine.settings
-        if (view.engine.hasProtocol("quick_share")) {
-            var qs = s.quickshare || {}
-            rows.push(view.reachRow("quick_share",
-                //: Receive tab, how others can reach this phone: Quick Share's row.
-                qsTr("Android phones nearby"),
-                qs.visibility === "hidden"
-                    //: Receive tab, Quick Share's row: nobody can find this phone.
-                    ? qsTr("Quick Share, hidden")
-                    //: Receive tab, Quick Share's row: anyone nearby can find this phone.
-                    : qsTr("Quick Share, visible to everyone")))
-        }
-        if (view.engine.hasProtocol("local_send")) {
-            var ls = s.localsend || {}
-            rows.push(view.reachRow("local_send",
-                //: Receive tab, how others can reach this phone: LocalSend's row.
-                qsTr("Computers and other phones nearby"),
-                typeof ls.pin === "string" && ls.pin.length > 0
-                    //: Receive tab, LocalSend's row: senders must type a PIN.
-                    ? qsTr("LocalSend, with a PIN")
-                    //: Receive tab, LocalSend's row: no PIN is asked for.
-                    : qsTr("LocalSend, no PIN")))
-        }
-        var codes = []
-        if (view.engine.protocolEnabled("wormhole")) {
-            codes.push("Magic Wormhole")
-        }
-        if (view.engine.protocolEnabled("croc")) {
-            codes.push("croc")
-        }
-        if (view.engine.hasProtocol("wormhole") || view.engine.hasProtocol("croc")) {
-            rows.push({
-                name: "code",
-                //: Receive tab, how others can reach this phone: receiving with a code.
-                title: qsTr("Anyone with a code"),
-                line: codes.length === 0 ? view.engine.stateText("off")
-                      : codes.length === 1 ? view.engine.stateText("ready") + " · " + codes[0]
-                      //: Two protocols' names, e.g. "Magic Wormhole and croc".
-                      : view.engine.stateText("ready") + " · " + qsTr("%1 and %2").arg(codes[0]).arg(codes[1]),
-                state: codes.length > 0 ? "ready" : "off",
-                failed: false
-            })
-        }
-        if (view.engine.hasProtocol("bluetooth")) {
-            rows.push({
-                name: "bluetooth",
-                title: "Bluetooth",
-                //: Receive tab, Bluetooth's row: Sukkula does not receive over Bluetooth, the phone does.
-                line: qsTr("In the phone's own Bluetooth settings"),
-                state: "off",
-                failed: false
-            })
-        }
-        return rows
-    }
-
-    function reachRow(protocol, title, detail) {
-        var status = view.statusOf(protocol)
-        var state = !view.engine.protocolEnabled(protocol) ? "off"
-                    : status && view.receiving ? status.state : "off"
-        var line = view.engine.stateText(state) + " · " + detail
-        if (state === "failed") {
-            line = qsTr("%1 could not start: %2").arg(view.engine.protocolName(protocol))
-                                                 .arg(view.engine.errorText({ code: status.errorCode }))
-        }
-        return { name: protocol, title: title, line: line, state: state, failed: state === "failed" }
-    }
-
     Column {
         id: column
         width: parent.width
@@ -338,297 +276,274 @@ Item {
 
         // ---- Ready -----------------------------------------------------
 
-        Column {
+        Item {
+            id: hero
             objectName: "receiveHero"
             width: parent.width
             visible: !view.busy
-            spacing: Theme.paddingSmall
+            height: Math.max(heroColumn.height + 2 * Theme.paddingLarge,
+                             view.viewHeight - view.topInset - rest.height)
 
-            Item {
-                id: rings
-                anchors.horizontalCenter: parent.horizontalCenter
-                width: Theme.itemSizeExtraLarge * 1.6
-                height: width
+            Column {
+                id: heroColumn
+                width: parent.width
+                y: Math.max(Theme.paddingLarge, (hero.height - heroColumn.height) / 2)
+                spacing: Theme.paddingLarge
 
-                Repeater {
-                    model: 3
-                    delegate: Rectangle {
-                        id: ring
-                        anchors.centerIn: parent
-                        width: rings.width
-                        height: width
-                        radius: width / 2
-                        color: "transparent"
-                        border.width: Math.max(1, Math.round(Theme.paddingSmall / 3))
-                        border.color: Theme.highlightColor
-                        opacity: 0
-                        scale: 0.4
+                // Three still circles, and the pulses going out across them
+                // while this phone waits to be sent to.
+                Item {
+                    id: radar
+                    objectName: "radar"
+                    readonly property real core: Theme.itemSizeExtraLarge
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    width: view.radarSize
+                    height: width
 
-                        SequentialAnimation {
-                            running: view.pulsing
-                            loops: Animation.Infinite
-                            onRunningChanged: {
-                                if (!running) {
-                                    ring.opacity = 0
-                                    ring.scale = 0.4
-                                }
-                            }
-                            PauseAnimation { duration: index * 700 }
-                            ParallelAnimation {
-                                NumberAnimation { target: ring; property: "scale"; from: 0.4; to: 1; duration: 2100 }
-                                NumberAnimation { target: ring; property: "opacity"; from: 0.6; to: 0; duration: 2100 }
-                            }
-                            PauseAnimation { duration: (2 - index) * 700 }
+                    Repeater {
+                        model: 3
+                        delegate: Rectangle {
+                            anchors.centerIn: parent
+                            width: radar.core + (radar.width - radar.core) * (index + 1) / 3
+                            height: width
+                            radius: width / 2
+                            color: "transparent"
+                            border.width: Math.max(1, Theme._lineWidth)
+                            border.color: Theme.rgba(Theme.highlightColor, view.nearbyReady ? 0.3 : 0.15)
                         }
                     }
-                }
-                Rectangle {
-                    anchors.centerIn: parent
-                    width: parent.width * 0.4
-                    height: width
-                    radius: width / 2
-                    color: Theme.rgba(Theme.highlightBackgroundColor, 0.2)
-                }
-                Glyph {
-                    anchors.centerIn: parent
-                    width: parent.width * 0.3
-                    height: width
-                    kind: "phone"
-                    color: Theme.highlightColor
-                }
-            }
 
-            Label {
-                objectName: "receiveState"
-                x: Theme.horizontalPageMargin
-                width: parent.width - 2 * Theme.horizontalPageMargin
-                horizontalAlignment: Text.AlignHCenter
-                text: view.hero()
-                textFormat: Text.PlainText
-                wrapMode: Text.Wrap
-                font.pixelSize: Theme.fontSizeExtraLarge
-                color: Theme.highlightColor
-            }
-            Label {
-                x: Theme.horizontalPageMargin
-                width: parent.width - 2 * Theme.horizontalPageMargin
-                visible: view.nearbyEnabled
-                horizontalAlignment: Text.AlignHCenter
-                //: Receive tab, over this phone's name.
-                text: qsTr("Nearby, this phone shows up as")
-                textFormat: Text.PlainText
-                wrapMode: Text.Wrap
-                font.pixelSize: Theme.fontSizeSmall
-                color: Theme.secondaryColor
-            }
-            Label {
-                objectName: "deviceNameLabel"
-                x: Theme.horizontalPageMargin
-                width: parent.width - 2 * Theme.horizontalPageMargin
-                visible: view.nearbyEnabled
-                horizontalAlignment: Text.AlignHCenter
-                text: view.engine.effectiveDeviceName
-                textFormat: Text.PlainText
-                truncationMode: TruncationMode.Fade
-            }
-        }
+                    Repeater {
+                        model: 3
+                        delegate: Rectangle {
+                            id: ring
+                            readonly property real from: radar.core / Math.max(1, radar.width)
+                            anchors.centerIn: parent
+                            width: radar.width
+                            height: width
+                            radius: width / 2
+                            color: Theme.rgba(Theme.highlightBackgroundColor, 0.15)
+                            border.width: Math.max(2, Math.round(Theme.paddingSmall / 2))
+                            border.color: Theme.highlightColor
+                            opacity: 0
+                            scale: ring.from
 
-        // ---- Coming in ---------------------------------------------------
-
-        SectionHeader {
-            visible: view.busy
-            //: Receive tab: the section of transfers coming in.
-            text: qsTr("Receiving")
-        }
-
-        Repeater {
-            model: view.engine.transfers
-            delegate: ProgressRow {
-                objectName: "receiveProgress"
-                visible: (view.tick, view.shows(model.direction, model.state, model.transferId))
-                title: model.peer
-                status: (view.tick, view.receivingText(view.engine.transfer(model.transferId) || {}))
-                phase: model.state
-                bytes: model.bytes
-                total: model.total
-                onCancelClicked: view.engine.cancel(model.transferId)
-            }
-        }
-
-        // ---- From far away ------------------------------------------------
-
-        SectionHeader {
-            visible: view.codeOn && view.engine.running
-            //: Receive tab: the section for receiving over the internet with a code.
-            text: qsTr("From far away")
-        }
-
-        IconListItem {
-            objectName: "scanCode"
-            visible: view.codeOn && view.engine.running
-            glyph: "qr"
-            //: Receive tab: opens the camera to read the sender's QR code.
-            title: qsTr("Scan a code")
-            //: Receive tab: under "Scan a code".
-            subtitle: qsTr("Or type the one you were given")
-            onClicked: view.scanCode()
-        }
-
-        // ---- Came today -------------------------------------------------
-
-        SectionHeader {
-            visible: view.anyToday
-            //: Receive tab: the section of what arrived today.
-            text: qsTr("Received today")
-        }
-
-        Repeater {
-            model: view.engine.transfers
-            delegate: IconListItem {
-                id: receivedRow
-                readonly property var names: model.savedCount > 0 ? model.saved.split("\n")
-                                             : model.files.length > 0 ? model.files.split("\n") : []
-                readonly property bool isText: model.savedCount === 0 && model.fileCount === 0
-                objectName: "receivedRow"
-                visible: (view.tick, view.today(model.direction, model.state, model.transferId, model.endedAt))
-                glyph: receivedRow.isText ? "text"
-                       : view.engine.commonKind(receivedRow.names, Math.max(model.savedCount, receivedRow.names.length))
-                title: receivedRow.isText
-                       //: Receive tab: a text message arrived.
-                       ? qsTr("Text message")
-                       : view.engine.bundleName(receivedRow.names, Math.max(model.savedCount, receivedRow.names.length))
-                subtitle: view.fromText(model.peer, model.total)
-                onClicked: view.openReceived(model.transferId)
-            }
-        }
-
-        Row {
-            objectName: "savedIn"
-            x: Theme.horizontalPageMargin
-            visible: view.anyToday
-            spacing: Theme.paddingMedium
-            topPadding: Theme.paddingSmall
-            bottomPadding: Theme.paddingSmall
-
-            Glyph {
-                anchors.verticalCenter: parent.verticalCenter
-                width: Theme.iconSizeSmall
-                height: width
-                kind: "folder"
-                color: Theme.secondaryColor
-            }
-            Label {
-                anchors.verticalCenter: parent.verticalCenter
-                //: Receive tab: where received files are.
-                text: qsTr("Saved in Downloads › Sukkula")
-                textFormat: Text.PlainText
-                font.pixelSize: Theme.fontSizeSmall
-                color: Theme.secondaryColor
-            }
-        }
-
-        // ---- How others can reach this phone ------------------------------
-
-        BackgroundItem {
-            id: reachToggle
-            objectName: "reachToggle"
-            width: parent.width
-            height: Theme.itemSizeSmall
-            onClicked: view.reachOpen = !view.reachOpen
-
-            Label {
-                anchors {
-                    right: arrow.left
-                    rightMargin: Theme.paddingSmall
-                    verticalCenter: parent.verticalCenter
-                }
-                //: Receive tab, at the foot: unfolds one row per way others can send to this phone.
-                text: qsTr("How others can reach this phone")
-                textFormat: Text.PlainText
-                color: Theme.highlightColor
-            }
-            Image {
-                id: arrow
-                anchors {
-                    right: parent.right
-                    rightMargin: Theme.horizontalPageMargin
-                    verticalCenter: parent.verticalCenter
-                }
-                source: "image://theme/icon-m-down?" + Theme.highlightColor
-                rotation: view.reachOpen ? 180 : 0
-            }
-        }
-
-        Repeater {
-            model: view.reachOpen ? view.reachRows() : []
-            delegate: ListItem {
-                id: reachItem
-                objectName: "reachRow"
-                contentHeight: Theme.itemSizeMedium
-                onClicked: view.openSettings()
-
-                Item {
-                    id: dotSlot
-                    x: Theme.horizontalPageMargin
-                    width: Theme.iconSizeMedium
-                    height: parent.height
+                            SequentialAnimation {
+                                running: view.pulsing
+                                loops: Animation.Infinite
+                                onRunningChanged: {
+                                    if (!running) {
+                                        ring.opacity = 0
+                                        ring.scale = ring.from
+                                    }
+                                }
+                                PauseAnimation { duration: index * 800 }
+                                ParallelAnimation {
+                                    NumberAnimation {
+                                        target: ring; property: "scale"; from: ring.from; to: 1
+                                        duration: 2400; easing.type: Easing.OutQuad
+                                    }
+                                    NumberAnimation {
+                                        target: ring; property: "opacity"; from: 0.9; to: 0
+                                        duration: 2400; easing.type: Easing.InQuad
+                                    }
+                                }
+                                PauseAnimation { duration: (2 - index) * 800 }
+                            }
+                        }
+                    }
 
                     Rectangle {
-                        objectName: "reachDot"
                         anchors.centerIn: parent
-                        width: Theme.paddingMedium
+                        width: radar.core
                         height: width
                         radius: width / 2
-                        color: modelData.failed ? Theme.errorColor
-                               : modelData.state === "ready" ? Theme.highlightColor : "transparent"
-                        border.width: modelData.state === "ready" || modelData.failed ? 0 : 1
-                        border.color: Theme.secondaryColor
+                        color: Theme.rgba(Theme.highlightBackgroundColor, view.nearbyReady ? 0.45 : 0.2)
+                    }
+                    Glyph {
+                        anchors.centerIn: parent
+                        kind: "receive"
+                        color: Theme.highlightColor
                     }
                 }
+
                 Column {
-                    anchors {
-                        left: dotSlot.right
-                        leftMargin: Theme.paddingLarge
-                        right: parent.right
-                        rightMargin: Theme.horizontalPageMargin
-                        verticalCenter: parent.verticalCenter
-                    }
+                    id: heroWords
+                    objectName: "heroWords"
+                    width: parent.width
+                    spacing: Theme.paddingSmall
+
                     Label {
-                        width: parent.width
-                        text: modelData.title
+                        objectName: "receiveState"
+                        x: Theme.horizontalPageMargin
+                        width: parent.width - 2 * Theme.horizontalPageMargin
+                        horizontalAlignment: Text.AlignHCenter
+                        text: view.hero()
                         textFormat: Text.PlainText
-                        truncationMode: TruncationMode.Fade
-                        color: reachItem.highlighted ? Theme.highlightColor : Theme.primaryColor
+                        wrapMode: Text.Wrap
+                        font.pixelSize: Theme.fontSizeExtraLarge
+                        color: Theme.highlightColor
                     }
                     Label {
-                        objectName: "reachLine"
-                        width: parent.width
-                        text: modelData.line
+                        x: Theme.horizontalPageMargin
+                        width: parent.width - 2 * Theme.horizontalPageMargin
+                        visible: view.nearbyEnabled
+                        horizontalAlignment: Text.AlignHCenter
+                        //: Receive tab, over this phone's name.
+                        text: qsTr("Nearby, this phone shows up as")
                         textFormat: Text.PlainText
                         wrapMode: Text.Wrap
                         font.pixelSize: Theme.fontSizeSmall
-                        color: modelData.failed ? Theme.errorColor : Theme.secondaryColor
+                        color: Theme.secondaryColor
+                    }
+                    Label {
+                        objectName: "deviceNameLabel"
+                        x: Theme.horizontalPageMargin
+                        width: parent.width - 2 * Theme.horizontalPageMargin
+                        visible: view.nearbyEnabled
+                        horizontalAlignment: Text.AlignHCenter
+                        text: view.engine.effectiveDeviceName
+                        textFormat: Text.PlainText
+                        truncationMode: TruncationMode.Fade
+                    }
+
+                    // A way that could not start: why is beside its switch.
+                    BackgroundItem {
+                        id: failedItem
+                        objectName: "receiveFailed"
+                        width: parent.width
+                        height: failedLabel.height + 2 * Theme.paddingMedium
+                        visible: view.someFailed
+                        onClicked: view.openSettings()
+
+                        Label {
+                            id: failedLabel
+                            objectName: "receiveFailedLine"
+                            x: Theme.horizontalPageMargin
+                            width: parent.width - 2 * Theme.horizontalPageMargin
+                            anchors.verticalCenter: parent.verticalCenter
+                            horizontalAlignment: Text.AlignHCenter
+                            text: view.nearbyReady
+                                  //: Receive tab, under "Ready to receive": one way of receiving nearby could not start; tapping opens Settings, which says why.
+                                  ? qsTr("Not every device nearby can see this phone. Tap to see why.")
+                                  //: Receive tab, under "Nobody nearby can see this phone": tapping opens Settings, which says why.
+                                  : qsTr("Tap to see why.")
+                            textFormat: Text.PlainText
+                            wrapMode: Text.Wrap
+                            font.pixelSize: Theme.fontSizeSmall
+                            color: failedItem.highlighted ? Theme.highlightColor : Theme.errorColor
+                        }
                     }
                 }
             }
         }
 
-        Label {
-            x: Theme.horizontalPageMargin + Theme.iconSizeMedium + Theme.paddingLarge
-            width: parent.width - x - Theme.horizontalPageMargin
-            visible: view.reachOpen
-            topPadding: Theme.paddingSmall
-            //: Receive tab, under how others can reach this phone.
-            text: qsTr("Tap one to change it in Settings.")
-            textFormat: Text.PlainText
-            wrapMode: Text.Wrap
-            font.pixelSize: Theme.fontSizeSmall
-            color: Theme.secondaryColor
-        }
+        Column {
+            id: rest
+            objectName: "receiveRest"
+            width: parent.width
 
-        Item {
-            width: 1
-            height: Theme.paddingLarge
+            // ---- Coming in -----------------------------------------------
+
+            SectionHeader {
+                visible: view.busy
+                //: Receive tab: the section of transfers coming in.
+                text: qsTr("Receiving")
+            }
+
+            Repeater {
+                model: view.engine.transfers
+                delegate: ProgressRow {
+                    objectName: "receiveProgress"
+                    visible: (view.tick, view.shows(model.direction, model.state, model.transferId))
+                    title: model.peer
+                    status: (view.tick, view.receivingText(view.engine.transfer(model.transferId) || {}))
+                    phase: model.state
+                    bytes: model.bytes
+                    total: model.total
+                    onCancelClicked: view.engine.cancel(model.transferId)
+                }
+            }
+
+            // ---- From far away --------------------------------------------
+
+            SectionHeader {
+                visible: view.codeOn && view.engine.running
+                //: Receive tab: the section for receiving over the internet with a code.
+                text: qsTr("From far away")
+            }
+
+            IconListItem {
+                objectName: "scanCode"
+                visible: view.codeOn && view.engine.running
+                glyph: "camera"
+                //: Receive tab: opens the camera to read the sender's QR code.
+                title: qsTr("Scan a QR code")
+                //: Receive tab: under "Scan a QR code".
+                subtitle: qsTr("The one on the sender's screen")
+                onClicked: view.scanCode()
+            }
+
+            IconListItem {
+                objectName: "typeCode"
+                visible: view.codeOn && view.engine.running
+                glyph: "keyboard"
+                //: Receive tab: opens the page to type or paste a code.
+                title: qsTr("Type in a code")
+                //: Receive tab: under "Type in a code".
+                subtitle: qsTr("The words the sender's app shows")
+                onClicked: view.typeCode()
+            }
+
+            // ---- Came today -----------------------------------------------
+
+            SectionHeader {
+                visible: view.anyToday
+                //: Receive tab: the section of what arrived today.
+                text: qsTr("Received today")
+            }
+
+            Repeater {
+                model: view.engine.transfers
+                delegate: IconListItem {
+                    id: receivedRow
+                    readonly property var names: model.savedCount > 0 ? model.saved.split("\n")
+                                                 : model.files.length > 0 ? model.files.split("\n") : []
+                    readonly property bool isText: model.savedCount === 0 && model.fileCount === 0
+                    objectName: "receivedRow"
+                    visible: (view.tick, view.today(model.direction, model.state, model.transferId, model.endedAt))
+                    glyph: receivedRow.isText ? "text"
+                           : view.engine.commonKind(receivedRow.names,
+                                                    Math.max(model.savedCount, receivedRow.names.length))
+                    title: receivedRow.isText
+                           //: Receive tab: a text message arrived.
+                           ? qsTr("Text message")
+                           : view.engine.bundleName(receivedRow.names,
+                                                    Math.max(model.savedCount, receivedRow.names.length))
+                    subtitle: view.fromText(model.peer, model.total)
+                    onClicked: view.openReceived(model.transferId)
+                }
+            }
+
+            Label {
+                objectName: "savedIn"
+                x: Theme.horizontalPageMargin
+                width: parent.width - 2 * Theme.horizontalPageMargin
+                visible: view.anyToday
+                topPadding: Theme.paddingSmall
+                bottomPadding: Theme.paddingSmall
+                //: Receive tab: where received files are.
+                text: qsTr("Saved in Downloads › Sukkula")
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                font.pixelSize: Theme.fontSizeSmall
+                color: Theme.secondaryColor
+            }
+
+            Item {
+                width: 1
+                height: Theme.paddingLarge
+            }
         }
     }
 }

@@ -84,8 +84,6 @@ Page {
                 Glyph {
                     id: icon
                     x: Theme.horizontalPageMargin
-                    width: Theme.iconSizeLarge
-                    height: width
                     kind: !page.device || !page.device.found ? "bluetooth"
                           : page.device.deviceType === "computer" ? "computer"
                           : page.device.deviceType === "tablet" ? "tablet" : "phone"

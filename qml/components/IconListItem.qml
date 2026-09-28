@@ -32,7 +32,6 @@ ListItem {
         x: Theme.horizontalPageMargin
         anchors.verticalCenter: parent.verticalCenter
         width: item.glyph !== "" ? Theme.iconSizeMedium : 0
-        height: width
         visible: item.glyph !== ""
         kind: item.glyph !== "" ? item.glyph : "file"
         color: item.highlighted ? Theme.highlightColor : Theme.primaryColor

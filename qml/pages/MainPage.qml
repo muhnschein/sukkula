@@ -142,6 +142,18 @@ Page {
         }
     }
 
+    /// A tab was tapped: the tab on screen goes back to its top, as in
+    /// Silica's TabView; the other one comes.
+    function tapTab(index) {
+        if (pager.currentIndex === index) {
+            if (pager.currentItem && pager.currentItem.item) {
+                pager.currentItem.item.scrollToTop()
+            }
+            return
+        }
+        page.showTab(index)
+    }
+
     /// Receiving on or off: one set_receiving. What is wanted by the time
     /// a switch has landed is switched to next -- from the mode that
     /// switch set, `from`, whether or not the engine's event saying so has
@@ -197,20 +209,38 @@ Page {
         onFailed: pageBanner.show(message)
     }
 
-    PagedView {
-        id: pager
-        objectName: "modePager"
-        anchors.fill: parent
+    // What the tabs are seen through: the page less the tabs' band, clipped
+    // while a list is scrolled, so a row scrolled up is cut at the tabs'
+    // lower edge instead of passing behind their words. The pager is moved
+    // back up by the band, so a list still starts at the top of the screen,
+    // where its pulley menu comes down from; and nothing is clipped while
+    // at rest or pulled, when the band holds only the pulley's indicator
+    // or the menu (Vuo's EntryListPage, after Silica's TabItem).
+    Item {
+        id: viewport
+        objectName: "modeViewport"
+        y: page.fatal ? 0 : page.stripBand
+        width: page.width
+        height: page.height - viewport.y
+        clip: page.yOffset > 0
         visible: !page.fatal
-        model: 2
-        cacheSize: 2
-        interactive: page.engine.running
 
-        delegate: Loader {
-            readonly property real yOffset: item ? item.contentY - item.originY : 0
-            width: pager.width
-            height: pager.height
-            sourceComponent: index === 0 ? sendTab : receiveTab
+        PagedView {
+            id: pager
+            objectName: "modePager"
+            y: -viewport.y
+            width: viewport.width
+            height: page.height
+            model: 2
+            cacheSize: 2
+            interactive: page.engine.running
+
+            delegate: Loader {
+                readonly property real yOffset: item ? item.contentY - item.originY : 0
+                width: pager.width
+                height: pager.height
+                sourceComponent: index === 0 ? sendTab : receiveTab
+            }
         }
     }
 
@@ -270,6 +300,7 @@ Page {
         id: receiveTab
 
         SilicaFlickable {
+            id: receiveList
             contentHeight: Math.max(height, receive.implicitHeight)
 
             PullDownMenu {
@@ -291,6 +322,7 @@ Page {
                 objectName: "receiveView"
                 width: parent.width
                 topInset: page.stripBand
+                viewHeight: receiveList.height
                 engine: page.engine
                 banner: pageBanner
                 current: pager.currentIndex === 1
@@ -321,7 +353,7 @@ Page {
         titles: [qsTr("Send"), qsTr("Receive")]
         currentIndex: pager.currentIndex
         busyIndex: page.switching && page.awake ? (page.switchingTo ? 1 : 0) : -1
-        onTabClicked: page.showTab(index)
+        onTabClicked: page.tapTab(index)
     }
 
     // The engine could not start: nothing else would work.

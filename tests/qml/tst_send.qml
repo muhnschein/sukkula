@@ -172,6 +172,12 @@ Script {
             test.compare(test.rows(), [[Ev.EVIL_NAME, "Phone · LocalSend"], ["Android", "Phone · Quick Share"],
                                        ["Car EVIL", "Paired device · Bluetooth"]],
                          "by name, the paired ones last, the protocol in the grey line")
+            // The ambience's own icons: a phone, a paired device.
+            var phone = probe.find(test.row("Android"), "rowGlyph")
+            test.compare(phone.names, ["icon-m-device", "icon-m-phone"])
+            test.verify(String(phone.source).indexOf("image://theme/icon-m-") === 0, "from the theme: " + phone.source)
+            test.compare(probe.find(test.row("Car EVIL"), "rowGlyph").names[0], "icon-m-bluetooth-device")
+            test.compare(probe.find(test.find("sendWithCode"), "rowGlyph").kind, "code")
             test.compare(test.find("nearbyHint").text,
                          "Someone missing? They need to be on the same Wi-Fi, with their device ready to receive.")
             test.verify(test.find("sendWithCode").visible, "and far away, with a code")

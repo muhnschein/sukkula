@@ -280,7 +280,6 @@ Dialog {
                     x: Theme.horizontalPageMargin
                     anchors.verticalCenter: parent.verticalCenter
                     width: Theme.iconSizeLarge
-                    height: width
                     kind: dialog.offer && dialog.offer.files.length === 1
                           ? dialog.engine.kindOf(dialog.offer.files[0].name) : "file"
                     color: Theme.primaryColor
@@ -335,8 +334,6 @@ Dialog {
                             id: fileGlyph
                             x: Theme.horizontalPageMargin
                             anchors.verticalCenter: parent.verticalCenter
-                            width: Theme.iconSizeMedium * 0.75
-                            height: width
                             kind: dialog.engine.kindOf(modelData.name)
                             color: Theme.primaryColor
                         }

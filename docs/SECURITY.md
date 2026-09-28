@@ -232,7 +232,7 @@ These are enforced in the code and checked in CI, not merely intended.
   `textFormat: Text.PlainText`, and the QML tests walk the live item tree
   to prove it.
 - **Nothing a peer sends is drawn** (spec v0.7). A file's kind is told by
-  its name's extension alone and drawn as one of Sukkula's own line
+  its name's extension alone and shown as one of the theme's own
   icons: no image, thumbnail or preview of anything offered or received
   is decoded, before consent or after. The cover, which anyone can read
   on the home screen, shows no peer's name and no file's name, only

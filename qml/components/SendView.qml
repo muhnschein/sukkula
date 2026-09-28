@@ -493,17 +493,17 @@ Item {
         Repeater {
             model: view.hasPayload ? [] : [
                 //: Send tab: the tile that opens Gallery's photos.
-                { kind: "photo", name: "pickPhotos", title: qsTr("Photos"),
+                { kind: "photo", glyph: "photo", name: "pickPhotos", title: qsTr("Photos"),
                   //: Send tab: under the Photos and Videos tiles.
                   hint: qsTr("From Gallery") },
                 //: Send tab: the tile that opens Gallery's videos.
-                { kind: "video", name: "pickVideos", title: qsTr("Videos"), hint: qsTr("From Gallery") },
+                { kind: "video", glyph: "video", name: "pickVideos", title: qsTr("Videos"), hint: qsTr("From Gallery") },
                 //: Send tab: the tile that opens the documents list.
-                { kind: "document", name: "pickDocuments", title: qsTr("Documents"),
+                { kind: "document", glyph: "document", name: "pickDocuments", title: qsTr("Documents"),
                   //: Send tab: under the Documents tile.
                   hint: qsTr("PDFs, notes, sheets") },
                 //: Send tab: the tile that opens the file browser.
-                { kind: "file", name: "pickFiles", title: qsTr("Any file"),
+                { kind: "file", glyph: "folder", name: "pickFiles", title: qsTr("Any file"),
                   //: Send tab: under the Any file tile.
                   hint: qsTr("Browse your folders") }
             ]
@@ -528,9 +528,7 @@ Item {
                         id: tileGlyph
                         x: Theme.paddingLarge
                         anchors.verticalCenter: parent.verticalCenter
-                        width: Theme.iconSizeMedium
-                        height: width
-                        kind: modelData.kind
+                        kind: modelData.glyph
                         color: tile.highlighted ? Theme.highlightColor : Theme.primaryColor
                     }
                     Column {
@@ -561,12 +559,15 @@ Item {
             }
         }
 
-        // Who is about, while nothing is chosen yet.
+        // Who is about, while nothing is chosen yet: a line of its own, well
+        // clear of the tiles.
         Row {
+            objectName: "nearbyFoot"
             anchors.horizontalCenter: parent.horizontalCenter
             visible: !view.hasPayload && nearbyLine.text.length > 0
             spacing: Theme.paddingMedium
-            topPadding: Theme.paddingLarge
+            topPadding: 2 * Theme.paddingLarge
+            bottomPadding: Theme.paddingLarge
 
             BusyIndicator {
                 anchors.verticalCenter: parent.verticalCenter
@@ -600,8 +601,6 @@ Item {
                 id: payloadGlyph
                 x: Theme.horizontalPageMargin
                 anchors.verticalCenter: parent.verticalCenter
-                width: Theme.iconSizeMedium
-                height: width
                 kind: view.payloadKind
                 color: Theme.primaryColor
             }
@@ -764,8 +763,8 @@ Item {
             x: Theme.horizontalPageMargin
             width: parent.width - 2 * Theme.horizontalPageMargin
             visible: view.hasPayload
-            topPadding: Theme.paddingMedium
-            bottomPadding: Theme.paddingMedium
+            topPadding: Theme.paddingLarge
+            bottomPadding: Theme.paddingLarge
             text: !view.nearbyOn
                   //: Send tab: Quick Share, LocalSend and Bluetooth are all switched off.
                   ? qsTr("Sending nearby is switched off in Settings.")
@@ -792,7 +791,7 @@ Item {
             objectName: "sendWithCode"
             visible: view.hasPayload && view.codeOn && !(view.hasOutgoing && view.outgoing.key === "code"
                                                          && !view.codeWaiting)
-            glyph: "qr"
+            glyph: "code"
             //: Send tab: sending over the internet with a code.
             title: qsTr("Send with a code")
             subtitle: view.codeWaiting

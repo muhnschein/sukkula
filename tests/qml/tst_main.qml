@@ -102,9 +102,34 @@ Script {
             test.compare(probe.find(cover, "coverReceive").text, "Receive")
             test.verify(probe.find(cover, "coverIdle").visible)
             test.verify(test.textsOf(test.main).indexOf("About Sukkula") < 0, "About is not in a pulley")
+            // The tabs as Silica's TabBar lays them out: the words side by
+            // side in the middle, the one on screen underlined by a hairline
+            // as wide as its word.
+            var sendTab = probe.find(test.main, "modeSend")
+            var receiveTab = probe.find(test.main, "modeReceive")
+            var sendWord = sendTab.labelItem
+            var receiveWord = receiveTab.labelItem
+            var leftSpace = sendTab.x + sendWord.x
+            var rightSpace = tabs.width - (receiveTab.x + receiveWord.x + receiveWord.width)
+            test.verify(Math.abs(leftSpace - rightSpace) < 1, "the words centred as one: " + leftSpace + " " + rightSpace)
+            test.compare(receiveTab.x + receiveWord.x - (sendTab.x + sendWord.x + sendWord.width),
+                         2 * Theme.paddingMedium, "and close together")
+            var underline = probe.find(test.main, "modeUnderline")
+            test.compare(underline.width, sendWord.width, "the line as wide as the word")
+            test.compare(underline.x, sendTab.x + sendWord.x)
+            test.compare(underline.height, Theme._lineWidth, "a hairline")
+            // Rows scrolled up are cut at the tabs' edge, not drawn behind
+            // them; the tab on screen, tapped, takes its list to the top.
+            var list = pager.currentItem.item
+            var viewport = probe.find(test.main, "modeViewport")
+            test.verify(!viewport.clip, "nothing clipped at rest")
+            list.contentY = 50
+            test.verify(viewport.clip, "clipped while scrolled")
             // F-C1: one tap, one command.
             bridge.autoReply = false
             probe.find(test.main, "modeSend").clicked()
+            test.compare(list.contentY, 0, "the tab on screen, tapped: back to the top")
+            test.verify(!viewport.clip)
             test.compare(test.count("set_receiving"), 0, "the tab shown is no change")
             probe.find(test.main, "modeReceive").clicked()
             test.compare(test.lastOf("set_receiving"), { type: "set_receiving", on: true })
@@ -152,11 +177,13 @@ Script {
             test.compare(probe.find(receive, "receiveState").text, "Ready to receive", "Quick Share is up")
             test.compare(test.count("stop_discovery"), 3, "no discovery on the Receive tab")
             test.compare(engine.discoveryUsers, 0)
-            probe.find(receive, "reachToggle").clicked()
+            var failed = probe.find(receive, "receiveFailed")
+            test.verify(failed.visible, "a way that could not start is said")
+            test.compare(probe.find(failed, "receiveFailedLine").text,
+                         "Not every device nearby can see this phone. Tap to see why.")
             var all = test.textsOf(receive)
-            test.verify(all.indexOf("LocalSend could not start: Network error or timeout.") >= 0,
-                        "a failed protocol says so, by code: " + all)
             test.verify(all.indexOf("port 53317 in use") < 0, "the engine's English stays off the tab")
+            test.verify(all.indexOf("How others can reach this phone") < 0, "how each way does is in Settings")
             test.verify(probe.find(cover, "coverIdle").visible, "the cover the same: nothing going on")
             // A refused switch is reported, and the tab goes back.
             probe.find(test.main, "modeSend").clicked()
