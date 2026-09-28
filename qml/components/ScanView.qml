@@ -226,7 +226,7 @@ Item {
               ? qsTr("The camera is not available.")
               : view.sawOther
                 //: A QR code was read, and it is not a Magic Wormhole or croc code.
-                ? qsTr("That QR code holds no Magic Wormhole or croc code.")
+                ? qsTr("This QR code contains no Magic Wormhole or croc code.")
                 //: How to scan.
                 : qsTr("Point the camera at the sender's QR code")
     }

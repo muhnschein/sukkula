@@ -125,7 +125,7 @@ Script {
         },
         function () {
             test.verify(window.pageStack.currentPage === test.page, "still scanning")
-            test.compare(test.hint(), "That QR code holds no Magic Wormhole or croc code.")
+            test.compare(test.hint(), "This QR code contains no Magic Wormhole or croc code.")
             test.compare(test.commandsOfType("receive_wormhole").length, 0, "nothing received")
             // In the background: the camera off, no frames.
             test.page.foreground = false
@@ -229,7 +229,7 @@ Script {
         },
         function () {
             test.compare(test.find("codeField").text, "Gala tulip acorn", "a code on the clipboard, offered")
-            test.compare(test.find("codeField").label, "Code, from the clipboard")
+            test.compare(test.find("codeField").label, "Code, pasted from the clipboard")
             test.find("codeField").text = "Gala tulip acorns"
             test.compare(test.find("codeField").label, "Code", "changed: no longer the clipboard's")
             window.pageStack.pop()

@@ -53,9 +53,9 @@ Page {
         if (!page.engine.protocolEnabled(result.protocol)) {
             banner.show(result.protocol === "croc"
                         //: A croc QR code was scanned, and croc is off.
-                        ? qsTr("That is a croc code, and croc is switched off in Settings.")
+                        ? qsTr("croc is switched off in Settings.")
                         //: A Magic Wormhole QR code was scanned, and Magic Wormhole is off.
-                        : qsTr("That is a Magic Wormhole code, and Magic Wormhole is switched off in Settings."))
+                        : qsTr("Magic Wormhole is switched off in Settings."))
             page.retry()
             return
         }

@@ -51,7 +51,7 @@ Page {
         var kind = page.engine.deviceTypeText(peer.deviceType)
         if (kind.length > 0) {
             //: About this device: phone, tablet or computer, as it says.
-            out.push({ label: qsTr("Kind"), value: kind })
+            out.push({ label: qsTr("Type"), value: kind })
         }
         if (peer.address.length > 0) {
             //: About this device: its network address, or its Bluetooth address.
@@ -168,9 +168,9 @@ Page {
                 topPadding: Theme.paddingLarge
                 text: page.hasLocalSend
                       //: About this device, at the foot, when it was found over LocalSend.
-                      ? qsTr("Sukkula checks this certificate on every LocalSend send, and stops if it has changed. The name and model are what the device says about itself.")
+                      ? qsTr("Sukkula checks this certificate before every send over LocalSend, and stops if it has changed. The name and model are reported by the device itself.")
                       //: About this device, at the foot.
-                      : qsTr("The name and model are what the device says about itself.")
+                      : qsTr("The name and model are reported by the device itself.")
                 textFormat: Text.PlainText
                 wrapMode: Text.Wrap
                 font.pixelSize: Theme.fontSizeSmall

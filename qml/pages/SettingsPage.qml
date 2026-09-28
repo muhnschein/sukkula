@@ -340,9 +340,9 @@ Page {
                 visible: page.engine.hasProtocol("quick_share")
                 enabled: quickShareSwitch.checked
                 //: Settings: while sending, a Bluetooth LE signal makes nearby Android phones announce themselves on the Wi-Fi (F-QS2).
-                text: qsTr("Bluetooth nudge")
-                //: Settings: what the Bluetooth nudge does. It works only while the Send tab looks for devices; it does not make this phone visible.
-                description: qsTr("Helps Android phones nearby notice this one while you send")
+                text: qsTr("Bluetooth wake-up")
+                //: Settings: what the Bluetooth wake-up does. It works only while the Send tab looks for devices; it does not make this phone visible.
+                description: qsTr("Makes Android phones nearby show up while you send.")
             }
             TextSwitch {
                 id: localSendSwitch
@@ -382,7 +382,7 @@ Page {
                 visible: page.engine.hasProtocol("bluetooth")
                 text: "Bluetooth"
                 //: Settings: what the Bluetooth switch covers, and why it only sends (F-BT2).
-                description: qsTr("Send to paired devices. Receiving goes through the phone's own Bluetooth settings.")
+                description: qsTr("Sends to paired devices. Receiving is handled by the phone's Bluetooth settings.")
             }
 
             SectionHeader {
@@ -395,15 +395,16 @@ Page {
                 objectName: "wormholeSwitch"
                 visible: page.engine.hasProtocol("wormhole")
                 text: "Magic Wormhole"
-                //: Settings: what the Magic Wormhole and croc switches cover (F-C1): sending to a code and receiving with one.
-                description: qsTr("Send and receive with a code, over the internet")
+                //: Settings: under the Magic Wormhole switch: the apps a Magic Wormhole code works with.
+                description: qsTr("Works with Warp and the wormhole command")
             }
             TextSwitch {
                 id: crocSwitch
                 objectName: "crocSwitch"
                 visible: page.engine.hasProtocol("croc")
                 text: "croc"
-                description: qsTr("Send and receive with a code, over the internet")
+                //: Settings: under the croc switch: the app a croc code works with.
+                description: qsTr("Works with the croc app")
             }
 
             // The servers, folded away: most never change them.
@@ -443,7 +444,7 @@ Page {
                 visible: page.serversOpen && (page.engine.hasProtocol("wormhole") || page.engine.hasProtocol("croc"))
                 bottomPadding: Theme.paddingMedium
                 //: Settings, over the fields for one's own servers.
-                text: qsTr("Only for servers you run yourself. A field left empty uses the public server.")
+                text: qsTr("Leave a field empty to use the public server.")
                 textFormat: Text.PlainText
                 wrapMode: Text.Wrap
                 font.pixelSize: Theme.fontSizeSmall
@@ -516,7 +517,7 @@ Page {
                 //: Settings: debug logging (S9).
                 text: qsTr("Debug logging")
                 //: Settings: what debug logging does.
-                description: qsTr("Only for finding faults. Leave it off otherwise.")
+                description: qsTr("Writes more detail to the system log.")
             }
 
             Item {

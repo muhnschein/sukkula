@@ -83,7 +83,7 @@ Page {
             if (!t || t.bytes <= 0) {
                 return page.code === "" ? qsTr("Getting a code…")
                                         //: Send with a code: the code is shown, nobody has used it yet.
-                                        : qsTr("Waiting for them to type the code…")
+                                        : qsTr("Waiting for the receiver…")
             }
             //: Send with a code: the files are going.
             return qsTr("Sending…")
@@ -106,15 +106,15 @@ Page {
         if (page.protocol === "croc") {
             return s.croc && typeof s.croc.relay === "string" && s.croc.relay.length > 0
                    //: Send with a code, at the foot: croc goes through the user's own relay.
-                   ? qsTr("Goes through your own croc relay, set in Settings.")
+                   ? qsTr("Uses the croc relay set in Settings.")
                    //: Send with a code, at the foot: croc goes through croc's public relay.
-                   : qsTr("Goes through croc's public relay on the internet. Your own relay can be set in Settings.")
+                   : qsTr("Uses croc's public relay. You can set your own in Settings.")
         }
         return s.wormhole && typeof s.wormhole.mailbox_url === "string" && s.wormhole.mailbox_url.length > 0
                //: Send with a code, at the foot: Magic Wormhole goes through the user's own server.
-               ? qsTr("Goes through your own Magic Wormhole server, set in Settings.")
+               ? qsTr("Uses the Magic Wormhole server set in Settings.")
                //: Send with a code, at the foot: Magic Wormhole goes through its public server.
-               : qsTr("Goes through Magic Wormhole's server on the internet. Your own servers can be set in Settings.")
+               : qsTr("Uses Magic Wormhole's public server. You can set your own in Settings.")
     }
 
     Loader {
@@ -158,7 +158,7 @@ Page {
                 x: Theme.horizontalPageMargin
                 width: parent.width - 2 * Theme.horizontalPageMargin
                 //: Send with a code: what to do with the code.
-                text: qsTr("Let the other person scan the QR code, or tell them the code to type into their app.")
+                text: qsTr("The receiver scans the QR code or types in the code.")
                 textFormat: Text.PlainText
                 wrapMode: Text.Wrap
             }
@@ -247,15 +247,15 @@ Page {
                 enabled: page.waiting || !page.mine
                 currentIndex: page.protocol === "croc" ? 1 : 0
                 //: Send with a code: which app the other person has, which decides the code.
-                label: qsTr("Their app")
+                label: qsTr("Receiver's app")
                 description: page.protocol === "croc"
                              //: Send with a code: who can take a croc code.
-                             ? qsTr("Sukkula, or the croc app or command, can take it.")
+                             ? qsTr("Works with Sukkula and croc.")
                              : page.severalFiles
                                //: Send with a code: Magic Wormhole cannot take several files.
-                               ? qsTr("Magic Wormhole takes one file at a time, so several go with croc.")
+                               ? qsTr("Magic Wormhole sends one file at a time.")
                                //: Send with a code: who can take a Magic Wormhole code.
-                               : qsTr("Sukkula, Warp or the wormhole command can take it.")
+                               : qsTr("Works with Sukkula, Warp and the wormhole command.")
                 menu: ContextMenu {
                     MenuItem {
                         text: "Magic Wormhole"

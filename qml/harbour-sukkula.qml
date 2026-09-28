@@ -186,7 +186,7 @@ ApplicationWindow {
                 : qsTr("Text received")
             doneNote.body = t && t.savedCount > 0
                 //: Notification body: where received files are.
-                ? qsTr("Saved in Downloads/Sukkula")
+                ? qsTr("Saved in Downloads › Sukkula")
                 //: Notification body: where a received text is.
                 : qsTr("Open Sukkula to read it.")
         } else if (state === "failed") {

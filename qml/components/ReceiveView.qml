@@ -4,13 +4,12 @@ import Sailfish.Silica 1.0
 
 /*
  * The Receive tab (F-C1), at one glance: whether this phone is ready and
- * the name others see it by, round a radar that pulses while it waits and
- * takes whatever room the rest leaves; what is coming in, with how far it
- * has got and a cross to stop it (F-C5); receiving with a code from far
- * away, by scanning its QR code or typing it in (F-MW2, F-CR2); and what
- * came today. How each way of receiving is doing is in Settings, beside
- * its switch; a way that could not start is said here in a line that
- * leads there.
+ * the name others see it by, under a radar that pulses while it waits;
+ * what is coming in, with how far it has got and a cross to stop it
+ * (F-C5); receiving with a code from far away, by scanning its QR code or
+ * typing it in (F-MW2, F-CR2); and what came today. How each way of
+ * receiving is doing is in Settings, beside its switch; a way that could
+ * not start is said here in a line that leads there.
  *
  * Every offer still waits on the consent dialog (F-C2), which comes up
  * over whatever shows. Files that came together are one row ("3
@@ -61,14 +60,39 @@ Item {
                                     && !view.busy
     /// A way of receiving nearby is on and could not start.
     readonly property bool someFailed: view.receiving && view.nearbyEnabled && view.anyFailed
-    /// The room the radar may take: the list's height, less the tabs, the
-    /// words under the radar and everything below it.
-    readonly property real radarSize: Math.max(Theme.itemSizeExtraLarge * 1.6,
-                                               Math.min(view.width - 2 * Theme.horizontalPageMargin,
-                                                        view.viewHeight - view.topInset - heroWords.height
-                                                        - rest.height - 3 * Theme.paddingLarge))
+    /// The radar as the canvas drew it, round the theme's phone icon: the
+    /// disc 1.9 times the icon, the outer ring 1 / 0.432 times the disc.
+    readonly property real radarBase: Theme.iconSizeMedium * 1.9 / 0.432
+    /// The room under the tabs that the words under the radar and
+    /// everything below it leave.
+    readonly property real radarRoom: view.viewHeight - view.topInset - heroWords.height - rest.height
+                                      - 3 * Theme.paddingLarge
+    /// The outer ring: the canvas's size, and up to a third more where
+    /// there is room, with the pulses (to 1.15 times it) kept inside the
+    /// page's margins.
+    readonly property real radarSize: Math.min((view.width - 2 * Theme.horizontalPageMargin) / 1.15,
+                                               Math.max(view.radarBase,
+                                                        Math.min(view.radarBase * 1.35, view.radarRoom / 1.15)))
 
     implicitHeight: column.height
+
+    /// CSS's ease-out, cubic-bezier(0, 0, 0.58, 1), which the canvas's
+    /// pulses use: x(s) = 1.74 s^2 - 0.74 s^3 is found for `t` by
+    /// halving, and y(s) = 3 s^2 - 2 s^3 is the eased value.
+    function easeOut(t) {
+        var lo = 0
+        var hi = 1
+        for (var i = 0; i < 16; i++) {
+            var s = (lo + hi) / 2
+            if (1.74 * s * s - 0.74 * s * s * s < t) {
+                lo = s
+            } else {
+                hi = s
+            }
+        }
+        var m = (lo + hi) / 2
+        return 3 * m * m - 2 * m * m * m
+    }
 
     function stateOf(protocol) {
         for (var i = 0; i < view.statuses.length; i++) {
@@ -226,7 +250,7 @@ Item {
                    //: Receive tab: files arrived.
                    ? qsTr("Saved in Downloads › Sukkula")
                    //: Receive tab: a text arrived; it is on the History page.
-                   : qsTr("Received. It is in History.")
+                   : qsTr("Saved in History")
         case "cancelled":
             //: A transfer was stopped by one of the two sides.
             return qsTr("Cancelled")
@@ -251,15 +275,15 @@ Item {
         }
         if (!view.nearbyEnabled) {
             //: Receive tab: Quick Share and LocalSend are switched off; only codes can be received.
-            return view.codeOn ? qsTr("Ready for codes") : qsTr("Receiving is switched off in Settings.")
+            return view.codeOn ? qsTr("Ready to receive codes") : qsTr("Receiving is switched off in Settings.")
         }
         if (view.nearbyReady) {
             //: Receive tab: this phone can be found and sent to.
             return qsTr("Ready to receive")
         }
         if (view.anyFailed) {
-            //: Receive tab: no protocol could start.
-            return qsTr("Nobody nearby can see this phone")
+            //: Receive tab: no way of receiving nearby could start.
+            return qsTr("Others nearby cannot see you")
         }
         //: Receive tab: the protocols are starting.
         return qsTr("Starting…")
@@ -290,79 +314,79 @@ Item {
                 y: Math.max(Theme.paddingLarge, (hero.height - heroColumn.height) / 2)
                 spacing: Theme.paddingLarge
 
-                // Three still circles, and the pulses going out across them
-                // while this phone waits to be sent to.
+                // As the canvas drew it: two faint rings, a disc round the
+                // phone, and three pulses going out from the disc to past
+                // the outer ring, fading as they go, one every second while
+                // this phone waits to be sent to.
                 Item {
                     id: radar
                     objectName: "radar"
-                    readonly property real core: Theme.itemSizeExtraLarge
+                    /// How far round the 3 s cycle the first pulse is.
+                    property real phase: 0
+                    /// Line widths, the canvas's in its 176 px.
+                    readonly property real line: Math.max(1, radar.width / 176)
                     anchors.horizontalCenter: parent.horizontalCenter
                     width: view.radarSize
                     height: width
+                    opacity: view.nearbyReady ? 1 : 0.4
+
+                    NumberAnimation {
+                        target: radar
+                        property: "phase"
+                        from: 0
+                        to: 1
+                        duration: 3000
+                        loops: Animation.Infinite
+                        running: view.pulsing
+                    }
 
                     Repeater {
-                        model: 3
+                        model: [1, 0.705]
                         delegate: Rectangle {
                             anchors.centerIn: parent
-                            width: radar.core + (radar.width - radar.core) * (index + 1) / 3
+                            width: radar.width * modelData
                             height: width
                             radius: width / 2
                             color: "transparent"
-                            border.width: Math.max(1, Theme._lineWidth)
-                            border.color: Theme.rgba(Theme.highlightColor, view.nearbyReady ? 0.3 : 0.15)
+                            border.width: radar.line
+                            border.color: Theme.rgba(Theme.highlightColor, 0.24)
                         }
                     }
 
                     Repeater {
                         model: 3
                         delegate: Rectangle {
-                            id: ring
-                            readonly property real from: radar.core / Math.max(1, radar.width)
+                            id: pulse
+                            objectName: "pulse"
+                            /// This pulse's way out, 0 to 1, eased.
+                            readonly property real progress: view.easeOut((radar.phase + index / 3) % 1)
                             anchors.centerIn: parent
                             width: radar.width
                             height: width
                             radius: width / 2
-                            color: Theme.rgba(Theme.highlightBackgroundColor, 0.15)
-                            border.width: Math.max(2, Math.round(Theme.paddingSmall / 2))
+                            visible: view.pulsing
+                            color: "transparent"
+                            border.width: 1.5 * radar.line
                             border.color: Theme.highlightColor
-                            opacity: 0
-                            scale: ring.from
-
-                            SequentialAnimation {
-                                running: view.pulsing
-                                loops: Animation.Infinite
-                                onRunningChanged: {
-                                    if (!running) {
-                                        ring.opacity = 0
-                                        ring.scale = ring.from
-                                    }
-                                }
-                                PauseAnimation { duration: index * 800 }
-                                ParallelAnimation {
-                                    NumberAnimation {
-                                        target: ring; property: "scale"; from: ring.from; to: 1
-                                        duration: 2400; easing.type: Easing.OutQuad
-                                    }
-                                    NumberAnimation {
-                                        target: ring; property: "opacity"; from: 0.9; to: 0
-                                        duration: 2400; easing.type: Easing.InQuad
-                                    }
-                                }
-                                PauseAnimation { duration: (2 - index) * 800 }
-                            }
+                            scale: 0.45 + 0.7 * pulse.progress
+                            opacity: 0.9 * (1 - pulse.progress)
                         }
                     }
 
                     Rectangle {
+                        objectName: "radarCore"
                         anchors.centerIn: parent
-                        width: radar.core
+                        width: radar.width * 0.432
                         height: width
                         radius: width / 2
-                        color: Theme.rgba(Theme.highlightBackgroundColor, view.nearbyReady ? 0.45 : 0.2)
+                        color: Theme.rgba(Theme.highlightColor, 0.1)
+                        border.width: 2 * radar.line
+                        border.color: Theme.highlightColor
                     }
                     Glyph {
+                        objectName: "radarGlyph"
                         anchors.centerIn: parent
-                        kind: "receive"
+                        kind: "phone"
                         color: Theme.highlightColor
                     }
                 }
@@ -385,12 +409,13 @@ Item {
                         color: Theme.highlightColor
                     }
                     Label {
+                        objectName: "seenAs"
                         x: Theme.horizontalPageMargin
                         width: parent.width - 2 * Theme.horizontalPageMargin
                         visible: view.nearbyEnabled
                         horizontalAlignment: Text.AlignHCenter
-                        //: Receive tab, over this phone's name.
-                        text: qsTr("Nearby, this phone shows up as")
+                        //: Receive tab, over this phone's name as devices nearby list it.
+                        text: qsTr("Others nearby see you as")
                         textFormat: Text.PlainText
                         wrapMode: Text.Wrap
                         font.pixelSize: Theme.fontSizeSmall
@@ -425,8 +450,8 @@ Item {
                             horizontalAlignment: Text.AlignHCenter
                             text: view.nearbyReady
                                   //: Receive tab, under "Ready to receive": one way of receiving nearby could not start; tapping opens Settings, which says why.
-                                  ? qsTr("Not every device nearby can see this phone. Tap to see why.")
-                                  //: Receive tab, under "Nobody nearby can see this phone": tapping opens Settings, which says why.
+                                  ? qsTr("Some devices nearby cannot see you. Tap to see why.")
+                                  //: Receive tab, under "Others nearby cannot see you": tapping opens Settings, which says why.
                                   : qsTr("Tap to see why.")
                             textFormat: Text.PlainText
                             wrapMode: Text.Wrap
@@ -476,11 +501,9 @@ Item {
             IconListItem {
                 objectName: "scanCode"
                 visible: view.codeOn && view.engine.running
-                glyph: "camera"
+                glyph: "qr"
                 //: Receive tab: opens the camera to read the sender's QR code.
                 title: qsTr("Scan a QR code")
-                //: Receive tab: under "Scan a QR code".
-                subtitle: qsTr("The one on the sender's screen")
                 onClicked: view.scanCode()
             }
 
@@ -490,8 +513,6 @@ Item {
                 glyph: "keyboard"
                 //: Receive tab: opens the page to type or paste a code.
                 title: qsTr("Type in a code")
-                //: Receive tab: under "Type in a code".
-                subtitle: qsTr("The words the sender's app shows")
                 onClicked: view.typeCode()
             }
 

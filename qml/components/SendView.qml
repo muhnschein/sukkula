@@ -5,10 +5,11 @@ import Sailfish.Silica 1.0
 /*
  * The Send tab (F-C6): what to send, then who to.
  *
- * With nothing chosen, four tiles open the platform's pickers -- photos,
- * videos, documents, any file -- and a line at the foot says who is
- * nearby, since discovery runs from the start. Files shared from another
- * app arrive here already chosen.
+ * With nothing chosen, two tiles open the platform's pickers: the content
+ * picker, which bundles pictures, videos, music and documents (as
+ * piirit's attach button does), and the file browser for anything else. A
+ * line at the foot says who is nearby, since discovery runs from the
+ * start. Files shared from another app arrive here already chosen.
  *
  * With files chosen, a row says what they are, with + to add more and a
  * cross to clear them (with a remorse to undo). Under "Nearby", every
@@ -68,6 +69,8 @@ Item {
     property bool cancelWhenKnown: false
     /// The pickers (Pickers.qml), made on first use.
     property QtObject pickers: null
+    /// The picker used last, "content" or "files": + opens it again.
+    property string lastPicker: "content"
 
     readonly property bool hasPayload: view.payload.itemCount > 0
     readonly property bool hasOutgoing: view.outgoing !== null
@@ -398,11 +401,11 @@ Item {
 
     // ---- Choosing -------------------------------------------------------
 
-    /// Opens the picker for "photo", "video", "document" or "file".
+    /// Opens the picker for "content" or "files".
     function pick(kind) {
         if (view.payload.itemCount >= view.payload.maxFiles) {
-            //: Send tab: the most files one send can carry are chosen already.
-            view.banner.show(qsTr("That is as many files as one send can take."))
+            //: Send tab: the most files one send can carry are chosen already; %n is that many.
+            view.banner.show(qsTr("A send can include up to %n file(s).", "", view.payload.maxFiles))
             return
         }
         if (view.pickers === null) {
@@ -413,6 +416,7 @@ Item {
             }
         }
         if (view.pickers !== null) {
+            view.lastPicker = kind
             pageStack.push(view.pickers.component(kind))
             return
         }
@@ -492,20 +496,10 @@ Item {
 
         Repeater {
             model: view.hasPayload ? [] : [
-                //: Send tab: the tile that opens Gallery's photos.
-                { kind: "photo", glyph: "photo", name: "pickPhotos", title: qsTr("Photos"),
-                  //: Send tab: under the Photos and Videos tiles.
-                  hint: qsTr("From Gallery") },
-                //: Send tab: the tile that opens Gallery's videos.
-                { kind: "video", glyph: "video", name: "pickVideos", title: qsTr("Videos"), hint: qsTr("From Gallery") },
-                //: Send tab: the tile that opens the documents list.
-                { kind: "document", glyph: "document", name: "pickDocuments", title: qsTr("Documents"),
-                  //: Send tab: under the Documents tile.
-                  hint: qsTr("PDFs, notes, sheets") },
-                //: Send tab: the tile that opens the file browser.
-                { kind: "file", glyph: "folder", name: "pickFiles", title: qsTr("Any file"),
-                  //: Send tab: under the Any file tile.
-                  hint: qsTr("Browse your folders") }
+                //: Send tab: the tile that opens the picker for pictures, videos, music and documents.
+                { kind: "content", glyph: "attach", name: "pickContent", title: qsTr("Choose files") },
+                //: Send tab: the tile that opens the file browser, for files the other picker does not list.
+                { kind: "files", glyph: "folder", name: "pickFiles", title: qsTr("Browse folders") }
             ]
             delegate: Item {
                 width: column.width
@@ -516,7 +510,7 @@ Item {
                     objectName: modelData.name
                     x: Theme.horizontalPageMargin
                     width: parent.width - 2 * Theme.horizontalPageMargin
-                    height: Theme.itemSizeExtraLarge
+                    height: Theme.itemSizeLarge
                     onClicked: view.pick(modelData.kind)
 
                     Rectangle {
@@ -531,7 +525,7 @@ Item {
                         kind: modelData.glyph
                         color: tile.highlighted ? Theme.highlightColor : Theme.primaryColor
                     }
-                    Column {
+                    Label {
                         anchors {
                             left: tileGlyph.right
                             leftMargin: Theme.paddingLarge
@@ -539,21 +533,10 @@ Item {
                             rightMargin: Theme.paddingLarge
                             verticalCenter: parent.verticalCenter
                         }
-                        Label {
-                            width: parent.width
-                            text: modelData.title
-                            textFormat: Text.PlainText
-                            truncationMode: TruncationMode.Fade
-                            color: tile.highlighted ? Theme.highlightColor : Theme.primaryColor
-                        }
-                        Label {
-                            width: parent.width
-                            text: modelData.hint
-                            textFormat: Text.PlainText
-                            truncationMode: TruncationMode.Fade
-                            font.pixelSize: Theme.fontSizeSmall
-                            color: tile.highlighted ? Theme.secondaryHighlightColor : Theme.secondaryColor
-                        }
+                        text: modelData.title
+                        textFormat: Text.PlainText
+                        truncationMode: TruncationMode.Fade
+                        color: tile.highlighted ? Theme.highlightColor : Theme.primaryColor
                     }
                 }
             }
@@ -638,7 +621,7 @@ Item {
                 }
                 enabled: !(view.hasOutgoing && !view.outgoingEnded)
                 icon.source: "image://theme/icon-m-add"
-                onClicked: view.pick(view.payloadKind)
+                onClicked: view.pick(view.lastPicker)
             }
             IconButton {
                 id: clear
@@ -771,8 +754,8 @@ Item {
                   : view.devices.length === 0 && view.discovering
                     //: Send tab: discovery is running and has found nobody yet.
                     ? qsTr("Looking for devices nearby…")
-                    //: Send tab, under the devices nearby.
-                    : qsTr("Someone missing? They need to be on the same Wi-Fi, with their device ready to receive.")
+                    //: Send tab, under the devices nearby: why one may be missing.
+                    : qsTr("Devices must be on the same Wi-Fi and ready to receive.")
             textFormat: Text.PlainText
             wrapMode: Text.Wrap
             font.pixelSize: Theme.fontSizeSmall
@@ -794,11 +777,8 @@ Item {
             glyph: "code"
             //: Send tab: sending over the internet with a code.
             title: qsTr("Send with a code")
-            subtitle: view.codeWaiting
-                      //: Send tab: a send with a code waits for the other side.
-                      ? qsTr("Waiting for them to type the code…")
-                      //: Send tab: under "Send with a code".
-                      : qsTr("They scan it, or type it into their app")
+            //: Send tab: a send with a code waits for the other side to scan or type the code.
+            subtitle: view.codeWaiting ? qsTr("Waiting for the receiver…") : ""
             dimmed: view.hasOutgoing && !view.outgoingEnded && view.outgoing.key !== "code"
             onClicked: view.openCode()
         }

@@ -263,8 +263,8 @@ These are enforced in the code and checked in CI, not merely intended.
 - **Minimal sandbox.** Sailjail grants `Internet;Bluetooth`, `Camera`
   for scanning a code (spec v0.6), the folders files are sent from
   and received into (`Downloads`, `Documents`, `Music`, `Pictures`,
-  `Videos`, `RemovableMedia`), and `MediaIndexing` for the pickers of
-  photos, videos and documents (spec v0.7), and nothing else; the Harbour
+  `Videos`, `RemovableMedia`), and `MediaIndexing` for the content
+  picker (spec v0.7), and nothing else; the Harbour
   gate fails on any other permission. Files are written only
   under `~/Downloads/Sukkula/`.
 - **The log keeps quiet.** The engine logs to standard error (the

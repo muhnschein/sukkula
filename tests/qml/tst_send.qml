@@ -6,9 +6,10 @@ import "helpers"
 import "helpers/Events.js" as Ev
 
 /*
- * The Send tab (F-C6) with each protocol: the question and its four
- * tiles, each opening its own picker, while discovery already runs and
- * the foot says who is about; files chosen, summed up as "2 photos" with
+ * The Send tab (F-C6) with each protocol: the question and its two
+ * tiles, the content picker (pictures, videos, music and documents in
+ * one) and the file browser, while discovery already runs and the foot
+ * says who is about; files chosen, summed up as "2 photos" with
  * their size, more added and all cleared behind a remorse; the devices
  * nearby by name as plain text, a device found over two protocols as one
  * row whose menu says which way, the paired Bluetooth devices after
@@ -16,7 +17,7 @@ import "helpers/Events.js" as Ev
  * cancel and end while the other rows wait, and the files still chosen
  * after it; refusals said; About this device (address, pinned
  * certificate); sending with a code: Magic Wormhole for one file, croc
- * for several, its code and QR, Copy and Share, "Their app" switching
+ * for several, its code and QR, Copy and Share, "Receiver's app" switching
  * with the old code given up, the code given up when its page is left
  * unused, and its progress on the tab once the receiver has come (F-MW1,
  * F-CR1); and each protocol switched off in Settings gone from the tab
@@ -143,8 +144,8 @@ Script {
             test.compare(test.commandsOfType("start_discovery").length, 1, "discovery runs from the start")
             test.compare(test.commandsOfType("list_bluetooth_devices").length, 1)
             test.compare(test.find("sendQuestion").text, "What would you like to send?")
-            test.verify(test.find("pickPhotos").visible && test.find("pickVideos").visible
-                        && test.find("pickDocuments").visible && test.find("pickFiles").visible, "four tiles")
+            test.verify(test.find("pickContent").visible && test.find("pickFiles").visible, "two tiles")
+            test.compare(test.find("pickPhotos"), null, "one picker for pictures, videos, music and documents")
             test.compare(test.find("nearbyLine").text, "Looking for devices nearby…")
             test.verify(!test.find("payloadRow").visible, "nothing chosen")
             test.compare(test.rows(), [], "no devices to pick from yet")
@@ -156,9 +157,10 @@ Script {
             test.compare(test.find("nearbyLine").text, Ev.EVIL_NAME + " and 1 more nearby",
                          "who is about, the paired ones not counted; the name's %2 stays text")
             test.verifyPlainText(test.main, "the tab with peers found")
-            // Photos: Gallery's picker, several at once, with sizes.
-            test.find("pickPhotos").clicked()
-            test.pick("photoPicker", [{ url: "file://" + test.pictures + "a.jpg", fileSize: 1000 },
+            // The content picker: pictures, videos, music and documents in
+            // one, several at once, with sizes.
+            test.find("pickContent").clicked()
+            test.pick("contentPicker", [{ url: "file://" + test.pictures + "a.jpg", fileSize: 1000 },
                                       { url: "file://" + test.pictures + "b%20c.jpg", fileSize: 3000 },
                                       { url: "https://evil.example/x.jpg" }])
         },
@@ -179,8 +181,9 @@ Script {
             test.compare(probe.find(test.row("Car EVIL"), "rowGlyph").names[0], "icon-m-bluetooth-device")
             test.compare(probe.find(test.find("sendWithCode"), "rowGlyph").kind, "code")
             test.compare(test.find("nearbyHint").text,
-                         "Someone missing? They need to be on the same Wi-Fi, with their device ready to receive.")
+                         "Devices must be on the same Wi-Fi and ready to receive.")
             test.verify(test.find("sendWithCode").visible, "and far away, with a code")
+            test.verify(!probe.find(test.find("sendWithCode"), "rowSubtitle").visible, "its title says it")
             test.verifyPlainText(test.main, "the device list")
             // The cross clears it all, after a moment to change one's mind.
             test.find("clearPayload").clicked()
@@ -191,25 +194,19 @@ Script {
             test.find("clearPayload").clicked()
             remorse.trigger()
             test.compare(test.main.payload.itemCount, 0)
-            test.verify(test.find("pickVideos").visible, "the tiles again")
+            test.verify(test.find("pickContent").visible, "the tiles again")
             test.compare(test.rows(), [], "the devices go with it")
-            // Each tile its own picker.
-            test.find("pickVideos").clicked()
-            test.compare(window.pageStack.currentPage.objectName, "videoPicker")
-            window.pageStack.pop()
-            test.find("pickDocuments").clicked()
-            test.compare(window.pageStack.currentPage.objectName, "documentPicker")
-            window.pageStack.pop()
-            // Any file: the file browser; one, by its path, size unknown.
+            // Browse folders: the file browser; one, by its path, size
+            // unknown.
             test.find("pickFiles").clicked()
             test.pick("filePicker", [{ filePath: test.downloads + "a.txt", url: "" }])
         },
         function () {
             test.compare(test.find("payloadSummary").text, "a.txt", "one file: its name")
             test.verify(!test.find("payloadSize").visible, "no size where none was said")
-            // + adds more, in the same kind of picker.
+            // + adds more, in the picker used last.
             test.find("addMore").clicked()
-            test.compare(window.pageStack.currentPage.objectName, "documentPicker", "a document's picker")
+            test.compare(window.pageStack.currentPage.objectName, "filePicker", "the file browser again")
             window.pageStack.pop()
             bridge.nextTransfer = 50
             test.row(Ev.EVIL_NAME).clicked()
@@ -333,8 +330,8 @@ Script {
         },
         function () {
             test.compare(probe.find(test.main, "bannerLabel").text,
-                         "A file could not be read. Sukkula can send files from Downloads, Documents, "
-                         + "Music, Pictures, Videos and memory cards only.")
+                         "A file could not be read. Sukkula can only send files from Downloads, Documents, "
+                         + "Music, Pictures, Videos and memory cards.")
             test.compare(test.main.payload.files.length, 2, "kept, to fix")
             bridge.autoReply = true
             // With a code: several files go with croc.
@@ -349,7 +346,7 @@ Script {
         function () {
             var box = probe.find(test.page, "theirApp")
             test.compare(box.currentIndex, 1, "croc")
-            test.compare(box.description, "Sukkula, or the croc app or command, can take it.")
+            test.compare(box.description, "Works with Sukkula and croc.")
             test.compare(probe.find(test.page, "codeStatus").text, "Getting a code…")
             // Magic Wormhole cannot take two files.
             box.choose(0)
@@ -363,9 +360,9 @@ Script {
             var qr = probe.find(test.page, "sendQr")
             test.verify(qr.valid && qr.visible, "croc's QR code is drawn")
             test.compare(qr.size, 21)
-            test.compare(probe.find(test.page, "codeStatus").text, "Waiting for them to type the code…")
+            test.compare(probe.find(test.page, "codeStatus").text, "Waiting for the receiver…")
             test.compare(probe.find(test.page, "codeServer").text,
-                         "Goes through croc's public relay on the internet. Your own relay can be set in Settings.")
+                         "Uses croc's public relay. You can set your own in Settings.")
             // Leaving the page before anyone came gives the code up.
             window.pageStack.pop()
             return 50
@@ -399,7 +396,7 @@ Script {
             test.compare(action.triggered, 1, "the share sheet")
             test.compare(action.resources, [{ data: "7-guitarist-revenge", name: "code.txt", type: "text/plain" }],
                          "with the code as text, and nothing else")
-            // Their app: croc. The code shown is given up for a new one.
+            // Receiver's app: croc. The code shown is given up for a new one.
             bridge.nextTransfer = 78
             probe.find(test.page, "theirApp").choose(1)
             test.compare(test.lastOf("cancel"), { type: "cancel", transfer: 77 }, "the old code given up")

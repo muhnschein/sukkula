@@ -160,7 +160,7 @@ Script {
             var note = test.find("doneNote")
             test.compare(note.publishCount, 1)
             test.compare(note.summary, "2 files received")
-            test.compare(note.body, "Saved in Downloads/Sukkula")
+            test.compare(note.body, "Saved in Downloads › Sukkula")
             test.verify(note.remoteActions.length === 0, "no action that opens anything")
             // An outgoing one is not announced.
             bridge.emitEvent(Ev.transferStarted(11, "outgoing", {}))
@@ -174,7 +174,7 @@ Script {
         function () {
             var note = test.find("doneNote")
             test.compare(note.summary, "Receiving failed")
-            test.compare(note.body, "Network error or timeout.")
+            test.compare(note.body, "The connection failed or timed out.")
             test.win.applicationActive = true
             // The Share menu (F-C6), while receiving and with a page over
             // the main one.

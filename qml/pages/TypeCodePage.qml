@@ -99,7 +99,7 @@ Page {
                 x: Theme.horizontalPageMargin
                 width: parent.width - 2 * Theme.horizontalPageMargin
                 //: Type in a code: what to type; the example is a Magic Wormhole code.
-                text: qsTr("The sender's app shows it as a few words, like 7-guitarist-revenge.")
+                text: qsTr("Enter the code shown in the sender's app, for example 7-guitarist-revenge.")
                 textFormat: Text.PlainText
                 wrapMode: Text.Wrap
                 font.pixelSize: Theme.fontSizeSmall
@@ -113,7 +113,7 @@ Page {
                 enabled: !receiver.busy
                 label: page.fromClipboard
                        //: The code field, filled in from the clipboard.
-                       ? qsTr("Code, from the clipboard")
+                       ? qsTr("Code, pasted from the clipboard")
                        //: The text field for a Magic Wormhole or croc code.
                        : qsTr("Code")
                 //: The code field when empty.

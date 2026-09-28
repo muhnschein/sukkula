@@ -183,7 +183,7 @@ Dialog {
                     width: parent.width - 2 * Theme.horizontalPageMargin
                     horizontalAlignment: Text.AlignRight
                     //: Consent dialog: time left before the offer is declined on its own.
-                    text: qsTr("Declined by itself in %n s", "", dialog.remaining)
+                    text: qsTr("Declined in %n s", "", dialog.remaining)
                     textFormat: Text.PlainText
                     font.pixelSize: Theme.fontSizeSmall
                     color: Theme.secondaryColor
@@ -319,8 +319,8 @@ Dialog {
 
                 SectionHeader {
                     objectName: "consentTotal"
-                    //: Consent dialog: how many files and how much in all; %1 is the formatted size.
-                    text: qsTr("%n file(s), %1 in all", "", dialog.offer ? dialog.offer.fileCount : 0)
+                    //: Consent dialog: how many files and how much in total; %1 is the formatted size.
+                    text: qsTr("%n file(s), %1 in total", "", dialog.offer ? dialog.offer.fileCount : 0)
                           .arg(Format.formatFileSize(dialog.offer ? dialog.offer.totalBytes : 0))
                 }
 

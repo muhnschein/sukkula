@@ -80,8 +80,8 @@ Script {
             test.verify(test.label("consentHasText").visible, "the text is announced")
             test.compare(test.shownFiles(), [Ev.EVIL_FILE, "notes.txt"])
             test.compare(test.label("consentMore").text, "and 3 more files")
-            test.compare(test.label("consentTotal").text, "5 files, 2.6 MB in all")
-            test.verify(/^Declined by itself in (59|60) s$/.test(test.label("consentCountdown").text),
+            test.compare(test.label("consentTotal").text, "5 files, 2.6 MB in total")
+            test.verify(/^Declined in (59|60) s$/.test(test.label("consentCountdown").text),
                         "a countdown: " + test.label("consentCountdown").text)
             test.verify(test.label("consentClock").value > 0.95, "and its line, nearly full")
             // Nothing the peer sent reached a Silica-owned text item.

@@ -20,12 +20,13 @@ Everything the spec asks for in v1.0:
 - The hub, the C ABI (`sukkula-ffi`) and per-engine logging (S9).
 - The Qt/C++ shell and the Silica UI in en/fi/de/sv, with the Share menu
   and Send | Receive as the main page's two tabs, redesigned in spec v0.7
-  for people who have never heard of the protocols: Send asks what (four
-  tiles, each the platform's own picker) and then to whom (the devices
-  nearby by name, one row for a device found two ways, About this device
-  with its pinned certificate, and sending with a code on a page of its
-  own with Copy, Share and "Their app"); Receive shows whether the phone
-  is ready, round a radar, what comes in and what came today, with how
+  for people who have never heard of the protocols: Send asks what (the
+  platform's content picker, pictures, videos, music and documents in one,
+  or the file browser) and then to whom (the devices nearby by name, one
+  row for a device found two ways, About this device with its pinned
+  certificate, and sending with a code on a page of its own with Copy,
+  Share and "Receiver's app"); Receive shows whether the phone is ready,
+  under the design canvas's radar, what comes in and what came today, with how
   each way of receiving is doing in Settings. The cover offers Send and Receive, and receiving stops a few
   seconds after the app leaves the front. History lists what went and
   came. Sukkula sends files only (spec v0.7).
@@ -139,5 +140,5 @@ were came as this list asked, each with §2, the `.desktop` file and
 code as a QR code in spec v0.6 (`Camera`, the decoder vendored and
 patched after its own review, two fuzz targets, and the decoded text
 through the same `code::parse` a typed code goes through), and the
-platform's pickers of photos, videos and documents in spec v0.7
+platform's content picker for pictures, videos, music and documents in spec v0.7
 (`MediaIndexing`).

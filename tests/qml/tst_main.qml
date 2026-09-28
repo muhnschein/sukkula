@@ -180,7 +180,7 @@ Script {
             var failed = probe.find(receive, "receiveFailed")
             test.verify(failed.visible, "a way that could not start is said")
             test.compare(probe.find(failed, "receiveFailedLine").text,
-                         "Not every device nearby can see this phone. Tap to see why.")
+                         "Some devices nearby cannot see you. Tap to see why.")
             var all = test.textsOf(receive)
             test.verify(all.indexOf("port 53317 in use") < 0, "the engine's English stays off the tab")
             test.verify(all.indexOf("How others can reach this phone") < 0, "how each way does is in Settings")
@@ -191,7 +191,7 @@ Script {
             test.answerLast(false, "unavailable")
         },
         function () {
-            test.compare(probe.find(test.main, "bannerLabel").text, "Not available. Is it switched off in Settings?")
+            test.compare(probe.find(test.main, "bannerLabel").text, "Not available. It may be switched off in Settings.")
             test.compare(probe.find(test.main, "modeTabs").currentIndex, 1, "the tab goes back")
             test.compare(engine.receiving, true, "still receiving")
             test.compare(test.count("start_discovery"), 3, "and not looking")
@@ -260,8 +260,8 @@ Script {
             var status = probe.findAll(test.history, "transferStatus")
             test.compare(status[3].text, "500 B of 2.0 kB")
             test.compare(status[2].text, "Sent")
-            test.compare(status[1].text, "Failed: Could not save. Is the storage full?")
-            test.compare(status[0].text, "Saved in Downloads/Sukkula: " + Ev.EVIL_FILE + ", b.pdf")
+            test.compare(status[1].text, "Failed: Could not save. The storage may be full.")
+            test.compare(status[0].text, "Saved in Downloads › Sukkula: " + Ev.EVIL_FILE + ", b.pdf")
             test.verify(probe.find(cover, "coverTransfer").visible, "the cover shows the transfer")
             test.compare(probe.find(cover, "coverPercent").text, "25%")
             test.compare(probe.find(cover, "coverRing").value, 0.25, "as one ring")
@@ -348,7 +348,7 @@ Script {
         },
         function () {
             test.compare(probe.find(test.main, "fatalLabel").text,
-                         "Sukkula could not start: Could not save. Is the storage full?")
+                         "Sukkula could not start: Could not save. The storage may be full.")
             test.verify(probe.find(test.main, "fatalLabel").visible, "shown")
             test.verify(!probe.find(test.main, "modeTabs").visible, "no tabs to switch")
             test.verify(!probe.find(test.main, "modePager").interactive, "nor to swipe")

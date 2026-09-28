@@ -62,7 +62,7 @@ Script {
             test.compare(test.field("crocRelayField").text, "", "croc's own relay by default (F-CR3)")
             test.compare(test.field("crocPasswordField").text, "")
             test.compare(test.field("nudgeSwitch").description,
-                         "Helps Android phones nearby notice this one while you send",
+                         "Makes Android phones nearby show up while you send.",
                          "the nudge said as what it is: a sending aid (F-QS2)")
             test.compare(test.field("quickShareSwitch").text, "Android phones", "Quick Share by who it reaches")
             test.compare(test.field("localSendSwitch").text, "Computers and other phones", "LocalSend too")
@@ -225,7 +225,7 @@ Script {
         },
         function () {
             var main = window.pageStack.currentPage
-            test.compare(probe.find(main, "bannerLabel").text, "A setting could not be used.")
+            test.compare(probe.find(main, "bannerLabel").text, "A setting is not valid.")
             bridge.autoReply = true
             // While receiving: how each way is doing, under its switch; a
             // way that failed says why, in red, with the engine's detail.
@@ -239,7 +239,7 @@ Script {
             var failed = probe.findAll(test.page, "protocolFailed")
             test.compare(failed.length, 1, "LocalSend's, only")
             var line = probe.find(failed[0], "protocolFailedLine")
-            test.compare(line.text, "Could not start: Network error or timeout.")
+            test.compare(line.text, "Could not start: The connection failed or timed out.")
             test.verify(line.color === Theme.errorColor, "in red")
             test.verify(probe.texts(failed[0]).join("\n").indexOf("port 53317 in use") >= 0, "the detail line")
             var order = failed[0].parent.children

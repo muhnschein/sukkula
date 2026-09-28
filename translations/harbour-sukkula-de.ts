@@ -24,14 +24,14 @@
         <translation>Basiert auf</translation>
     </message>
     <message>
-        <source>Sukkula is Finnish for “shuttle”: it carries things back and forth.</source>
-        <extracomment>About page: the name.</extracomment>
-        <translation>Sukkula ist Finnisch für „Weberschiffchen“: Es trägt Dinge hin und her.</translation>
-    </message>
-    <message>
         <source>Sends and receives files and texts over LocalSend, Quick Share, Magic Wormhole, croc and Bluetooth.</source>
         <extracomment>About page: what the app does.</extracomment>
         <translation>Sendet und empfängt Dateien und Texte über LocalSend, Quick Share, Magic Wormhole, croc und Bluetooth.</translation>
+    </message>
+    <message>
+        <source>Sukkula is Finnish for “shuttle”.</source>
+        <extracomment>About page: the name.</extracomment>
+        <translation>Sukkula ist Finnisch für „Weberschiffchen“.</translation>
     </message>
 </context>
 <context>
@@ -59,14 +59,6 @@
             <numerusform>und %n weitere Dateien</numerusform>
         </translation>
     </message>
-    <message numerus="yes">
-        <source>%n file(s), %1 in all</source>
-        <extracomment>Consent dialog: how many files and how much in all; %1 is the formatted size.</extracomment>
-        <translation>
-            <numerusform>%n Datei, insgesamt %1</numerusform>
-            <numerusform>%n Dateien, insgesamt %1</numerusform>
-        </translation>
-    </message>
     <message>
         <source>a message</source>
         <extracomment>Consent dialog: an offer of a text message only, as in &quot;wants to send you a message&quot;.</extracomment>
@@ -77,14 +69,6 @@
         <extracomment>Consent dialog: an offer of one file, as in &quot;wants to send you a file&quot;.</extracomment>
         <translation>eine Datei</translation>
     </message>
-    <message numerus="yes">
-        <source>Declined by itself in %n s</source>
-        <extracomment>Consent dialog: time left before the offer is declined on its own.</extracomment>
-        <translation>
-            <numerusform>Wird in %n s von selbst abgelehnt</numerusform>
-            <numerusform>Wird in %n s von selbst abgelehnt</numerusform>
-        </translation>
-    </message>
     <message>
         <source>wants to send you %1 over %2</source>
         <extracomment>Consent dialog, under the sender&apos;s name: what and how, e.g. &quot;wants to send you 3 photos over Quick Share&quot;; %1 is what, %2 the protocol.</extracomment>
@@ -94,6 +78,22 @@
         <source>Check that %1 shows the same number:</source>
         <extracomment>Consent dialog: above the Quick Share PIN; %1 is the sender&apos;s name.</extracomment>
         <translation>Prüfe, ob %1 dieselbe Zahl zeigt:</translation>
+    </message>
+    <message numerus="yes">
+        <source>Declined in %n s</source>
+        <extracomment>Consent dialog: time left before the offer is declined on its own.</extracomment>
+        <translation>
+            <numerusform>Abgelehnt in %n s</numerusform>
+            <numerusform>Abgelehnt in %n s</numerusform>
+        </translation>
+    </message>
+    <message numerus="yes">
+        <source>%n file(s), %1 in total</source>
+        <extracomment>Consent dialog: how many files and how much in total; %1 is the formatted size.</extracomment>
+        <translation>
+            <numerusform>%n Datei, insgesamt %1</numerusform>
+            <numerusform>%n Dateien, insgesamt %1</numerusform>
+        </translation>
     </message>
 </context>
 <context>
@@ -118,11 +118,6 @@
         <extracomment>Cover: someone offers files and waits for Accept or Decline.</extracomment>
         <translation>Angebot wartet</translation>
     </message>
-    <message>
-        <source>Tap to see it</source>
-        <extracomment>Cover, under &quot;Offer waiting&quot;.</extracomment>
-        <translation>Tippen zum Ansehen</translation>
-    </message>
     <message numerus="yes">
         <source>Declined in %n s</source>
         <extracomment>Cover: time left before a waiting offer is declined on its own.</extracomment>
@@ -136,6 +131,11 @@
         <extracomment>Cover: files are going out.</extracomment>
         <translation>Senden</translation>
     </message>
+    <message>
+        <source>Tap to answer</source>
+        <extracomment>Cover, under &quot;Offer waiting&quot;: tapping opens the offer to accept or decline.</extracomment>
+        <translation>Zum Antworten tippen</translation>
+    </message>
 </context>
 <context>
     <name>DevicePage</name>
@@ -143,11 +143,6 @@
         <source>Model</source>
         <extracomment>About this device: the model it says it is.</extracomment>
         <translation>Modell</translation>
-    </message>
-    <message>
-        <source>Kind</source>
-        <extracomment>About this device: phone, tablet or computer, as it says.</extracomment>
-        <translation>Art</translation>
     </message>
     <message>
         <source>Address</source>
@@ -165,90 +160,30 @@
         <translation>Über dieses Gerät</translation>
     </message>
     <message>
-        <source>Sukkula checks this certificate on every LocalSend send, and stops if it has changed. The name and model are what the device says about itself.</source>
-        <extracomment>About this device, at the foot, when it was found over LocalSend.</extracomment>
-        <translation>Sukkula prüft dieses Zertifikat bei jedem Senden über LocalSend und bricht ab, wenn es sich geändert hat. Name und Modell sind die Angaben des Geräts über sich selbst.</translation>
+        <source>Type</source>
+        <extracomment>About this device: phone, tablet or computer, as it says.</extracomment>
+        <translation>Typ</translation>
     </message>
     <message>
-        <source>The name and model are what the device says about itself.</source>
+        <source>Sukkula checks this certificate before every send over LocalSend, and stops if it has changed. The name and model are reported by the device itself.</source>
+        <extracomment>About this device, at the foot, when it was found over LocalSend.</extracomment>
+        <translation>Sukkula prüft dieses Zertifikat vor jedem Senden über LocalSend und bricht ab, wenn es sich geändert hat. Name und Modell meldet das Gerät selbst.</translation>
+    </message>
+    <message>
+        <source>The name and model are reported by the device itself.</source>
         <extracomment>About this device, at the foot.</extracomment>
-        <translation>Name und Modell sind die Angaben des Geräts über sich selbst.</translation>
+        <translation>Name und Modell meldet das Gerät selbst.</translation>
     </message>
 </context>
 <context>
     <name>Engine</name>
     <message>
-        <source>Off</source>
-        <extracomment>A protocol&apos;s receiver is switched off.</extracomment>
-        <translation>Aus</translation>
-    </message>
-    <message>
-        <source>Starting</source>
-        <extracomment>A protocol&apos;s receiver is starting up.</extracomment>
-        <translation>Startet</translation>
-    </message>
-    <message>
-        <source>Ready</source>
-        <extracomment>A protocol&apos;s receiver is listening for offers.</extracomment>
-        <translation>Bereit</translation>
-    </message>
-    <message>
-        <source>Failed</source>
-        <extracomment>A protocol&apos;s receiver could not start.</extracomment>
-        <translation>Fehlgeschlagen</translation>
-    </message>
-    <message>
-        <source>Send only</source>
-        <extracomment>The protocol can only send from this phone, or receive by a typed code (Bluetooth, Magic Wormhole, croc).</extracomment>
-        <translation>Nur senden</translation>
-    </message>
-    <message>
-        <source>Sukkula could not understand its own request.</source>
-        <translation>Sukkula hat seine eigene Anfrage nicht verstanden.</translation>
-    </message>
-    <message>
-        <source>Not available. Is it switched off in Settings?</source>
-        <translation>Nicht verfügbar. Ist es in den Einstellungen ausgeschaltet?</translation>
-    </message>
-    <message>
-        <source>It is gone. The other device may have left.</source>
-        <translation>Nicht mehr da. Das andere Gerät ist wohl weg.</translation>
-    </message>
-    <message>
-        <source>A setting could not be used.</source>
-        <translation>Eine Einstellung ist nicht verwendbar.</translation>
-    </message>
-    <message>
-        <source>Too large, or too many files.</source>
-        <translation>Zu groß oder zu viele Dateien.</translation>
-    </message>
-    <message>
         <source>Declined.</source>
         <translation>Abgelehnt.</translation>
     </message>
     <message>
-        <source>The other device is not the one it claimed to be.</source>
-        <translation>Das andere Gerät ist nicht das, für das es sich ausgab.</translation>
-    </message>
-    <message>
-        <source>That code does not work.</source>
-        <translation>Dieser Code funktioniert nicht.</translation>
-    </message>
-    <message>
-        <source>Network error or timeout.</source>
-        <translation>Netzwerkfehler oder Zeitüberschreitung.</translation>
-    </message>
-    <message>
-        <source>Could not save. Is the storage full?</source>
-        <translation>Speichern fehlgeschlagen. Ist der Speicher voll?</translation>
-    </message>
-    <message>
         <source>Something went wrong.</source>
         <translation>Etwas ist schiefgelaufen.</translation>
-    </message>
-    <message>
-        <source>A file could not be read. Sukkula can send files from Downloads, Documents, Music, Pictures, Videos and memory cards only.</source>
-        <translation>Eine Datei konnte nicht gelesen werden. Sukkula kann nur Dateien aus Downloads, Dokumente, Musik, Bilder und Videos und von Speicherkarten senden.</translation>
     </message>
     <message numerus="yes">
         <source>%n photo(s)</source>
@@ -288,6 +223,46 @@
         <source>Computer</source>
         <extracomment>What kind of device a peer says it is.</extracomment>
         <translation>Computer</translation>
+    </message>
+    <message>
+        <source>Internal error.</source>
+        <translation>Interner Fehler.</translation>
+    </message>
+    <message>
+        <source>Not available. It may be switched off in Settings.</source>
+        <translation>Nicht verfügbar. Möglicherweise ist es in den Einstellungen ausgeschaltet.</translation>
+    </message>
+    <message>
+        <source>The other device is no longer available.</source>
+        <translation>Das andere Gerät ist nicht mehr verfügbar.</translation>
+    </message>
+    <message>
+        <source>A setting is not valid.</source>
+        <translation>Eine Einstellung ist ungültig.</translation>
+    </message>
+    <message>
+        <source>A file could not be read. Sukkula can only send files from Downloads, Documents, Music, Pictures, Videos and memory cards.</source>
+        <translation>Eine Datei konnte nicht gelesen werden. Sukkula kann nur Dateien aus Downloads, Dokumente, Musik, Bilder und Videos und von Speicherkarten senden.</translation>
+    </message>
+    <message>
+        <source>Too many files, or too much data.</source>
+        <translation>Zu viele Dateien oder zu viele Daten.</translation>
+    </message>
+    <message>
+        <source>The other device could not be verified.</source>
+        <translation>Das andere Gerät konnte nicht überprüft werden.</translation>
+    </message>
+    <message>
+        <source>The code is wrong or has expired.</source>
+        <translation>Der Code ist falsch oder abgelaufen.</translation>
+    </message>
+    <message>
+        <source>The connection failed or timed out.</source>
+        <translation>Die Verbindung ist fehlgeschlagen oder hat das Zeitlimit überschritten.</translation>
+    </message>
+    <message>
+        <source>Could not save. The storage may be full.</source>
+        <translation>Speichern fehlgeschlagen. Der Speicher ist möglicherweise voll.</translation>
     </message>
 </context>
 <context>
@@ -355,14 +330,14 @@
         <translation>Empfangen</translation>
     </message>
     <message>
-        <source>Add more</source>
+        <source>Add files</source>
         <extracomment>Pulley menu on the Send tab: choose more files.</extracomment>
-        <translation>Mehr hinzufügen</translation>
+        <translation>Dateien hinzufügen</translation>
     </message>
     <message>
-        <source>Start over</source>
+        <source>Clear selection</source>
         <extracomment>Pulley menu on the Send tab: clear what is chosen.</extracomment>
-        <translation>Neu beginnen</translation>
+        <translation>Auswahl leeren</translation>
     </message>
 </context>
 <context>
@@ -391,11 +366,6 @@
 </context>
 <context>
     <name>ReceiveView</name>
-    <message>
-        <source>Received. It is in History.</source>
-        <extracomment>Receive tab: a text arrived; it is on the History page.</extracomment>
-        <translation>Empfangen. Es steht im Verlauf.</translation>
-    </message>
     <message>
         <source>Cancelled</source>
         <extracomment>A transfer was stopped by one of the two sides.</extracomment>
@@ -434,11 +404,6 @@ Receive tab: where received files are.</extracomment>
         <translation>Von %2 · %1</translation>
     </message>
     <message>
-        <source>Ready for codes</source>
-        <extracomment>Receive tab: Quick Share and LocalSend are switched off; only codes can be received.</extracomment>
-        <translation>Bereit für Codes</translation>
-    </message>
-    <message>
         <source>Receiving is switched off in Settings.</source>
         <translation>Empfangen ist in den Einstellungen ausgeschaltet.</translation>
     </message>
@@ -446,16 +411,6 @@ Receive tab: where received files are.</extracomment>
         <source>Ready to receive</source>
         <extracomment>Receive tab: this phone can be found and sent to.</extracomment>
         <translation>Bereit zum Empfangen</translation>
-    </message>
-    <message>
-        <source>Nobody nearby can see this phone</source>
-        <extracomment>Receive tab: no protocol could start.</extracomment>
-        <translation>Niemand in der Nähe sieht dieses Telefon</translation>
-    </message>
-    <message>
-        <source>Nearby, this phone shows up as</source>
-        <extracomment>Receive tab, over this phone&apos;s name.</extracomment>
-        <translation>In der Nähe erscheint dieses Telefon als</translation>
     </message>
     <message>
         <source>Receiving</source>
@@ -478,13 +433,8 @@ Receive tab: where received files are.</extracomment>
         <translation>Textnachricht</translation>
     </message>
     <message>
-        <source>Not every device nearby can see this phone. Tap to see why.</source>
-        <extracomment>Receive tab, under &quot;Ready to receive&quot;: one way of receiving nearby could not start; tapping opens Settings, which says why.</extracomment>
-        <translation>Nicht jedes Gerät in der Nähe kann dieses Telefon sehen. Tippen, um zu sehen, warum.</translation>
-    </message>
-    <message>
         <source>Tap to see why.</source>
-        <extracomment>Receive tab, under &quot;Nobody nearby can see this phone&quot;: tapping opens Settings, which says why.</extracomment>
+        <extracomment>Receive tab, under &quot;Others nearby cannot see you&quot;: tapping opens Settings, which says why.</extracomment>
         <translation>Tippen, um zu sehen, warum.</translation>
     </message>
     <message>
@@ -493,19 +443,34 @@ Receive tab: where received files are.</extracomment>
         <translation>QR-Code scannen</translation>
     </message>
     <message>
-        <source>The one on the sender&apos;s screen</source>
-        <extracomment>Receive tab: under &quot;Scan a QR code&quot;.</extracomment>
-        <translation>Den auf dem Bildschirm des Senders</translation>
-    </message>
-    <message>
         <source>Type in a code</source>
         <extracomment>Receive tab: opens the page to type or paste a code.</extracomment>
         <translation>Code eintippen</translation>
     </message>
     <message>
-        <source>The words the sender&apos;s app shows</source>
-        <extracomment>Receive tab: under &quot;Type in a code&quot;.</extracomment>
-        <translation>Die Wörter, die die App des Senders zeigt</translation>
+        <source>Saved in History</source>
+        <extracomment>Receive tab: a text arrived; it is on the History page.</extracomment>
+        <translation>Im Verlauf gespeichert</translation>
+    </message>
+    <message>
+        <source>Ready to receive codes</source>
+        <extracomment>Receive tab: Quick Share and LocalSend are switched off; only codes can be received.</extracomment>
+        <translation>Bereit, Codes zu empfangen</translation>
+    </message>
+    <message>
+        <source>Others nearby cannot see you</source>
+        <extracomment>Receive tab: no way of receiving nearby could start.</extracomment>
+        <translation>Andere in der Nähe sehen dich nicht</translation>
+    </message>
+    <message>
+        <source>Others nearby see you as</source>
+        <extracomment>Receive tab, over this phone&apos;s name as devices nearby list it.</extracomment>
+        <translation>Andere in der Nähe sehen dich als</translation>
+    </message>
+    <message>
+        <source>Some devices nearby cannot see you. Tap to see why.</source>
+        <extracomment>Receive tab, under &quot;Ready to receive&quot;: one way of receiving nearby could not start; tapping opens Settings, which says why.</extracomment>
+        <translation>Manche Geräte in der Nähe sehen dich nicht. Tippen, um zu sehen, warum.</translation>
     </message>
 </context>
 <context>
@@ -524,16 +489,6 @@ Receive tab: where received files are.</extracomment>
 <context>
     <name>ScanPage</name>
     <message>
-        <source>That is a croc code, and croc is switched off in Settings.</source>
-        <extracomment>A croc QR code was scanned, and croc is off.</extracomment>
-        <translation>Das ist ein croc-Code, und croc ist in den Einstellungen ausgeschaltet.</translation>
-    </message>
-    <message>
-        <source>That is a Magic Wormhole code, and Magic Wormhole is switched off in Settings.</source>
-        <extracomment>A Magic Wormhole QR code was scanned, and Magic Wormhole is off.</extracomment>
-        <translation>Das ist ein Magic-Wormhole-Code, und Magic Wormhole ist in den Einstellungen ausgeschaltet.</translation>
-    </message>
-    <message>
         <source>Scan a QR code</source>
         <extracomment>Page title: receive over Magic Wormhole or croc by scanning the sender&apos;s QR code.</extracomment>
         <translation>QR-Code scannen</translation>
@@ -548,6 +503,16 @@ Receive tab: where received files are.</extracomment>
         <extracomment>On the scan page when there is no camera: opens the page to type the code in instead.</extracomment>
         <translation>Code eintippen</translation>
     </message>
+    <message>
+        <source>croc is switched off in Settings.</source>
+        <extracomment>A croc QR code was scanned, and croc is off.</extracomment>
+        <translation>croc ist in den Einstellungen ausgeschaltet.</translation>
+    </message>
+    <message>
+        <source>Magic Wormhole is switched off in Settings.</source>
+        <extracomment>A Magic Wormhole QR code was scanned, and Magic Wormhole is off.</extracomment>
+        <translation>Magic Wormhole ist in den Einstellungen ausgeschaltet.</translation>
+    </message>
 </context>
 <context>
     <name>ScanView</name>
@@ -557,14 +522,14 @@ Receive tab: where received files are.</extracomment>
         <translation>Die Kamera ist nicht verfügbar.</translation>
     </message>
     <message>
-        <source>That QR code holds no Magic Wormhole or croc code.</source>
-        <extracomment>A QR code was read, and it is not a Magic Wormhole or croc code.</extracomment>
-        <translation>Dieser QR-Code enthält keinen Magic-Wormhole- oder croc-Code.</translation>
-    </message>
-    <message>
         <source>Point the camera at the sender&apos;s QR code</source>
         <extracomment>How to scan.</extracomment>
         <translation>Richte die Kamera auf den QR-Code des Senders</translation>
+    </message>
+    <message>
+        <source>This QR code contains no Magic Wormhole or croc code.</source>
+        <extracomment>A QR code was read, and it is not a Magic Wormhole or croc code.</extracomment>
+        <translation>Dieser QR-Code enthält keinen Magic-Wormhole- oder croc-Code.</translation>
     </message>
 </context>
 <context>
@@ -578,11 +543,6 @@ Receive tab: where received files are.</extracomment>
         <source>Getting a code…</source>
         <extracomment>Send with a code: waiting for the server to hand out a code.</extracomment>
         <translation>Code wird geholt…</translation>
-    </message>
-    <message>
-        <source>Waiting for them to type the code…</source>
-        <extracomment>Send with a code: the code is shown, nobody has used it yet.</extracomment>
-        <translation>Warte, bis der Code eingegeben wird…</translation>
     </message>
     <message>
         <source>Sending…</source>
@@ -605,34 +565,9 @@ Receive tab: where received files are.</extracomment>
         <translation>Fehlgeschlagen: %1</translation>
     </message>
     <message>
-        <source>Goes through your own croc relay, set in Settings.</source>
-        <extracomment>Send with a code, at the foot: croc goes through the user&apos;s own relay.</extracomment>
-        <translation>Läuft über dein eigenes croc-Relay aus den Einstellungen.</translation>
-    </message>
-    <message>
-        <source>Goes through croc&apos;s public relay on the internet. Your own relay can be set in Settings.</source>
-        <extracomment>Send with a code, at the foot: croc goes through croc&apos;s public relay.</extracomment>
-        <translation>Läuft über das öffentliche croc-Relay im Internet. Ein eigenes Relay lässt sich in den Einstellungen festlegen.</translation>
-    </message>
-    <message>
-        <source>Goes through your own Magic Wormhole server, set in Settings.</source>
-        <extracomment>Send with a code, at the foot: Magic Wormhole goes through the user&apos;s own server.</extracomment>
-        <translation>Läuft über deinen eigenen Magic-Wormhole-Server aus den Einstellungen.</translation>
-    </message>
-    <message>
-        <source>Goes through Magic Wormhole&apos;s server on the internet. Your own servers can be set in Settings.</source>
-        <extracomment>Send with a code, at the foot: Magic Wormhole goes through its public server.</extracomment>
-        <translation>Läuft über den Magic-Wormhole-Server im Internet. Eigene Server lassen sich in den Einstellungen festlegen.</translation>
-    </message>
-    <message>
         <source>Send with a code</source>
         <extracomment>Page title: sending over the internet with a code.</extracomment>
         <translation>Mit Code senden</translation>
-    </message>
-    <message>
-        <source>Let the other person scan the QR code, or tell them the code to type into their app.</source>
-        <extracomment>Send with a code: what to do with the code.</extracomment>
-        <translation>Lass die andere Person den QR-Code scannen, oder sag ihr den Code zum Eintippen in ihre App.</translation>
     </message>
     <message>
         <source>Sending</source>
@@ -650,24 +585,54 @@ Receive tab: where received files are.</extracomment>
         <translation>Teilen…</translation>
     </message>
     <message>
-        <source>Their app</source>
+        <source>Waiting for the receiver…</source>
+        <extracomment>Send with a code: the code is shown, nobody has used it yet.</extracomment>
+        <translation>Warte auf den Empfänger…</translation>
+    </message>
+    <message>
+        <source>Uses the croc relay set in Settings.</source>
+        <extracomment>Send with a code, at the foot: croc goes through the user&apos;s own relay.</extracomment>
+        <translation>Nutzt das croc-Relay aus den Einstellungen.</translation>
+    </message>
+    <message>
+        <source>Uses croc&apos;s public relay. You can set your own in Settings.</source>
+        <extracomment>Send with a code, at the foot: croc goes through croc&apos;s public relay.</extracomment>
+        <translation>Nutzt das öffentliche croc-Relay. Ein eigenes kannst du in den Einstellungen festlegen.</translation>
+    </message>
+    <message>
+        <source>Uses the Magic Wormhole server set in Settings.</source>
+        <extracomment>Send with a code, at the foot: Magic Wormhole goes through the user&apos;s own server.</extracomment>
+        <translation>Nutzt den Magic-Wormhole-Server aus den Einstellungen.</translation>
+    </message>
+    <message>
+        <source>Uses Magic Wormhole&apos;s public server. You can set your own in Settings.</source>
+        <extracomment>Send with a code, at the foot: Magic Wormhole goes through its public server.</extracomment>
+        <translation>Nutzt den öffentlichen Magic-Wormhole-Server. Einen eigenen kannst du in den Einstellungen festlegen.</translation>
+    </message>
+    <message>
+        <source>The receiver scans the QR code or types in the code.</source>
+        <extracomment>Send with a code: what to do with the code.</extracomment>
+        <translation>Der Empfänger scannt den QR-Code oder tippt den Code ein.</translation>
+    </message>
+    <message>
+        <source>Receiver&apos;s app</source>
         <extracomment>Send with a code: which app the other person has, which decides the code.</extracomment>
-        <translation>Ihre App</translation>
+        <translation>App des Empfängers</translation>
     </message>
     <message>
-        <source>Sukkula, or the croc app or command, can take it.</source>
+        <source>Works with Sukkula and croc.</source>
         <extracomment>Send with a code: who can take a croc code.</extracomment>
-        <translation>Sukkula oder die croc-App bzw. der croc-Befehl kann ihn annehmen.</translation>
+        <translation>Funktioniert mit Sukkula und croc.</translation>
     </message>
     <message>
-        <source>Magic Wormhole takes one file at a time, so several go with croc.</source>
+        <source>Magic Wormhole sends one file at a time.</source>
         <extracomment>Send with a code: Magic Wormhole cannot take several files.</extracomment>
-        <translation>Magic Wormhole nimmt eine Datei auf einmal, mehrere gehen daher mit croc.</translation>
+        <translation>Magic Wormhole sendet eine Datei auf einmal.</translation>
     </message>
     <message>
-        <source>Sukkula, Warp or the wormhole command can take it.</source>
+        <source>Works with Sukkula, Warp and the wormhole command.</source>
         <extracomment>Send with a code: who can take a Magic Wormhole code.</extracomment>
-        <translation>Sukkula, Warp oder der wormhole-Befehl kann ihn annehmen.</translation>
+        <translation>Funktioniert mit Sukkula, Warp und dem wormhole-Befehl.</translation>
     </message>
 </context>
 <context>
@@ -703,11 +668,6 @@ Receive tab: where received files are.</extracomment>
         <translation>Suche Geräte in der Nähe…</translation>
     </message>
     <message>
-        <source>That is as many files as one send can take.</source>
-        <extracomment>Send tab: the most files one send can carry are chosen already.</extracomment>
-        <translation>Mehr Dateien passen nicht in eine Sendung.</translation>
-    </message>
-    <message>
         <source>Send with a code</source>
         <extracomment>Send tab: sending over the internet with a code.
 ----------
@@ -740,41 +700,6 @@ Send tab: the row of a send with a code once its receiver has come.</extracommen
         <translation>Was möchtest du senden?</translation>
     </message>
     <message>
-        <source>Photos</source>
-        <extracomment>Send tab: the tile that opens Gallery&apos;s photos.</extracomment>
-        <translation>Fotos</translation>
-    </message>
-    <message>
-        <source>From Gallery</source>
-        <extracomment>Send tab: under the Photos and Videos tiles.</extracomment>
-        <translation>Aus der Galerie</translation>
-    </message>
-    <message>
-        <source>Videos</source>
-        <extracomment>Send tab: the tile that opens Gallery&apos;s videos.</extracomment>
-        <translation>Videos</translation>
-    </message>
-    <message>
-        <source>Documents</source>
-        <extracomment>Send tab: the tile that opens the documents list.</extracomment>
-        <translation>Dokumente</translation>
-    </message>
-    <message>
-        <source>PDFs, notes, sheets</source>
-        <extracomment>Send tab: under the Documents tile.</extracomment>
-        <translation>PDFs, Notizen, Tabellen</translation>
-    </message>
-    <message>
-        <source>Any file</source>
-        <extracomment>Send tab: the tile that opens the file browser.</extracomment>
-        <translation>Beliebige Datei</translation>
-    </message>
-    <message>
-        <source>Browse your folders</source>
-        <extracomment>Send tab: under the Any file tile.</extracomment>
-        <translation>Deine Ordner durchsuchen</translation>
-    </message>
-    <message>
         <source>Looking for more</source>
         <extracomment>Send tab, beside &quot;Nearby&quot;: discovery is still running.</extracomment>
         <translation>Suche weitere</translation>
@@ -800,24 +725,9 @@ Send tab: the row of a send with a code once its receiver has come.</extracommen
         <translation>Senden in der Nähe ist in den Einstellungen ausgeschaltet.</translation>
     </message>
     <message>
-        <source>Someone missing? They need to be on the same Wi-Fi, with their device ready to receive.</source>
-        <extracomment>Send tab, under the devices nearby.</extracomment>
-        <translation>Fehlt jemand? Das Gerät muss im selben WLAN und empfangsbereit sein.</translation>
-    </message>
-    <message>
         <source>Far away</source>
         <extracomment>Send tab: the section for sending over the internet with a code.</extracomment>
         <translation>In der Ferne</translation>
-    </message>
-    <message>
-        <source>Waiting for them to type the code…</source>
-        <extracomment>Send tab: a send with a code waits for the other side.</extracomment>
-        <translation>Warte, bis der Code eingegeben wird…</translation>
-    </message>
-    <message>
-        <source>They scan it, or type it into their app</source>
-        <extracomment>Send tab: under &quot;Send with a code&quot;.</extracomment>
-        <translation>Sie scannen ihn oder tippen ihn in ihre App</translation>
     </message>
     <message>
         <source>%1 is nearby</source>
@@ -831,6 +741,34 @@ Send tab: the row of a send with a code once its receiver has come.</extracommen
             <numerusform>%1 und %n weiteres Gerät in der Nähe</numerusform>
             <numerusform>%1 und %n weitere Geräte in der Nähe</numerusform>
         </translation>
+    </message>
+    <message numerus="yes">
+        <source>A send can include up to %n file(s).</source>
+        <extracomment>Send tab: the most files one send can carry are chosen already; %n is that many.</extracomment>
+        <translation>
+            <numerusform>Eine Sendung kann bis zu %n Datei enthalten.</numerusform>
+            <numerusform>Eine Sendung kann bis zu %n Dateien enthalten.</numerusform>
+        </translation>
+    </message>
+    <message>
+        <source>Choose files</source>
+        <extracomment>Send tab: the tile that opens the picker for pictures, videos, music and documents.</extracomment>
+        <translation>Dateien auswählen</translation>
+    </message>
+    <message>
+        <source>Browse folders</source>
+        <extracomment>Send tab: the tile that opens the file browser, for files the other picker does not list.</extracomment>
+        <translation>Ordner durchsuchen</translation>
+    </message>
+    <message>
+        <source>Devices must be on the same Wi-Fi and ready to receive.</source>
+        <extracomment>Send tab, under the devices nearby: why one may be missing.</extracomment>
+        <translation>Geräte müssen im selben WLAN und empfangsbereit sein.</translation>
+    </message>
+    <message>
+        <source>Waiting for the receiver…</source>
+        <extracomment>Send tab: a send with a code waits for the other side to scan or type the code.</extracomment>
+        <translation>Warte auf den Empfänger…</translation>
     </message>
 </context>
 <context>
@@ -876,11 +814,6 @@ Send tab: the row of a send with a code once its receiver has come.</extracommen
         <translation>Versteckt</translation>
     </message>
     <message>
-        <source>Bluetooth nudge</source>
-        <extracomment>Settings: while sending, a Bluetooth LE signal makes nearby Android phones announce themselves on the Wi-Fi (F-QS2).</extracomment>
-        <translation>Bluetooth-Hinweis</translation>
-    </message>
-    <message>
         <source>Must start with ws:// or wss://</source>
         <extracomment>Settings: the mailbox URL is not usable.</extracomment>
         <translation>Muss mit ws:// oder wss:// beginnen</translation>
@@ -899,11 +832,6 @@ Send tab: the row of a send with a code once its receiver has come.</extracommen
         <source>Debug logging</source>
         <extracomment>Settings: debug logging (S9).</extracomment>
         <translation>Debug-Protokoll</translation>
-    </message>
-    <message>
-        <source>Only for finding faults. Leave it off otherwise.</source>
-        <extracomment>Settings: what debug logging does.</extracomment>
-        <translation>Nur zur Fehlersuche. Sonst ausgeschaltet lassen.</translation>
     </message>
     <message>
         <source>Must look like host or host:port</source>
@@ -936,11 +864,6 @@ Send tab: the row of a send with a code once its receiver has come.</extracommen
         <translation>Quick Share, im selben WLAN</translation>
     </message>
     <message>
-        <source>Helps Android phones nearby notice this one while you send</source>
-        <extracomment>Settings: what the Bluetooth nudge does. It works only while the Send tab looks for devices; it does not make this phone visible.</extracomment>
-        <translation>Hilft Android-Telefonen in der Nähe, dieses beim Senden zu bemerken</translation>
-    </message>
-    <message>
         <source>Computers and other phones</source>
         <extracomment>Settings: the LocalSend switch, by who it reaches.</extracomment>
         <translation>Computer und andere Telefone</translation>
@@ -956,19 +879,9 @@ Send tab: the row of a send with a code once its receiver has come.</extracommen
         <translation>PIN zum Empfangen (optional)</translation>
     </message>
     <message>
-        <source>Send to paired devices. Receiving goes through the phone&apos;s own Bluetooth settings.</source>
-        <extracomment>Settings: what the Bluetooth switch covers, and why it only sends (F-BT2).</extracomment>
-        <translation>An gekoppelte Geräte senden. Empfangen läuft über die Bluetooth-Einstellungen des Telefons.</translation>
-    </message>
-    <message>
         <source>Far away</source>
         <extracomment>Settings section: sending and receiving over the internet with a code.</extracomment>
         <translation>In der Ferne</translation>
-    </message>
-    <message>
-        <source>Send and receive with a code, over the internet</source>
-        <extracomment>Settings: what the Magic Wormhole and croc switches cover (F-C1): sending to a code and receiving with one.</extracomment>
-        <translation>Mit einem Code über das Internet senden und empfangen</translation>
     </message>
     <message>
         <source>Your own servers</source>
@@ -1016,9 +929,39 @@ Send tab: the row of a send with a code once its receiver has come.</extracommen
         <translation>Konnte nicht starten: %1</translation>
     </message>
     <message>
-        <source>Only for servers you run yourself. A field left empty uses the public server.</source>
+        <source>Bluetooth wake-up</source>
+        <extracomment>Settings: while sending, a Bluetooth LE signal makes nearby Android phones announce themselves on the Wi-Fi (F-QS2).</extracomment>
+        <translation>Bluetooth-Weckruf</translation>
+    </message>
+    <message>
+        <source>Makes Android phones nearby show up while you send.</source>
+        <extracomment>Settings: what the Bluetooth wake-up does. It works only while the Send tab looks for devices; it does not make this phone visible.</extracomment>
+        <translation>Lässt Android-Telefone in der Nähe beim Senden erscheinen.</translation>
+    </message>
+    <message>
+        <source>Sends to paired devices. Receiving is handled by the phone&apos;s Bluetooth settings.</source>
+        <extracomment>Settings: what the Bluetooth switch covers, and why it only sends (F-BT2).</extracomment>
+        <translation>Sendet an gekoppelte Geräte. Das Empfangen regeln die Bluetooth-Einstellungen des Telefons.</translation>
+    </message>
+    <message>
+        <source>Works with Warp and the wormhole command</source>
+        <extracomment>Settings: under the Magic Wormhole switch: the apps a Magic Wormhole code works with.</extracomment>
+        <translation>Funktioniert mit Warp und dem wormhole-Befehl</translation>
+    </message>
+    <message>
+        <source>Works with the croc app</source>
+        <extracomment>Settings: under the croc switch: the app a croc code works with.</extracomment>
+        <translation>Funktioniert mit der croc-App</translation>
+    </message>
+    <message>
+        <source>Leave a field empty to use the public server.</source>
         <extracomment>Settings, over the fields for one&apos;s own servers.</extracomment>
-        <translation>Nur für Server, die du selbst betreibst. Ein leeres Feld nutzt den öffentlichen Server.</translation>
+        <translation>Lass ein Feld leer, um den öffentlichen Server zu nutzen.</translation>
+    </message>
+    <message>
+        <source>Writes more detail to the system log.</source>
+        <extracomment>Settings: what debug logging does.</extracomment>
+        <translation>Schreibt mehr Details ins Systemprotokoll.</translation>
     </message>
 </context>
 <context>
@@ -1086,11 +1029,6 @@ Send tab: the row of a send with a code once its receiver has come.</extracommen
         <translation>Gesendet</translation>
     </message>
     <message>
-        <source>Saved in Downloads/Sukkula: %1</source>
-        <extracomment>Where received files went. %1 is the list of names they were saved under.</extracomment>
-        <translation>Gespeichert in Downloads/Sukkula: %1</translation>
-    </message>
-    <message>
         <source>Received</source>
         <extracomment>A transfer to this phone arrived.</extracomment>
         <translation>Empfangen</translation>
@@ -1105,6 +1043,11 @@ Send tab: the row of a send with a code once its receiver has come.</extracommen
         <extracomment>A transfer failed; %1 says why.</extracomment>
         <translation>Fehlgeschlagen: %1</translation>
     </message>
+    <message>
+        <source>Saved in Downloads › Sukkula: %1</source>
+        <extracomment>Where received files went. %1 is the list of names they were saved under.</extracomment>
+        <translation>Gespeichert in Downloads › Sukkula: %1</translation>
+    </message>
 </context>
 <context>
     <name>TypeCodePage</name>
@@ -1112,16 +1055,6 @@ Send tab: the row of a send with a code once its receiver has come.</extracommen
         <source>Type in a code</source>
         <extracomment>Page title: receive over Magic Wormhole or croc with a code typed in.</extracomment>
         <translation>Code eintippen</translation>
-    </message>
-    <message>
-        <source>The sender&apos;s app shows it as a few words, like 7-guitarist-revenge.</source>
-        <extracomment>Type in a code: what to type; the example is a Magic Wormhole code.</extracomment>
-        <translation>Die App des Senders zeigt ihn als ein paar Wörter, etwa 7-guitarist-revenge.</translation>
-    </message>
-    <message>
-        <source>Code, from the clipboard</source>
-        <extracomment>The code field, filled in from the clipboard.</extracomment>
-        <translation>Code, aus der Zwischenablage</translation>
     </message>
     <message>
         <source>Code</source>
@@ -1134,6 +1067,16 @@ The code field when empty.</extracomment>
         <source>Receive</source>
         <extracomment>Starts receiving with the typed code.</extracomment>
         <translation>Empfangen</translation>
+    </message>
+    <message>
+        <source>Enter the code shown in the sender&apos;s app, for example 7-guitarist-revenge.</source>
+        <extracomment>Type in a code: what to type; the example is a Magic Wormhole code.</extracomment>
+        <translation>Gib den Code aus der App des Senders ein, etwa 7-guitarist-revenge.</translation>
+    </message>
+    <message>
+        <source>Code, pasted from the clipboard</source>
+        <extracomment>The code field, filled in from the clipboard.</extracomment>
+        <translation>Code, aus der Zwischenablage eingefügt</translation>
     </message>
 </context>
 <context>
@@ -1162,11 +1105,6 @@ The code field when empty.</extracomment>
         <translation>Text empfangen</translation>
     </message>
     <message>
-        <source>Saved in Downloads/Sukkula</source>
-        <extracomment>Notification body: where received files are.</extracomment>
-        <translation>Gespeichert in Downloads/Sukkula</translation>
-    </message>
-    <message>
         <source>Open Sukkula to read it.</source>
         <extracomment>Notification body: where a received text is.</extracomment>
         <translation>Öffne Sukkula, um ihn zu lesen.</translation>
@@ -1175,6 +1113,11 @@ The code field when empty.</extracomment>
         <source>Receiving failed</source>
         <extracomment>Notification: an incoming transfer failed.</extracomment>
         <translation>Empfang fehlgeschlagen</translation>
+    </message>
+    <message>
+        <source>Saved in Downloads › Sukkula</source>
+        <extracomment>Notification body: where received files are.</extracomment>
+        <translation>Gespeichert in Downloads › Sukkula</translation>
     </message>
 </context>
 </TS>

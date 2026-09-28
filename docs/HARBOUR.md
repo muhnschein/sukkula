@@ -196,9 +196,10 @@ sandbox, and each one extra is reach nobody reviewed.
   `~/Pictures` (piirit found the same). Nothing is written in these
   folders. `UserDirs` would cover them all, and the rest of the home
   directory with them.
-- **MediaIndexing** -- the platform's pickers for photos, videos and
-  documents (spec v0.7), the Send tab's first three tiles, which list
-  what the media index (Tracker) knows rather than walk the folders. The
+- **MediaIndexing** -- the platform's content picker for pictures,
+  videos, music and documents (spec v0.7), the Send tab's "Choose files",
+  which lists what the media index (Tracker) knows rather than walk the
+  folders. The
   index gives names, places and kinds; the pickers hand back paths and
   sizes, and the app reads nothing else of it. The file browser, for any
   file, needs no index.

@@ -127,7 +127,7 @@ ListItem {
             }
             if (item.savedCount > 0) {
                 //: Where received files went. %1 is the list of names they were saved under.
-                return qsTr("Saved in Downloads/Sukkula: %1").arg(item.saved.split("\n").join(", "))
+                return qsTr("Saved in Downloads › Sukkula: %1").arg(item.saved.split("\n").join(", "))
             }
             //: A transfer to this phone arrived.
             return qsTr("Received")

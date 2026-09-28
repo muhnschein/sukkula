@@ -265,14 +265,14 @@ Page {
                 MenuItem {
                     objectName: "addMore"
                     //: Pulley menu on the Send tab: choose more files.
-                    text: qsTr("Add more")
+                    text: qsTr("Add files")
                     visible: send.hasPayload
-                    onClicked: send.pick(send.payloadKind)
+                    onClicked: send.pick(send.lastPicker)
                 }
                 MenuItem {
                     objectName: "startOver"
                     //: Pulley menu on the Send tab: clear what is chosen.
-                    text: qsTr("Start over")
+                    text: qsTr("Clear selection")
                     visible: send.hasPayload && !(send.hasOutgoing && !send.outgoingEnded)
                     onClicked: send.clearPayload()
                 }

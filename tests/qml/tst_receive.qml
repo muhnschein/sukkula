@@ -7,8 +7,8 @@ import "helpers/Events.js" as Ev
 
 /*
  * The Receive tab (F-C1, F-C5, F-MW2): ready, with the name others see,
- * round a radar that pulses while nothing comes and takes the room the
- * rest leaves; a transfer coming in, with the sender's name as plain
+ * under the canvas's radar round a phone, pulsing while nothing comes; a
+ * transfer coming in, with the sender's name as plain
  * text, what comes in Sukkula's words, its progress and a cross to stop
  * it, staying a moment after it ends; what came today, files that came
  * together as one row ("2 files", "3 photos") that lists them on a page
@@ -94,36 +94,68 @@ Script {
         },
         function () {
             test.compare(test.find("receiveState").text, "Ready to receive")
+            test.compare(test.find("seenAs").text, "Others nearby see you as")
             test.compare(test.find("deviceNameLabel").text, "Jolla Phone")
             test.verify(test.view.pulsing, "the rings pulse")
             test.verify(test.find("scanCode").visible, "receiving with a code")
             test.verify(test.find("typeCode").visible, "and by typing it in")
+            // The QR code is piirit's, drawn: the theme has none.
+            var qr = probe.find(test.find("scanCode"), "rowGlyph")
+            test.compare(qr.kind, "qr")
+            test.compare(String(qr.source), "", "no theme icon asked for")
+            var mark = probe.find(qr, "qrMark")
+            test.verify(mark.visible, "the drawing shows")
+            test.compare(probe.findAll(mark, "qrFinder").length, 3, "three finder patterns")
+            test.compare(probe.findAll(mark, "qrModule").length, 5, "and five modules")
+            test.verify(!probe.find(test.find("radarGlyph"), "qrMark").visible, "only for a QR code")
+            test.verify(!probe.find(test.find("scanCode"), "rowSubtitle").visible
+                        && !probe.find(test.find("typeCode"), "rowSubtitle").visible, "no line under either")
             test.compare(test.received(), [], "nothing came yet")
             test.verify(!test.find("savedIn").visible)
             test.verify(!test.find("receiveFailed").visible, "nothing failed")
-            // The radar takes the room the rest leaves: the list's height
-            // less the tabs, the words and the rows under it; at least
-            // its least, at most the width within the margins.
+            // The radar as the canvas drew it, round the theme's phone
+            // icon: that size where the rest leaves no more room, up to a
+            // third more where it does, and the pulses (out to 1.15 times
+            // it) always within the margins.
             var radar = test.find("radar")
             var hero = test.find("receiveHero")
             var words = test.find("heroWords")
             var rest = test.find("receiveRest")
-            var widest = test.view.width - 2 * Theme.horizontalPageMargin
+            var base = Theme.iconSizeMedium * 1.9 / 0.432
+            var fit = (test.view.width - 2 * Theme.horizontalPageMargin) / 1.15
             test.compare(test.view.viewHeight, test.main.height, "the list's height, from the page")
             var sizes = [4000, 700, 0]
             for (var i = 0; i < sizes.length; i++) {
                 test.view.viewHeight = sizes[i]
                 var room = sizes[i] - test.view.topInset - words.height - rest.height - 3 * Theme.paddingLarge
-                test.compare(radar.width, Math.max(Theme.itemSizeExtraLarge * 1.6, Math.min(widest, room)),
+                test.compare(radar.width, Math.min(fit, Math.max(base, Math.min(base * 1.35, room / 1.15))),
                              "the radar in " + sizes[i])
                 test.compare(hero.height, Math.max(hero.children[0].height + 2 * Theme.paddingLarge,
                                                    sizes[i] - test.view.topInset - rest.height),
                              "the hero fills what is left of " + sizes[i])
             }
             test.view.viewHeight = 4000
-            test.compare(radar.width, widest, "room enough: as wide as the margins allow")
+            test.compare(radar.width, Math.min(fit, base * 1.35), "room enough: a third more than the canvas's")
             test.view.viewHeight = 0
-            test.compare(radar.width, Theme.itemSizeExtraLarge * 1.6, "no room: its least")
+            test.compare(radar.width, Math.min(fit, base), "no room: the canvas's")
+            test.compare(test.find("radarCore").width, radar.width * 0.432, "the disc, as on the canvas")
+            test.compare(test.find("radarGlyph").names, ["icon-m-device", "icon-m-phone"], "a plain phone in it")
+            // Three pulses, a third of the 3 s cycle apart, each going out
+            // from the disc to past the outer ring and fading as it goes,
+            // eased as CSS's ease-out.
+            test.verify(Math.abs(test.view.easeOut(0.5) - 0.6846) < 1e-3, "ease-out: " + test.view.easeOut(0.5))
+            test.verify(Math.abs(test.view.easeOut(0)) < 1e-6 && Math.abs(test.view.easeOut(1) - 1) < 1e-6)
+            var pulses = probe.findAll(radar, "pulse")
+            test.compare(pulses.length, 3)
+            radar.phase = 0
+            var near = function (a, b) { return Math.abs(a - b) < 1e-3 }
+            test.verify(near(pulses[0].scale, 0.45) && near(pulses[0].opacity, 0.9), "the first, at the disc")
+            test.verify(near(pulses[1].scale, 0.45 + 0.7 * test.view.easeOut(1 / 3))
+                        && near(pulses[2].scale, 0.45 + 0.7 * test.view.easeOut(2 / 3)), "the others, a third on each")
+            radar.phase = 0.9999
+            test.verify(near(pulses[0].scale, 1.15) && near(pulses[0].opacity, 0), "past the outer ring, faded")
+            test.verify(pulses[0].visible && String(pulses[0].border.color) === String(Theme.highlightColor)
+                        && pulses[0].color.a === 0, "a ring, not a disc")
             test.view.viewHeight = test.main.height
             // A transfer comes in, after its offer was accepted.
             bridge.emitEvent(Ev.transferStarted(20, "incoming", { peer: Ev.EVIL_MODEL }))
@@ -195,7 +227,7 @@ Script {
             for (var i = 0; i < failed.length; i++) {
                 statuses.push(probe.find(failed[i], "progressStatus").text)
             }
-            test.verify(statuses.indexOf("Failed: Network error or timeout.") >= 0, statuses.join(" | "))
+            test.verify(statuses.indexOf("Failed: The connection failed or timed out.") >= 0, statuses.join(" | "))
             return 200
         },
         function () {
@@ -236,7 +268,7 @@ Script {
             var failed = test.find("receiveFailed")
             test.verify(failed.visible, "the failure said")
             var line = probe.find(failed, "receiveFailedLine")
-            test.compare(line.text, "Not every device nearby can see this phone. Tap to see why.")
+            test.compare(line.text, "Some devices nearby cannot see you. Tap to see why.")
             test.verify(line.color === Theme.errorColor, "in red")
             test.verify(probe.texts(test.view).join("\n").indexOf("port 53317 in use") < 0,
                         "the engine's English is for Settings")
@@ -249,7 +281,7 @@ Script {
                 { protocol: "quick_share", state: "failed", error: { code: "network", message: "y" } }] }))
         },
         function () {
-            test.compare(test.find("receiveState").text, "Nobody nearby can see this phone")
+            test.compare(test.find("receiveState").text, "Others nearby cannot see you")
             test.compare(probe.find(test.view, "receiveFailedLine").text, "Tap to see why.")
             test.verify(!test.view.pulsing, "no pulse for nobody")
             bridge.emitEvent(Ev.receiving(true))
@@ -281,7 +313,7 @@ Script {
                                            croc: { enabled: true, relay: null, password: null } }))
         },
         function () {
-            test.compare(test.find("receiveState").text, "Ready for codes")
+            test.compare(test.find("receiveState").text, "Ready to receive codes")
         }
     ]
 }

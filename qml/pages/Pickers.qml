@@ -3,12 +3,12 @@ import QtQuick 2.6
 import Sailfish.Pickers 1.0
 
 /*
- * Where files to send are chosen (F-C6): the platform's own pickers, one
- * per tile of the Send tab -- photos and videos as Gallery shows them,
- * documents as the Documents app lists them, and the file browser for any
- * file at all.
+ * Where files to send are chosen (F-C6), in the platform's own pickers:
+ * the content picker, which bundles pictures, videos, music and documents
+ * in one dialog, as piirit's attach button does (its AttachLibraryPage);
+ * and the file browser, for a file the media index does not list.
  *
- * The first three list what the media index knows, which needs the
+ * The content picker lists what the media index knows, which needs the
  * MediaIndexing permission (spec v0.7). The file browser runs in this
  * process and shows exactly what Sailjail lets Sukkula read: Downloads,
  * Documents, Music, Pictures, Videos and memory cards. Every picker hands
@@ -24,14 +24,9 @@ QtObject {
     /// picker did not say.
     signal picked(var files)
 
-    /// The picker for "photo", "video", "document" or "file".
+    /// The picker for "content" or "files".
     function component(kind) {
-        switch (kind) {
-        case "photo": return pickers.photos
-        case "video": return pickers.videos
-        case "document": return pickers.documents
-        }
-        return pickers.files
+        return kind === "files" ? pickers.files : pickers.content
     }
 
     /// A chosen item's path: `filePath` where the picker gives it, else
@@ -74,25 +69,11 @@ QtObject {
         }
     }
 
-    property Component photos: Component {
-        MultiImagePickerDialog {
-            id: photoDialog
-            objectName: "photoPicker"
-            onAccepted: pickers.take(photoDialog.selectedContent)
-        }
-    }
-    property Component videos: Component {
-        MultiVideoPickerDialog {
-            id: videoDialog
-            objectName: "videoPicker"
-            onAccepted: pickers.take(videoDialog.selectedContent)
-        }
-    }
-    property Component documents: Component {
-        MultiDocumentPickerDialog {
-            id: documentDialog
-            objectName: "documentPicker"
-            onAccepted: pickers.take(documentDialog.selectedContent)
+    property Component content: Component {
+        MultiContentPickerDialog {
+            id: contentDialog
+            objectName: "contentPicker"
+            onAccepted: pickers.take(contentDialog.selectedContent)
         }
     }
     property Component files: Component {

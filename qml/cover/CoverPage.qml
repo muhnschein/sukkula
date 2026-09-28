@@ -124,8 +124,8 @@ CoverBackground {
         Label {
             width: parent.width
             horizontalAlignment: Text.AlignHCenter
-            //: Cover, under "Offer waiting".
-            text: qsTr("Tap to see it")
+            //: Cover, under "Offer waiting": tapping opens the offer to accept or decline.
+            text: qsTr("Tap to answer")
             textFormat: Text.PlainText
             wrapMode: Text.Wrap
             font.pixelSize: Theme.fontSizeSmall

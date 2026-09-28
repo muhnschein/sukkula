@@ -425,21 +425,6 @@ QtObject {
         }
         return ""
     }
-    function stateText(state) {
-        switch (state) {
-        //: A protocol's receiver is switched off.
-        case "off": return qsTr("Off")
-        //: A protocol's receiver is starting up.
-        case "starting": return qsTr("Starting")
-        //: A protocol's receiver is listening for offers.
-        case "ready": return qsTr("Ready")
-        //: A protocol's receiver could not start.
-        case "failed": return qsTr("Failed")
-        //: The protocol can only send from this phone, or receive by a typed code (Bluetooth, Magic Wormhole, croc).
-        case "send_only": return qsTr("Send only")
-        }
-        return ""
-    }
     /// A translated sentence for an error, by its code; never the engine's
     /// English `message`, which pages show only as a detail line.
     function errorText(error) {
@@ -447,30 +432,30 @@ QtObject {
         switch (code) {
         case "bad_command":
         case "bad_version":
-            return qsTr("Sukkula could not understand its own request.")
+            return qsTr("Internal error.")
         case "unavailable":
-            return qsTr("Not available. Is it switched off in Settings?")
+            return qsTr("Not available. It may be switched off in Settings.")
         case "not_found":
-            return qsTr("It is gone. The other device may have left.")
+            return qsTr("The other device is no longer available.")
         case "bad_settings":
-            return qsTr("A setting could not be used.")
+            return qsTr("A setting is not valid.")
         case "bad_file":
             // Mostly Sailjail: the user's folders and memory cards are
             // granted (spec §2), and a file from anywhere else is out of
             // reach.
-            return qsTr("A file could not be read. Sukkula can send files from Downloads, Documents, Music, Pictures, Videos and memory cards only.")
+            return qsTr("A file could not be read. Sukkula can only send files from Downloads, Documents, Music, Pictures, Videos and memory cards.")
         case "too_large":
-            return qsTr("Too large, or too many files.")
+            return qsTr("Too many files, or too much data.")
         case "refused":
             return qsTr("Declined.")
         case "peer_mismatch":
-            return qsTr("The other device is not the one it claimed to be.")
+            return qsTr("The other device could not be verified.")
         case "bad_code":
-            return qsTr("That code does not work.")
+            return qsTr("The code is wrong or has expired.")
         case "network":
-            return qsTr("Network error or timeout.")
+            return qsTr("The connection failed or timed out.")
         case "storage":
-            return qsTr("Could not save. Is the storage full?")
+            return qsTr("Could not save. The storage may be full.")
         }
         return qsTr("Something went wrong.")
     }
