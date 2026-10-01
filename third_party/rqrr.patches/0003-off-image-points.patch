@@ -252,13 +252,14 @@ each into a frame read as empty.
 -    let c = c2.c.map(u + 1.0, v);
 -    let size_estimate = ((a.x - align_seed.x) * -(c.y - align_seed.y)
 -        + (a.y - align_seed.y) * (c.x - align_seed.x))
+-        .unsigned_abs() as usize;
 +    let c = c2.c.map(u + 1.0, v).filter(|p| inside(img, p))?;
 +    // In i64: each factor is under the image's side, and a side can be
 +    // more than 2^15 pixels.
 +    let d = |p: i32, q: i32| i64::from(p) - i64::from(q);
 +    let size_estimate = (d(a.x, align_seed.x) * -d(c.y, align_seed.y)
 +        + d(a.y, align_seed.y) * d(c.x, align_seed.x))
-         .unsigned_abs() as usize;
++    .unsigned_abs() as usize;
 +    // Sukkula: a spiral wider than twice the image's longer side has
 +    // left it on every side; an estimate an image chose could otherwise
 +    // keep it going for billions of steps.

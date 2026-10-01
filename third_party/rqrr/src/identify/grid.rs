@@ -276,7 +276,7 @@ where
     let d = |p: i32, q: i32| i64::from(p) - i64::from(q);
     let size_estimate = (d(a.x, align_seed.x) * -d(c.y, align_seed.y)
         + d(a.y, align_seed.y) * d(c.x, align_seed.x))
-        .unsigned_abs() as usize;
+    .unsigned_abs() as usize;
     // Sukkula: a spiral wider than twice the image's longer side has
     // left it on every side; an estimate an image chose could otherwise
     // keep it going for billions of steps.
