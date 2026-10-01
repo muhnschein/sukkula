@@ -149,13 +149,37 @@ new_artifacts() {
     comm -13 <(printf '%s\n' "$before") <(find "$dir" -type f 2>/dev/null | sort || true) | grep -v '^$' || true
 }
 verdict() { # target rc new-artifacts
-    local target=$1 rc=$2 artifacts=$3
+    local target=$1 rc=$2 artifacts=$3 first
     if [[ -n "$artifacts" ]]; then
-        echo "fuzz-smoke: FAIL $target found something; the reproducer is $(head -1 <<< "$artifacts")"
+        first=$(head -1 <<< "$artifacts")
+        echo "fuzz-smoke: FAIL $target found something; the reproducer is $first"
+        # The reproducer itself, so the log alone carries the finding: a
+        # night's log is too long to be read back whole, and the artifact
+        # can expire or be out of reach.
+        echo "fuzz-smoke: $first, base64: $(base64 -w0 < "$first")"
     else
         echo "fuzz-smoke: FAIL $target: libFuzzer exited $rc without writing a reproducer --" \
              "not a finding but a broken run (an option, the build, the harness); see the log above"
     fi
+}
+
+# report_failures <verdict...>: the failed targets' verdicts, together,
+# and in GITHUB_STEP_SUMMARY when that is set (fuzz.yml), where a red
+# night's finding is read first.
+report_failures() {
+    local summary
+    echo
+    echo "fuzz-smoke: FAILED, $# target(s):"
+    printf '%s\n' "$@"
+    summary=$(printenv GITHUB_STEP_SUMMARY || true)
+    [[ -n "$summary" ]] || return 0
+    {
+        echo "### fuzz-smoke: $# target(s) failed"
+        echo
+        echo '```'
+        printf '%s\n' "$@"
+        echo '```'
+    } >> "$summary"
 }
 
 # The fuzz crate's targets as fuzz/Cargo.toml lists them ([[bin]] names,
@@ -232,10 +256,19 @@ self_test() {
     before=$(find "$work/artifacts" -type f | sort)
     check "a failure with no new artifact is a broken run" \
         contains "$(verdict x 1 "$(new_artifacts "$before" "$work/artifacts")")" "broken run"
-    : > "$work/artifacts/crash-1"
+    printf 'qr\0' > "$work/artifacts/crash-1"
     check "a failure with a new artifact is a finding, and names it" \
         contains "$(verdict x 1 "$(new_artifacts "$before" "$work/artifacts")")" \
         "found something; the reproducer is $work/artifacts/crash-1"
+    check "a finding's verdict carries the reproducer itself" \
+        contains "$(verdict x 1 "$(new_artifacts "$before" "$work/artifacts")")" \
+        "$work/artifacts/crash-1, base64: cXIA"
+    : > "$work/summary"
+    GITHUB_STEP_SUMMARY="$work/summary" report_failures "one verdict" "another" > "$work/report"
+    check "the failures are reported together, at the end" \
+        contains "$(cat "$work/report")" $'2 target(s):\none verdict\nanother'
+    check "and in the run's summary" \
+        contains "$(cat "$work/summary")" $'2 target(s) failed\n\n```\none verdict\nanother\n```'
     rm -rf "$work"
     if [[ "$status" -eq 0 ]]; then echo "fuzz-smoke: self-test ok ($cases cases)"
     else echo "fuzz-smoke: self-test FAILED" >&2; fi
@@ -295,6 +328,7 @@ cargo fuzz build --target "$host" || fail "the fuzz targets do not build"
 gen=$(mktemp -d)
 trap 'rm -rf "$gen"' EXIT
 status=0
+verdicts=()
 for t in "${targets[@]}"; do
     corpus="fuzz/corpus/$t"
     mkdir -p "$corpus"
@@ -309,8 +343,16 @@ for t in "${targets[@]}"; do
     cargo fuzz run --target "$host" "$t" "${dirs[@]}" -- "${args[@]}" || rc=$?
     [[ "$rc" -eq 0 ]] && continue
     status=1
-    verdict "$t" "$rc" "$(new_artifacts "$before" "fuzz/artifacts/$t")" >&2
+    verdicts+=("$(verdict "$t" "$rc" "$(new_artifacts "$before" "fuzz/artifacts/$t")")")
+    printf '%s\n' "${verdicts[-1]}" >&2
 done
 
-[[ "$status" -eq 0 ]] && echo "fuzz-smoke: ok (${#targets[@]} targets, ${secs}s each)"
+# Every verdict again, last: a night prints megabytes, each target's
+# verdict lands amid the next one's output, and only the end of a log is
+# sure to be read (fuzz.yml also puts them in the run's summary).
+if [[ "$status" -eq 0 ]]; then
+    echo "fuzz-smoke: ok (${#targets[@]} targets, ${secs}s each)"
+else
+    report_failures "${verdicts[@]}" >&2
+fi
 exit "$status"
