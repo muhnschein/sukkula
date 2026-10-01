@@ -261,7 +261,14 @@ where
 
     /* Set up the perspective transform and find the center */
     let c = Perspective::create(&corners, 7.0, 7.0)?;
-    let center = c.map(3.5, 3.5);
+    // Sukkula: the centre is a pixel of the image, or this is no capstone.
+    // It was taken wherever it mapped to (an assert stopped only points
+    // past i32), and capstones are measured against each other by their
+    // centres, which overflowed.
+    let center = c.map(3.5, 3.5).filter(|p| {
+        usize::try_from(p.x).is_ok_and(|x| x < img.width())
+            && usize::try_from(p.y).is_ok_and(|y| y < img.height())
+    })?;
 
     Some(CapStone { c, corners, center })
 }

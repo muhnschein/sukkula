@@ -44,15 +44,29 @@ impl Perspective {
         Some(Perspective(c))
     }
 
-    pub fn map(&self, u: f64, v: f64) -> Point {
+    /// The pixel `u`, `v` maps to, or `None` where that is no pixel.
+    ///
+    /// Sukkula: was asserted to fit an `i32`. A perspective is fitted to
+    /// whatever capstones an image shows, and one fitted to capstones
+    /// nearly in a line has a denominator near zero: it maps a point past
+    /// `i32`, to infinity, or to NaN, and the asserts panicked.
+    pub fn map(&self, u: f64, v: f64) -> Option<Point> {
         let den = self.0[6] * u + self.0[7] * v + 1.0f64;
         let x = (self.0[0] * u + self.0[1] * v + self.0[2]) / den;
         let y = (self.0[3] * u + self.0[4] * v + self.0[5]) / den;
 
-        Point {
-            x: coordinate(x),
-            y: coordinate(y),
+        let x = x.round();
+        let y = y.round();
+
+        // NaN fails both comparisons.
+        let fits = |c: f64| c >= i32::MIN as f64 && c <= i32::MAX as f64;
+        if !(fits(x) && fits(y)) {
+            return None;
         }
+        Some(Point {
+            x: x as i32,
+            y: y as i32,
+        })
     }
 
     pub fn unmap(&self, p: &Point) -> (f64, f64) {
@@ -76,32 +90,21 @@ impl Perspective {
     }
 }
 
-/// A mapped coordinate as a pixel's. Sukkula: was asserted to fit an
-/// `i32`, and a perspective whose denominator nears zero -- three
-/// capstones nearly in a line, which any frame can show -- maps a point
-/// to beyond it, or to infinity or NaN: the asserts panicked. Saturated
-/// instead (`as` does), and NaN taken as far off the image, so the point
-/// lies outside it as the real one does; every caller already reads a
-/// point outside the image as such (`fitness_cell` skips it,
-/// `get_pixel_at_point` clamps it).
-fn coordinate(c: f64) -> i32 {
-    if c.is_nan() {
-        i32::MIN
-    } else {
-        c.round() as i32
-    }
-}
-
+/// Sukkula: in `i64`, and `None` where the intersection is no `i32`
+/// point. In `i32`, `d * e` overflows for points a thousand pixels apart
+/// (a product of three coordinates), and an image chooses its points.
 pub fn line_intersect(p0: &Point, p1: &Point, q0: &Point, q1: &Point) -> Option<Point> {
+    let (p0x, p0y, p1x, p1y) = (p0.x as i64, p0.y as i64, p1.x as i64, p1.y as i64);
+    let (q0x, q0y, q1x, q1y) = (q0.x as i64, q0.y as i64, q1.x as i64, q1.y as i64);
     /* (a, b) is perpendicular to line p */
-    let a = -(p1.y - p0.y);
-    let b = p1.x - p0.x;
+    let a = -(p1y - p0y);
+    let b = p1x - p0x;
     /* (c, d) is perpendicular to line q */
-    let c = -(q1.y - q0.y);
-    let d = q1.x - q0.x;
+    let c = -(q1y - q0y);
+    let d = q1x - q0x;
     /* e and f are dot products of the respective vectors with p and q */
-    let e = a * p1.x + b * p1.y;
-    let f = c * q1.x + d * q1.y;
+    let e = a.checked_mul(p1x)?.checked_add(b.checked_mul(p1y)?)?;
+    let f = c.checked_mul(q1x)?.checked_add(d.checked_mul(q1y)?)?;
     /* Now we need to solve:
      *     [a b] [rx]   [e]
      *     [c d] [ry] = [f]
@@ -110,13 +113,15 @@ pub fn line_intersect(p0: &Point, p1: &Point, q0: &Point, q1: &Point) -> Option<
      *       [ d -b] [e]   [rx]
      * 1/det [-c  a] [f] = [ry]
      */
-    let det = a * d - b * c;
+    let det = a.checked_mul(d)?.checked_sub(b.checked_mul(c)?)?;
     if det == 0 {
         None
     } else {
+        let x = d.checked_mul(e)?.checked_sub(b.checked_mul(f)?)? / det;
+        let y = a.checked_mul(f)?.checked_sub(c.checked_mul(e)?)? / det;
         Some(Point {
-            x: (d * e - b * f) / det,
-            y: (-c * e + a * f) / det,
+            x: i32::try_from(x).ok()?,
+            y: i32::try_from(y).ok()?,
         })
     }
 }

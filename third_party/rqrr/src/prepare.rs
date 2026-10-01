@@ -254,19 +254,18 @@ where
             .filter_map(|v| crate::SkewedGridLocation::from_group(self, v))
             .collect();
         for grid_location in locations {
-            let bounds = [
-                grid_location.c.map(0.0, 0.0),
-                grid_location
-                    .c
-                    .map(grid_location.grid_size as f64 + 1.0, 0.0),
-                grid_location.c.map(
-                    grid_location.grid_size as f64 + 1.0,
-                    grid_location.grid_size as f64 + 1.0,
-                ),
-                grid_location
-                    .c
-                    .map(0.0, grid_location.grid_size as f64 + 1.0),
-            ];
+            // Sukkula: a grid whose corners map to no pixel is none.
+            let corner = |u: f64, v: f64| grid_location.c.map(u, v);
+            let far = grid_location.grid_size as f64 + 1.0;
+            let (Some(c0), Some(c1), Some(c2), Some(c3)) = (
+                corner(0.0, 0.0),
+                corner(far, 0.0),
+                corner(far, far),
+                corner(0.0, far),
+            ) else {
+                continue;
+            };
+            let bounds = [c0, c1, c2, c3];
             let grid = grid_location.into_grid_image(self);
             res.push(crate::Grid { grid, bounds });
         }

@@ -243,8 +243,9 @@ These are enforced in the code and checked in CI, not merely intended.
   sees is a stranger's input: rqrr, pure Rust with no `unsafe`, decodes
   it, vendored with its grouping bounded (`third_party/rqrr.patches`) so a
   frame printed to be slow cannot keep it busy for minutes, and so a
-  degenerate perspective maps off the image rather than tripping an
-  assert, and inside `catch_unwind` all the same. Only a Magic Wormhole or croc code comes out of a QR
+  point a degenerate perspective maps off the image is refused rather
+  than tripping an assert or an overflow, and inside `catch_unwind` all
+  the same. Only a Magic Wormhole or croc code comes out of a QR
   code (`crates/sukkula-engine/src/scan.rs`), checked as a typed code is,
   and a wormhole mailbox server only as one in Settings is checked; what
   any other QR code holds is dropped where it is read -- never shown,

@@ -1,0 +1,323 @@
+No panic, overflow or endless walk on points a perspective puts off the image
+
+rqrr fits a perspective to whatever capstones an image shows and then
+maps cells through it. Fitted to capstones nearly in a line, its
+denominator nears zero, and a cell maps to past i32, to infinity, or to
+NaN (0/0). `Perspective::map` asserted that every point fits an i32, and
+panicked; points that did fit were used wherever they fell, in i32
+arithmetic, as starting points of walks across the image. The nightly
+fuzzer's `qr_frame` found the assert within minutes of camera-shaped
+noise, and, with the point merely saturated, an overflow in the
+alignment search next. On the phone the engine's catch_unwind turned
+each into a frame read as empty.
+
+- `Perspective::map` gives `None` for a point past i32 or NaN. A cell
+  that maps to none is off the image: `fitness_cell` skips it, a grid's
+  bit reads light, a grid whose corners map to none is no grid.
+- A capstone's centre, the timing pattern's ends and the alignment
+  search's seed and corners have to be pixels of the image, or the group
+  is no code: they are measured between and walked from.
+- The alignment search's size estimate is in i64, and its spiral stops
+  once it is twice the image's longer side across.
+- `line_intersect` works in i64 with checked arithmetic, and gives `None`
+  where the intersection overflows or is no i32 point.
+- The asserts and `expect`s on what an image chooses become `None`:
+  a rotated capstone that fits no perspective, a timing scan that saw no
+  timing.
+---
+--- a/src/detect.rs
++++ b/src/detect.rs
+@@ -261,7 +261,14 @@
+ 
+     /* Set up the perspective transform and find the center */
+     let c = Perspective::create(&corners, 7.0, 7.0)?;
+-    let center = c.map(3.5, 3.5);
++    // Sukkula: the centre is a pixel of the image, or this is no capstone.
++    // It was taken wherever it mapped to (an assert stopped only points
++    // past i32), and capstones are measured against each other by their
++    // centres, which overflowed.
++    let center = c.map(3.5, 3.5).filter(|p| {
++        usize::try_from(p.x).is_ok_and(|x| x < img.width())
++            && usize::try_from(p.y).is_ok_and(|y| y < img.height())
++    })?;
+ 
+     Some(CapStone { c, corners, center })
+ }
+--- a/src/geometry.rs
++++ b/src/geometry.rs
+@@ -44,7 +44,13 @@
+         Some(Perspective(c))
+     }
+ 
+-    pub fn map(&self, u: f64, v: f64) -> Point {
++    /// The pixel `u`, `v` maps to, or `None` where that is no pixel.
++    ///
++    /// Sukkula: was asserted to fit an `i32`. A perspective is fitted to
++    /// whatever capstones an image shows, and one fitted to capstones
++    /// nearly in a line has a denominator near zero: it maps a point past
++    /// `i32`, to infinity, or to NaN, and the asserts panicked.
++    pub fn map(&self, u: f64, v: f64) -> Option<Point> {
+         let den = self.0[6] * u + self.0[7] * v + 1.0f64;
+         let x = (self.0[0] * u + self.0[1] * v + self.0[2]) / den;
+         let y = (self.0[3] * u + self.0[4] * v + self.0[5]) / den;
+@@ -52,14 +58,15 @@
+         let x = x.round();
+         let y = y.round();
+ 
+-        assert!(x <= i32::MAX as f64);
+-        assert!(x >= i32::MIN as f64);
+-        assert!(y <= i32::MAX as f64);
+-        assert!(y >= i32::MIN as f64);
+-        Point {
++        // NaN fails both comparisons.
++        let fits = |c: f64| c >= i32::MIN as f64 && c <= i32::MAX as f64;
++        if !(fits(x) && fits(y)) {
++            return None;
++        }
++        Some(Point {
+             x: x as i32,
+             y: y as i32,
+-        }
++        })
+     }
+ 
+     pub fn unmap(&self, p: &Point) -> (f64, f64) {
+@@ -83,16 +90,21 @@
+     }
+ }
+ 
++/// Sukkula: in `i64`, and `None` where the intersection is no `i32`
++/// point. In `i32`, `d * e` overflows for points a thousand pixels apart
++/// (a product of three coordinates), and an image chooses its points.
+ pub fn line_intersect(p0: &Point, p1: &Point, q0: &Point, q1: &Point) -> Option<Point> {
++    let (p0x, p0y, p1x, p1y) = (p0.x as i64, p0.y as i64, p1.x as i64, p1.y as i64);
++    let (q0x, q0y, q1x, q1y) = (q0.x as i64, q0.y as i64, q1.x as i64, q1.y as i64);
+     /* (a, b) is perpendicular to line p */
+-    let a = -(p1.y - p0.y);
+-    let b = p1.x - p0.x;
++    let a = -(p1y - p0y);
++    let b = p1x - p0x;
+     /* (c, d) is perpendicular to line q */
+-    let c = -(q1.y - q0.y);
+-    let d = q1.x - q0.x;
++    let c = -(q1y - q0y);
++    let d = q1x - q0x;
+     /* e and f are dot products of the respective vectors with p and q */
+-    let e = a * p1.x + b * p1.y;
+-    let f = c * q1.x + d * q1.y;
++    let e = a.checked_mul(p1x)?.checked_add(b.checked_mul(p1y)?)?;
++    let f = c.checked_mul(q1x)?.checked_add(d.checked_mul(q1y)?)?;
+     /* Now we need to solve:
+      *     [a b] [rx]   [e]
+      *     [c d] [ry] = [f]
+@@ -101,13 +113,15 @@
+      *       [ d -b] [e]   [rx]
+      * 1/det [-c  a] [f] = [ry]
+      */
+-    let det = a * d - b * c;
++    let det = a.checked_mul(d)?.checked_sub(b.checked_mul(c)?)?;
+     if det == 0 {
+         None
+     } else {
++        let x = d.checked_mul(e)?.checked_sub(b.checked_mul(f)?)? / det;
++        let y = a.checked_mul(f)?.checked_sub(c.checked_mul(e)?)? / det;
+         Some(Point {
+-            x: (d * e - b * f) / det,
+-            y: (-c * e + a * f) / det,
++            x: i32::try_from(x).ok()?,
++            y: i32::try_from(y).ok()?,
+         })
+     }
+ }
+--- a/src/identify/grid.rs
++++ b/src/identify/grid.rs
+@@ -56,14 +56,14 @@
+         /* Rotate each capstone so that corner 0 is top-left with respect
+          * to the grid.
+          */
+-        rotate_capstone(&mut group.0, &h0, &hd);
+-        rotate_capstone(&mut group.1, &h0, &hd);
+-        rotate_capstone(&mut group.2, &h0, &hd);
++        rotate_capstone(&mut group.0, &h0, &hd)?;
++        rotate_capstone(&mut group.1, &h0, &hd)?;
++        rotate_capstone(&mut group.2, &h0, &hd)?;
+ 
+         /* Check the timing pattern. This doesn't require a perspective
+          * transform.
+          */
+-        let grid_size = measure_timing_pattern(img, &group);
++        let grid_size = measure_timing_pattern(img, &group)?;
+ 
+         /* Make an estimate based for the alignment pattern based on extending
+          * lines from capstones A and C.
+@@ -136,8 +136,11 @@
+     }
+ 
+     fn bit(&self, y: usize, x: usize) -> bool {
+-        let p = self.grid.c.map(x as f64 + 0.5, y as f64 + 0.5);
+-        PixelColor::White != self.img.get_pixel_at_point(p)
++        // Sukkula: a cell that maps to no pixel reads as light.
++        self.grid
++            .c
++            .map(x as f64 + 0.5, y as f64 + 0.5)
++            .is_some_and(|p| PixelColor::White != self.img.get_pixel_at_point(p))
+     }
+ }
+ 
+@@ -164,7 +167,9 @@
+     Some(jiggle_perspective(img, initial, grid_size))
+ }
+ 
+-fn rotate_capstone(cap: &mut CapStone, h0: &Point, hd: &Point) {
++/// Sukkula: `None` where the rotated corners fit no perspective, which
++/// was an `expect`: corners an image chooses can lie in a line.
++fn rotate_capstone(cap: &mut CapStone, h0: &Point, hd: &Point) -> Option<()> {
+     let (best_idx, _) = cap
+         .corners
+         .iter()
+@@ -174,8 +179,20 @@
+ 
+     /* Rotate the capstone */
+     cap.corners.rotate_left(best_idx);
+-    cap.c = geometry::Perspective::create(&cap.corners, 7.0, 7.0)
+-        .expect("rotated perspective can't fail");
++    cap.c = geometry::Perspective::create(&cap.corners, 7.0, 7.0)?;
++    Some(())
++}
++
++/// Sukkula: whether `p` is a pixel of `img`. The points the timing and
++/// alignment searches start from have to be: they are measured between
++/// and walked from, and a point a perspective put far off the image made
++/// those walks overflow, or take billions of steps.
++fn inside<S>(img: &PreparedImage<S>, p: &Point) -> bool
++where
++    S: ImageBuffer,
++{
++    usize::try_from(p.x).is_ok_and(|x| x < img.width())
++        && usize::try_from(p.y).is_ok_and(|y| y < img.height())
+ }
+ 
+ //* Try the measure the timing pattern for a given QR code. This does
+@@ -187,15 +204,17 @@
+ // * which is nearest the centre of the code. Using these points, we do
+ // * a horizontal and a vertical timing scan.
+ // */
+-fn measure_timing_pattern<S>(img: &PreparedImage<S>, caps: &CapStoneGroup) -> usize
++// Sukkula: `None` where the pattern's ends are not pixels of the image,
++// or no timing was seen between them (was an assert).
++fn measure_timing_pattern<S>(img: &PreparedImage<S>, caps: &CapStoneGroup) -> Option<usize>
+ where
+     S: ImageBuffer,
+ {
+     const US: [f64; 3] = [6.5f64, 6.5f64, 0.5f64];
+     const VS: [f64; 3] = [0.5f64, 6.5f64, 6.5f64];
+-    let tpet0 = caps.0.c.map(US[0], VS[0]);
+-    let tpet1 = caps.1.c.map(US[1], VS[1]);
+-    let tpet2 = caps.2.c.map(US[2], VS[2]);
++    let tpet0 = caps.0.c.map(US[0], VS[0]).filter(|p| inside(img, p))?;
++    let tpet1 = caps.1.c.map(US[1], VS[1]).filter(|p| inside(img, p))?;
++    let tpet2 = caps.2.c.map(US[2], VS[2]).filter(|p| inside(img, p))?;
+ 
+     let hscan = timing_scan(img, &tpet1, &tpet2);
+     let vscan = timing_scan(img, &tpet1, &tpet0);
+@@ -203,10 +222,12 @@
+     let scan = cmp::max(hscan, vscan);
+ 
+     /* Choose the nearest allowable grid size */
+-    assert!(scan >= 1);
++    if scan < 1 {
++        return None;
++    }
+     let size = scan + 13;
+     let ver = (size as f64 - 15.0).floor() as usize / 4;
+-    ver * 4 + 17
++    Some(ver * 4 + 17)
+ }
+ 
+ fn timing_scan<S>(img: &PreparedImage<S>, p0: &Point, p1: &Point) -> usize
+@@ -240,13 +261,26 @@
+     /* Guess another two corners of the alignment pattern so that we
+      * can estimate its size.
+      */
++    // Sukkula: the seed and both corners are pixels of the image, or
++    // there is no pattern to find; they were taken wherever they mapped
++    // to, and the estimate below overflowed.
++    if !inside(img, &align_seed) {
++        return None;
++    }
+     let (u, v) = c0.c.unmap(&align_seed);
+-    let a = c0.c.map(u, v + 1.0);
++    let a = c0.c.map(u, v + 1.0).filter(|p| inside(img, p))?;
+     let (u, v) = c2.c.unmap(&align_seed);
+-    let c = c2.c.map(u + 1.0, v);
+-    let size_estimate = ((a.x - align_seed.x) * -(c.y - align_seed.y)
+-        + (a.y - align_seed.y) * (c.x - align_seed.x))
++    let c = c2.c.map(u + 1.0, v).filter(|p| inside(img, p))?;
++    // In i64: each factor is under the image's side, and a side can be
++    // more than 2^15 pixels.
++    let d = |p: i32, q: i32| i64::from(p) - i64::from(q);
++    let size_estimate = (d(a.x, align_seed.x) * -d(c.y, align_seed.y)
++        + d(a.y, align_seed.y) * d(c.x, align_seed.x))
+         .unsigned_abs() as usize;
++    // Sukkula: a spiral wider than twice the image's longer side has
++    // left it on every side; an estimate an image chose could otherwise
++    // keep it going for billions of steps.
++    let widest = 2 * cmp::max(img.width(), img.height());
+ 
+     /* Spiral outwards from the estimate point until we find something
+      * roughly the right size. Don't look too far from the estimate
+@@ -255,7 +289,7 @@
+     let mut dir = 0;
+     let mut step_size = 1;
+ 
+-    while step_size * step_size < size_estimate * 100 {
++    while step_size <= widest && step_size * step_size < size_estimate.saturating_mul(100) {
+         const DX_MAP: [i32; 4] = [1, 0, -1, 0];
+         const DY_MAP: [i32; 4] = [0, -1, 0, 1];
+         for _pass in 0..step_size {
+@@ -450,7 +484,10 @@
+     #[allow(clippy::needless_range_loop)]
+     for v in 0..3 {
+         for u in 0..3 {
+-            let p = perspective.map(x as f64 + OFFSETS[u], y as f64 + OFFSETS[v]);
++            // Sukkula: a cell that maps to no pixel is off the image.
++            let Some(p) = perspective.map(x as f64 + OFFSETS[u], y as f64 + OFFSETS[v]) else {
++                continue;
++            };
+             if !(p.y < 0 || p.y as usize >= img.height() || p.x < 0 || p.x as usize >= img.width())
+             {
+                 if PixelColor::White != img.get_pixel_at_point(p) {
+--- a/src/prepare.rs
++++ b/src/prepare.rs
+@@ -254,19 +254,18 @@
+             .filter_map(|v| crate::SkewedGridLocation::from_group(self, v))
+             .collect();
+         for grid_location in locations {
+-            let bounds = [
+-                grid_location.c.map(0.0, 0.0),
+-                grid_location
+-                    .c
+-                    .map(grid_location.grid_size as f64 + 1.0, 0.0),
+-                grid_location.c.map(
+-                    grid_location.grid_size as f64 + 1.0,
+-                    grid_location.grid_size as f64 + 1.0,
+-                ),
+-                grid_location
+-                    .c
+-                    .map(0.0, grid_location.grid_size as f64 + 1.0),
+-            ];
++            // Sukkula: a grid whose corners map to no pixel is none.
++            let corner = |u: f64, v: f64| grid_location.c.map(u, v);
++            let far = grid_location.grid_size as f64 + 1.0;
++            let (Some(c0), Some(c1), Some(c2), Some(c3)) = (
++                corner(0.0, 0.0),
++                corner(far, 0.0),
++                corner(far, far),
++                corner(0.0, far),
++            ) else {
++                continue;
++            };
++            let bounds = [c0, c1, c2, c3];
+             let grid = grid_location.into_grid_image(self);
+             res.push(crate::Grid { grid, bounds });
+         }

@@ -56,14 +56,14 @@ impl SkewedGridLocation {
         /* Rotate each capstone so that corner 0 is top-left with respect
          * to the grid.
          */
-        rotate_capstone(&mut group.0, &h0, &hd);
-        rotate_capstone(&mut group.1, &h0, &hd);
-        rotate_capstone(&mut group.2, &h0, &hd);
+        rotate_capstone(&mut group.0, &h0, &hd)?;
+        rotate_capstone(&mut group.1, &h0, &hd)?;
+        rotate_capstone(&mut group.2, &h0, &hd)?;
 
         /* Check the timing pattern. This doesn't require a perspective
          * transform.
          */
-        let grid_size = measure_timing_pattern(img, &group);
+        let grid_size = measure_timing_pattern(img, &group)?;
 
         /* Make an estimate based for the alignment pattern based on extending
          * lines from capstones A and C.
@@ -136,8 +136,11 @@ where
     }
 
     fn bit(&self, y: usize, x: usize) -> bool {
-        let p = self.grid.c.map(x as f64 + 0.5, y as f64 + 0.5);
-        PixelColor::White != self.img.get_pixel_at_point(p)
+        // Sukkula: a cell that maps to no pixel reads as light.
+        self.grid
+            .c
+            .map(x as f64 + 0.5, y as f64 + 0.5)
+            .is_some_and(|p| PixelColor::White != self.img.get_pixel_at_point(p))
     }
 }
 
@@ -164,7 +167,9 @@ where
     Some(jiggle_perspective(img, initial, grid_size))
 }
 
-fn rotate_capstone(cap: &mut CapStone, h0: &Point, hd: &Point) {
+/// Sukkula: `None` where the rotated corners fit no perspective, which
+/// was an `expect`: corners an image chooses can lie in a line.
+fn rotate_capstone(cap: &mut CapStone, h0: &Point, hd: &Point) -> Option<()> {
     let (best_idx, _) = cap
         .corners
         .iter()
@@ -174,8 +179,20 @@ fn rotate_capstone(cap: &mut CapStone, h0: &Point, hd: &Point) {
 
     /* Rotate the capstone */
     cap.corners.rotate_left(best_idx);
-    cap.c = geometry::Perspective::create(&cap.corners, 7.0, 7.0)
-        .expect("rotated perspective can't fail");
+    cap.c = geometry::Perspective::create(&cap.corners, 7.0, 7.0)?;
+    Some(())
+}
+
+/// Sukkula: whether `p` is a pixel of `img`. The points the timing and
+/// alignment searches start from have to be: they are measured between
+/// and walked from, and a point a perspective put far off the image made
+/// those walks overflow, or take billions of steps.
+fn inside<S>(img: &PreparedImage<S>, p: &Point) -> bool
+where
+    S: ImageBuffer,
+{
+    usize::try_from(p.x).is_ok_and(|x| x < img.width())
+        && usize::try_from(p.y).is_ok_and(|y| y < img.height())
 }
 
 //* Try the measure the timing pattern for a given QR code. This does
@@ -187,15 +204,17 @@ fn rotate_capstone(cap: &mut CapStone, h0: &Point, hd: &Point) {
 // * which is nearest the centre of the code. Using these points, we do
 // * a horizontal and a vertical timing scan.
 // */
-fn measure_timing_pattern<S>(img: &PreparedImage<S>, caps: &CapStoneGroup) -> usize
+// Sukkula: `None` where the pattern's ends are not pixels of the image,
+// or no timing was seen between them (was an assert).
+fn measure_timing_pattern<S>(img: &PreparedImage<S>, caps: &CapStoneGroup) -> Option<usize>
 where
     S: ImageBuffer,
 {
     const US: [f64; 3] = [6.5f64, 6.5f64, 0.5f64];
     const VS: [f64; 3] = [0.5f64, 6.5f64, 6.5f64];
-    let tpet0 = caps.0.c.map(US[0], VS[0]);
-    let tpet1 = caps.1.c.map(US[1], VS[1]);
-    let tpet2 = caps.2.c.map(US[2], VS[2]);
+    let tpet0 = caps.0.c.map(US[0], VS[0]).filter(|p| inside(img, p))?;
+    let tpet1 = caps.1.c.map(US[1], VS[1]).filter(|p| inside(img, p))?;
+    let tpet2 = caps.2.c.map(US[2], VS[2]).filter(|p| inside(img, p))?;
 
     let hscan = timing_scan(img, &tpet1, &tpet2);
     let vscan = timing_scan(img, &tpet1, &tpet0);
@@ -203,10 +222,12 @@ where
     let scan = cmp::max(hscan, vscan);
 
     /* Choose the nearest allowable grid size */
-    assert!(scan >= 1);
+    if scan < 1 {
+        return None;
+    }
     let size = scan + 13;
     let ver = (size as f64 - 15.0).floor() as usize / 4;
-    ver * 4 + 17
+    Some(ver * 4 + 17)
 }
 
 fn timing_scan<S>(img: &PreparedImage<S>, p0: &Point, p1: &Point) -> usize
@@ -240,13 +261,26 @@ where
     /* Guess another two corners of the alignment pattern so that we
      * can estimate its size.
      */
+    // Sukkula: the seed and both corners are pixels of the image, or
+    // there is no pattern to find; they were taken wherever they mapped
+    // to, and the estimate below overflowed.
+    if !inside(img, &align_seed) {
+        return None;
+    }
     let (u, v) = c0.c.unmap(&align_seed);
-    let a = c0.c.map(u, v + 1.0);
+    let a = c0.c.map(u, v + 1.0).filter(|p| inside(img, p))?;
     let (u, v) = c2.c.unmap(&align_seed);
-    let c = c2.c.map(u + 1.0, v);
-    let size_estimate = ((a.x - align_seed.x) * -(c.y - align_seed.y)
-        + (a.y - align_seed.y) * (c.x - align_seed.x))
+    let c = c2.c.map(u + 1.0, v).filter(|p| inside(img, p))?;
+    // In i64: each factor is under the image's side, and a side can be
+    // more than 2^15 pixels.
+    let d = |p: i32, q: i32| i64::from(p) - i64::from(q);
+    let size_estimate = (d(a.x, align_seed.x) * -d(c.y, align_seed.y)
+        + d(a.y, align_seed.y) * d(c.x, align_seed.x))
         .unsigned_abs() as usize;
+    // Sukkula: a spiral wider than twice the image's longer side has
+    // left it on every side; an estimate an image chose could otherwise
+    // keep it going for billions of steps.
+    let widest = 2 * cmp::max(img.width(), img.height());
 
     /* Spiral outwards from the estimate point until we find something
      * roughly the right size. Don't look too far from the estimate
@@ -255,7 +289,7 @@ where
     let mut dir = 0;
     let mut step_size = 1;
 
-    while step_size * step_size < size_estimate * 100 {
+    while step_size <= widest && step_size * step_size < size_estimate.saturating_mul(100) {
         const DX_MAP: [i32; 4] = [1, 0, -1, 0];
         const DY_MAP: [i32; 4] = [0, -1, 0, 1];
         for _pass in 0..step_size {
@@ -450,7 +484,10 @@ where
     #[allow(clippy::needless_range_loop)]
     for v in 0..3 {
         for u in 0..3 {
-            let p = perspective.map(x as f64 + OFFSETS[u], y as f64 + OFFSETS[v]);
+            // Sukkula: a cell that maps to no pixel is off the image.
+            let Some(p) = perspective.map(x as f64 + OFFSETS[u], y as f64 + OFFSETS[v]) else {
+                continue;
+            };
             if !(p.y < 0 || p.y as usize >= img.height() || p.x < 0 || p.x as usize >= img.width())
             {
                 if PixelColor::White != img.get_pixel_at_point(p) {

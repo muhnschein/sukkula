@@ -412,15 +412,20 @@ slowest well under a second.
 
 ## The first red nights (2026-09-28 to 10-01)
 
-`qr_frame` failed every night from the first after it merged. rqrr's
+`qr_frame` crashed every night from the first after it merged. rqrr's
 `Perspective::map` asserted that every point it maps fits an `i32`; a
 perspective fitted to capstones nearly in a line has a denominator near
 zero, and maps a cell to beyond that, to infinity, or to NaN. On the phone
 `scan`'s catch_unwind turned the panic into a frame read as empty; under
 libFuzzer, whose panic hook aborts whether or not the panic is caught, it
-was a crash. rqrr now saturates the coordinate (`third_party/rqrr.patches/0003`),
-the minimised frame is `seeds/qr_frame/regress-degenerate-perspective`, and
-`scan.rs`'s `a_degenerate_perspective_reads_as_no_code` keeps it dead.
+was a crash. Saturating the coordinate only moved the crash: twenty
+minutes on, an `i32` overflow in the alignment search, which started from
+points far off the image. rqrr now refuses such points wherever they are
+measured from or walked from (`third_party/rqrr.patches/0003`); a further
+25 minutes on two cores found nothing. The two minimised frames are
+`seeds/qr_frame/regress-*`, and `scan.rs`'s
+`a_degenerate_perspective_reads_as_no_code` and
+`an_alignment_search_off_the_image_reads_as_no_code` keep them dead.
 
 The nights' logs did not say so: the API serves a log's last lines, the
 verdict was printed amid the next targets' output, and the artifact's
