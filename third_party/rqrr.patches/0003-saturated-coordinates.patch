@@ -1,0 +1,61 @@
+Saturated coordinates: a degenerate perspective maps off the image
+
+`Perspective::map` asserted that every point it maps fits an `i32`. A
+perspective is fitted to whatever three capstones and an alignment
+pattern a frame shows; when they lie nearly in a line its denominator
+nears zero, and a cell maps to beyond `i32`, to infinity, or to NaN
+(0/0), and the asserts panicked. The nightly fuzzer's `qr_frame` found
+one in a few minutes of camera-shaped noise; on the phone the engine's
+catch_unwind turned it into a frame read as empty, after a panic on the
+scanner thread for every such frame.
+
+The coordinate now saturates, as `as` does, and NaN is taken as far off
+the image (i32::MIN). Both are outside it, where the real point is too,
+and every caller already treats a point outside the image as such:
+`fitness_cell` skips it, `get_pixel_at_point` clamps it. A grid that
+maps off the image does not decode; nothing panics.
+---
+--- a/src/geometry.rs
++++ b/src/geometry.rs
+@@ -49,16 +49,9 @@
+         let x = (self.0[0] * u + self.0[1] * v + self.0[2]) / den;
+         let y = (self.0[3] * u + self.0[4] * v + self.0[5]) / den;
+ 
+-        let x = x.round();
+-        let y = y.round();
+-
+-        assert!(x <= i32::MAX as f64);
+-        assert!(x >= i32::MIN as f64);
+-        assert!(y <= i32::MAX as f64);
+-        assert!(y >= i32::MIN as f64);
+         Point {
+-            x: x as i32,
+-            y: y as i32,
++            x: coordinate(x),
++            y: coordinate(y),
+         }
+     }
+ 
+@@ -83,6 +76,22 @@
+     }
+ }
+ 
++/// A mapped coordinate as a pixel's. Sukkula: was asserted to fit an
++/// `i32`, and a perspective whose denominator nears zero -- three
++/// capstones nearly in a line, which any frame can show -- maps a point
++/// to beyond it, or to infinity or NaN: the asserts panicked. Saturated
++/// instead (`as` does), and NaN taken as far off the image, so the point
++/// lies outside it as the real one does; every caller already reads a
++/// point outside the image as such (`fitness_cell` skips it,
++/// `get_pixel_at_point` clamps it).
++fn coordinate(c: f64) -> i32 {
++    if c.is_nan() {
++        i32::MIN
++    } else {
++        c.round() as i32
++    }
++}
++
+ pub fn line_intersect(p0: &Point, p1: &Point, q0: &Point, q1: &Point) -> Option<Point> {
+     /* (a, b) is perpendicular to line p */
+     let a = -(p1.y - p0.y);

@@ -49,16 +49,9 @@ impl Perspective {
         let x = (self.0[0] * u + self.0[1] * v + self.0[2]) / den;
         let y = (self.0[3] * u + self.0[4] * v + self.0[5]) / den;
 
-        let x = x.round();
-        let y = y.round();
-
-        assert!(x <= i32::MAX as f64);
-        assert!(x >= i32::MIN as f64);
-        assert!(y <= i32::MAX as f64);
-        assert!(y >= i32::MIN as f64);
         Point {
-            x: x as i32,
-            y: y as i32,
+            x: coordinate(x),
+            y: coordinate(y),
         }
     }
 
@@ -80,6 +73,22 @@ impl Perspective {
             / den;
 
         (u, v)
+    }
+}
+
+/// A mapped coordinate as a pixel's. Sukkula: was asserted to fit an
+/// `i32`, and a perspective whose denominator nears zero -- three
+/// capstones nearly in a line, which any frame can show -- maps a point
+/// to beyond it, or to infinity or NaN: the asserts panicked. Saturated
+/// instead (`as` does), and NaN taken as far off the image, so the point
+/// lies outside it as the real one does; every caller already reads a
+/// point outside the image as such (`fitness_cell` skips it,
+/// `get_pixel_at_point` clamps it).
+fn coordinate(c: f64) -> i32 {
+    if c.is_nan() {
+        i32::MIN
+    } else {
+        c.round() as i32
     }
 }
 
