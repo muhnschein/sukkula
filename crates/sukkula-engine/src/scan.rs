@@ -535,6 +535,21 @@ mod tests {
         assert_eq!(Frame::bytes(usize::MAX, 3, usize::MAX), None);
     }
 
+    /// A frame whose capstones fit a perspective that maps cells off any
+    /// `i32`, or to NaN, tripped rqrr's asserts in `Perspective::map`
+    /// (third_party/rqrr.patches/0003): the nightly `qr_frame` fuzzer's
+    /// finding, minimised. `texts` is called as well as `scan`, since
+    /// `scan`'s catch_unwind would hide the panic, as it did on the phone.
+    #[test]
+    fn a_degenerate_perspective_reads_as_no_code() {
+        let input = include_bytes!("../tests/fixtures/qr/degenerate-perspective.frame");
+        let (&width, luma) = input.split_first().unwrap();
+        let width = usize::from(width);
+        let frame = Frame::new(luma, width, luma.len() / width, width).unwrap();
+        assert_eq!(texts(&frame), None);
+        assert_eq!(scan(&frame), None);
+    }
+
     /// A frame tiled with finder patterns once kept rqrr's grouping busy
     /// for minutes (third_party/rqrr.patches/0002); now it is skipped at
     /// the cost of finding them.

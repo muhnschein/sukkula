@@ -96,7 +96,7 @@ shape a typed one has (`sukkula_fuzz::assert_scanned`).
 | Target | Surface | Properties asserted |
 | --- | --- | --- |
 | `qr_text` | what a QR code says, `scan::read` | a wormhole code only from a `wormhole-transfer:` URI, in any case, and exactly its path percent-decoded and lowercased; a mailbox only with a `rendezvous` parameter, a plain `ws://` or `wss://` URL that is not the default; a croc code either the text itself, in croc's shape (restated), or the one `code` parameter of an `https://getcroc.com/` link with nothing else in it; croc's words of 6 to 128 bytes always read as a code; white space around the text changes nothing |
-| `qr_frame` | a camera frame, `scan::scan`: rqrr's detection and decoding, then `read` | the scan ends within libFuzzer's timeout -- rqrr's grouping is bounded (`third_party/rqrr.patches/0002`); what it reads keeps a code's shape; the same frame reads the same twice |
+| `qr_frame` | a camera frame, `scan::scan`: rqrr's detection and decoding, then `read` | the scan ends within libFuzzer's timeout -- rqrr's grouping is bounded (`third_party/rqrr.patches/0002`); it does not panic, though `scan`'s catch_unwind would hide one on the phone (libFuzzer aborts on a panic, caught or not); what it reads keeps a code's shape; the same frame reads the same twice |
 
 The two Quick Share targets play the sender (`src/quickshare.rs`): rqs_lib's
 `InboundRequest` reads real frames from a socket that never waits, and the
@@ -409,3 +409,21 @@ other text targets for `wormhole_code`'s reason: every code that passes the
 grammar goes to magic-wormhole's entropy estimate. `qr_frame` runs rqrr
 over frames of up to 16 KiB under ASan: tens of executions a second, the
 slowest well under a second.
+
+## The first red nights (2026-09-28 to 10-01)
+
+`qr_frame` failed every night from the first after it merged. rqrr's
+`Perspective::map` asserted that every point it maps fits an `i32`; a
+perspective fitted to capstones nearly in a line has a denominator near
+zero, and maps a cell to beyond that, to infinity, or to NaN. On the phone
+`scan`'s catch_unwind turned the panic into a frame read as empty; under
+libFuzzer, whose panic hook aborts whether or not the panic is caught, it
+was a crash. rqrr now saturates the coordinate (`third_party/rqrr.patches/0003`),
+the minimised frame is `seeds/qr_frame/regress-degenerate-perspective`, and
+`scan.rs`'s `a_degenerate_perspective_reads_as_no_code` keeps it dead.
+
+The nights' logs did not say so: the API serves a log's last lines, the
+verdict was printed amid the next targets' output, and the artifact's
+storage host can be out of reach. `fuzz-smoke.sh` now repeats every
+verdict at the end of the log, with the reproducer in base64, and in the
+run's summary.

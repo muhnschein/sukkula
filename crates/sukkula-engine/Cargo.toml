@@ -104,7 +104,8 @@ rqs_lib = { path = "../../third_party/rqs_lib", optional = true }
 magic-wormhole = { version = "=0.8.1", default-features = false, features = ["transfer"], optional = true }
 # The QR code a send by code shows (F-MW1, F-CR1), and reading one from the
 # camera to receive (F-MW2, F-CR2; src/scan.rs): rqrr 0.11.0, vendored
-# with its grouping bounded (third_party/rqrr.patches; ci/vendor.conf).
+# with its grouping bounded and no panic on a degenerate perspective
+# (third_party/rqrr.patches; ci/vendor.conf).
 # Pure Rust, no unsafe, and with no default features no `image` either;
 # g2p and lru come with it.
 qrcode = { version = "0.14", default-features = false, optional = true }
