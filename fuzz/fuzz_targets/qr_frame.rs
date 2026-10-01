@@ -4,7 +4,8 @@
 //!
 //! A frame is whatever the camera is pointed at, a QR code printed to be
 //! hostile among them. The input's first byte is the frame's width, and
-//! the rest its rows, as many whole ones as there are. Asserted: the scan
+//! the rest its rows, as many whole ones as there are up to `MAX_SIDE`
+//! (`sukkula_fuzz::qr_frame_of`). Asserted: the scan
 //! ends -- libFuzzer's timeout is the bound, the grouping rqrr is vendored
 //! with (`third_party/rqrr.patches/0002`) what keeps it -- and anything it
 //! reads keeps the shape every code keeps (`sukkula_fuzz::assert_scanned`);
@@ -15,19 +16,13 @@
 #![allow(clippy::disallowed_methods)]
 
 use libfuzzer_sys::fuzz_target;
-use sukkula_engine::scan::{self, Frame};
-use sukkula_fuzz::assert_scanned;
+use sukkula_engine::scan;
+use sukkula_fuzz::{assert_scanned, qr_frame_of};
 
 fuzz_target!(|data: &[u8]| {
-    let Some((&width, luma)) = data.split_first() else {
+    let Some(frame) = qr_frame_of(data) else {
         return;
     };
-    let width = usize::from(width).max(1);
-    let height = luma.len() / width;
-    if height == 0 {
-        return;
-    }
-    let frame = Frame::new(luma, width, height, width).expect("a frame this small is in range");
     let found = scan::scan(&frame);
     if let Some(found) = &found {
         assert_scanned(found);

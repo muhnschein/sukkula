@@ -19,6 +19,7 @@ use sukkula_core::limits::{
 };
 use sukkula_core::offer::Offer;
 use sukkula_engine::api::{Peer, Scanned};
+use sukkula_engine::scan::{Frame, MAX_SIDE};
 
 /// Asserts `violation` is `None`, naming the input when it is not. A
 /// violation is a finding as real as a crash: libFuzzer saves the input.
@@ -183,5 +184,44 @@ pub fn assert_scanned(s: &Scanned) {
             assert!(code.bytes().all(|b| b.is_ascii_graphic()), "croc code {code:?}");
         }
         Scanned::Other => {}
+    }
+}
+
+/// `qr_frame`'s input as a frame: its first byte the width (0 read as 1),
+/// the rest whole rows, at most [`MAX_SIDE`] of them as the shell's scaled
+/// viewfinder has; `None` without one whole row. Every input with a row is
+/// a frame: a narrow one once had more rows than a frame may, and the
+/// target's `expect` on it was a crash in the harness, not the engine.
+#[must_use]
+pub fn qr_frame_of(data: &[u8]) -> Option<Frame<'_>> {
+    let (&width, luma) = data.split_first()?;
+    let width = usize::from(width).max(1);
+    let height = (luma.len() / width).min(MAX_SIDE);
+    if height == 0 {
+        return None;
+    }
+    Some(Frame::new(luma, width, height, width).expect("a frame of at most MAX_SIDE rows"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_qr_frame_input_with_a_row_is_a_frame() {
+        let bytes = vec![0x80; 16_384];
+        for width in 0..=u8::MAX {
+            let w = usize::from(width).max(1);
+            for len in [0, 1, w, w + 1, 1024 * w, 1024 * w + w, 1025 * w + 1, 16_383] {
+                let mut input = vec![width];
+                input.extend_from_slice(&bytes[..len.min(bytes.len())]);
+                let rows = input.len().saturating_sub(1) / w;
+                assert_eq!(
+                    qr_frame_of(&input).is_some(),
+                    rows > 0,
+                    "width byte {width}, {len} bytes of rows"
+                );
+            }
+        }
     }
 }

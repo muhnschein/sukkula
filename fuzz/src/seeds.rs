@@ -26,7 +26,7 @@ use std::borrow::Borrow;
 use arbitrary::{Arbitrary, Unstructured};
 
 use sukkula_engine::api::Scanned;
-use sukkula_engine::scan::{self, Frame};
+use sukkula_engine::scan;
 
 use crate::handshake::{self, Finish, Init, Key, Pad, Request, Script};
 use crate::quickshare::{
@@ -862,10 +862,8 @@ fn qr_frame_seeds() -> Vec<(Vec<u8>, Option<Scanned>)> {
 #[test]
 fn every_qr_frame_seed_scans_as_it_says() {
     for (input, want) in qr_frame_seeds() {
-        let (width, luma) = input.split_first().expect("a seed");
-        let width = usize::from(*width);
-        let frame = Frame::new(luma, width, luma.len() / width, width).expect("a seed in range");
-        assert_eq!(scan::scan(&frame), want, "a {width}-wide seed");
+        let frame = crate::qr_frame_of(&input).expect("a seed with rows");
+        assert_eq!(scan::scan(&frame), want, "a {}-wide seed", input[0]);
     }
 }
 

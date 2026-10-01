@@ -421,11 +421,18 @@ libFuzzer, whose panic hook aborts whether or not the panic is caught, it
 was a crash. Saturating the coordinate only moved the crash: twenty
 minutes on, an `i32` overflow in the alignment search, which started from
 points far off the image. rqrr now refuses such points wherever they are
-measured from or walked from (`third_party/rqrr.patches/0003`); a further
-25 minutes on two cores found nothing. The two minimised frames are
-`seeds/qr_frame/regress-*`, and `scan.rs`'s
-`a_degenerate_perspective_reads_as_no_code` and
+measured from or walked from (`third_party/rqrr.patches/0003`). The two
+minimised frames are `seeds/qr_frame/regress-{degenerate-perspective,off-image-alignment}`,
+and `scan.rs`'s `a_degenerate_perspective_reads_as_no_code` and
 `an_alignment_search_off_the_image_reads_as_no_code` keep them dead.
+
+The run after that found one in the harness: an input whose width byte is
+0 or 1 and whose rows run past 1024 made a frame taller than `MAX_SIDE`,
+which `Frame::new` refuses, and the target's `expect` on it crashed. The
+input is now read by `sukkula_fuzz::qr_frame_of`, which keeps at most
+`MAX_SIDE` rows, as the shell's scaled viewfinder does;
+`every_qr_frame_input_with_a_row_is_a_frame` holds it to that, and the
+input is `seeds/qr_frame/regress-narrow-tall`.
 
 The nights' logs did not say so: the API serves a log's last lines, the
 verdict was printed amid the next targets' output, and the artifact's
