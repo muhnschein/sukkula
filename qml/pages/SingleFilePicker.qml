@@ -4,20 +4,20 @@ import Sailfish.Pickers 1.0
 
 /*
  * One file to send, from Silica's file browser: what SendView falls back
- * to where FilePicker.qml's dialog for several cannot be loaded.
- *
- * See FilePicker.qml for why the browser and not the content pickers.
+ * to where Pickers.qml's dialogs for several cannot be loaded.
  */
 FilePickerPage {
     id: picker
 
-    /// Absolute paths were chosen: one, here.
-    signal picked(var paths)
+    /// Files were chosen: [{path, size}], one here.
+    signal picked(var files)
 
     onSelectedContentPropertiesChanged: {
         var chosen = picker.selectedContentProperties
         if (chosen && chosen.filePath) {
-            picker.picked([String(chosen.filePath)])
+            var size = Number(chosen.fileSize)
+            picker.picked([{ path: String(chosen.filePath),
+                             size: isFinite(size) && size >= 0 ? Math.floor(size) : -1 }])
         }
     }
 }

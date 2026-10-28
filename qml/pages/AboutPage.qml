@@ -90,7 +90,7 @@ Page {
                 x: Theme.horizontalPageMargin
                 width: parent.width - 2 * Theme.horizontalPageMargin
                 //: About page: the name.
-                text: qsTr("Sukkula is Finnish for “shuttle”: it carries things back and forth.")
+                text: qsTr("Sukkula is Finnish for “shuttle”.")
                 textFormat: Text.PlainText
                 wrapMode: Text.Wrap
                 font.pixelSize: Theme.fontSizeSmall

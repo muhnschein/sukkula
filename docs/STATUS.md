@@ -1,6 +1,6 @@
 # Status
 
-Where Sukkula stands against `docs/SPEC.md` (v0.6), what has been
+Where Sukkula stands against `docs/SPEC.md` (v0.7), what has been
 verified and how, and what is waiting on the owner or on hardware.
 
 ## Built
@@ -19,13 +19,23 @@ Everything the spec asks for in v1.0:
   - Bluetooth OBEX send.
 - The hub, the C ABI (`sukkula-ffi`) and per-engine logging (S9).
 - The Qt/C++ shell and the Silica UI in en/fi/de/sv, with the Share menu
-  and Send | Receive as the main page's two tabs (spec v0.5): the send
-  radar puts every protocol's peers on one screen, the receive radar
-  shows who is sending, and History lists what went and came.
+  and Send | Receive as the main page's two tabs, redesigned in spec v0.7
+  for people who have never heard of the protocols, round one circle that
+  stays put from step to step (the anchor: looking, ready, waiting, the
+  percentage, a check, a cross): Send asks what (one button, the
+  platform's content picker) and then to whom (the devices nearby by
+  name, one row for a device found two ways, About this device with its
+  pinned certificate, and sending with a code on a page of its own with
+  its QR code in the anchor's place, Copy, Share and "Receiver's app"),
+  and a send is the whole tab until it is sent or not; Receive shows
+  whether the phone is ready, what comes in and what came today, with how
+  each way of receiving is doing in Settings. The cover offers Send and Receive, and receiving stops a few
+  seconds after the app leaves the front. History lists what went and
+  came. Sukkula sends files only (spec v0.7).
 - Scanning a Magic Wormhole or croc code off the sender's screen (spec
-  v0.6): the Receive tab's QR code opens one page for both, the
-  viewfinder with the code a tap away to type, and the engine tells a
-  code's protocol (`receive_code`); `src/scanner.cpp`, `sukkula_scan_qr`,
+  v0.6): the Receive tab's "Scan a QR code" opens the viewfinder and
+  "Type in a code" a page to type or paste it, each for both, and the
+  engine tells a typed code's protocol (`receive_code`); `src/scanner.cpp`, `sukkula_scan_qr`,
   and `third_party/rqrr` (0.11.0 plus 2 patches) behind it; croc's code
   as a QR code on the send side.
 - The RPM spec for the Jolla Phone 2026 (Sailfish OS 5.2+, aarch64 only).
@@ -107,8 +117,9 @@ docs; the upstream ones are in `docs/UPSTREAM-QUICKSHARE.md`.
   - Sailjail;
   - real Android, LocalSend, wormhole, croc and Bluetooth peers;
   - the Share-menu activation (`ExecDBus`);
-  - how the radars and the tabs look and feel on the phone (M-18, M-19):
-    the host tests lay them out but never look at them or swipe.
+  - how the tabs, the pickers and the cover look and feel on the phone
+    (M-5, M-18, M-19, M-70 to M-74): the host tests lay them out but never
+    look at them or swipe, and the pickers are stand-ins there.
 
 ## Waiting on the owner
 
@@ -125,9 +136,11 @@ docs; the upstream ones are in `docs/UPSTREAM-QUICKSHARE.md`.
 
 ## Later
 
-Nothing is waiting on a Sailjail permission any more. The one item that
-was, scanning a code as a QR code, came in spec v0.6 as this list asked:
-`Camera` in §2, the `.desktop` file and `POLICY_PERMISSIONS` in
-`ci/harbour-check.sh` in one commit, the decoder vendored and patched
-after its own review, two fuzz targets, and the decoded text through the
-same `code::parse` a typed code goes through.
+Nothing is waiting on a Sailjail permission any more. The items that
+were came as this list asked, each with §2, the `.desktop` file and
+`POLICY_PERMISSIONS` in `ci/harbour-check.sh` in one commit: scanning a
+code as a QR code in spec v0.6 (`Camera`, the decoder vendored and
+patched after its own review, two fuzz targets, and the decoded text
+through the same `code::parse` a typed code goes through), and the
+platform's content picker for pictures, videos, music and documents in spec v0.7
+(`MediaIndexing`).

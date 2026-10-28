@@ -614,6 +614,16 @@ async fn peers_are_bounded_and_reported() {
     for e in rig.seen.events() {
         if let Event::PeerFound { peer: p } = e {
             assert!(p.id.is_ascii() && p.id.starts_with("qs:"), "{}", p.id);
+            // Its address, without the port, and no fingerprint: that is
+            // LocalSend's.
+            assert!(
+                p.address
+                    .as_deref()
+                    .is_some_and(|a| a.starts_with("127.3.")),
+                "{:?}",
+                p.address
+            );
+            assert_eq!(p.fingerprint, None);
             assert!(
                 !p.name.contains('\u{202e}') && !p.name.contains('\n'),
                 "{:?}",

@@ -1,4 +1,4 @@
 # A stub of Sailfish.Pickers for host tests; see qml-stubs/README.md.
 module Sailfish.Pickers
 FilePickerPage 1.0 FilePickerPage.qml
-MultiFilePickerDialog 1.0 MultiFilePickerDialog.qml
+MultiContentPickerDialog 1.0 MultiContentPickerDialog.qml

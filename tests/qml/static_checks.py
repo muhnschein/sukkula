@@ -129,7 +129,7 @@ def blocks(code, type_name):
 
 
 # Spec §2, in the order the desktop file lists them.
-PERMISSIONS = "Internet;Bluetooth;Camera;Downloads;Documents;Music;Pictures;Videos;RemovableMedia"
+PERMISSIONS = "Internet;Bluetooth;Camera;Downloads;Documents;Music;Pictures;Videos;RemovableMedia;MediaIndexing"
 
 ALLOWED_IMPORTS = {
     "QtQuick": {"2.0", "2.1", "2.2", "2.3", "2.4", "2.5", "2.6"},
@@ -140,10 +140,11 @@ ALLOWED_IMPORTS = {
     "Nemo.Notifications": {"1.0"},
     "QtMultimedia": {"5.6"},
 }
-# Named in one file each, so a fault in the module costs that file only.
+# Named in as few files as can be, each loaded on its own, so a fault in
+# the module costs those files only.
 ONLY_IN = {
-    "Sailfish.Share": {"qml/share/ShareTarget.qml"},
-    "Sailfish.Pickers": {"qml/pages/FilePicker.qml", "qml/pages/SingleFilePicker.qml"},
+    "Sailfish.Share": {"qml/share/ShareTarget.qml", "qml/share/ShareCode.qml"},
+    "Sailfish.Pickers": {"qml/pages/Pickers.qml", "qml/pages/SingleFilePicker.qml"},
     "Nemo.KeepAlive": {"qml/harbour-sukkula.qml"},
     "Nemo.Notifications": {"qml/harbour-sukkula.qml"},
     "QtMultimedia": {"qml/components/ScanView.qml"},

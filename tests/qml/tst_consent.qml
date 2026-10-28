@@ -7,8 +7,9 @@ import "helpers/Events.js" as Ev
 
 /*
  * The consent dialog (F-C2, F-C3, F-QS3, S5): it shows the offer's values
- * exactly as the engine sent them, as plain text, and the only way to a
- * "yes" is Accept. Declining, leaving, the countdown running out and the
+ * exactly as the engine sent them, as plain text -- the sender, what and
+ * over what in Sukkula's words, the PIN, one file big or several listed
+ * with their total -- and the only way to a "yes" is Accept. Declining, leaving, the countdown running out and the
  * engine closing the offer all end in no -- and the last one sends
  * nothing at all.
  */
@@ -43,6 +44,18 @@ Script {
         return out
     }
 
+    /// The file names on show.
+    function shownFiles() {
+        var out = []
+        var all = probe.findAll(test.dialog, "consentFileName")
+        for (var i = 0; i < all.length; i++) {
+            if (all[i].visible && all[i].text.length > 0) {
+                out.push(all[i].text)
+            }
+        }
+        return out
+    }
+
     function label(name) {
         var item = probe.find(test.dialog, name)
         test.verify(item !== null, "a label called " + name)
@@ -58,19 +71,19 @@ Script {
             var sender = test.label("consentSender")
             test.compare(sender.text, Ev.EVIL_NAME, "the sender verbatim, %2 and all")
             test.compare(sender.textFormat, Text.PlainText)
-            test.compare(test.label("consentModel").text, Ev.EVIL_MODEL)
-            test.compare(test.label("consentProtocol").text, "wants to send you files over Quick Share")
+            test.compare(test.label("consentProtocol").text, "wants to send you 5 files over Quick Share",
+                         "what and how, in Sukkula's words")
             test.compare(test.label("consentPin").text, "4821")
-            test.verify(test.label("consentPin").visible, "the PIN is shown (F-QS3)")
+            test.verify(test.label("consentPin").parent.parent.parent.visible, "the PIN is shown (F-QS3)")
+            test.compare(test.label("consentPin").parent.children[0].text,
+                         "Check that " + Ev.EVIL_NAME + " shows the same number:", "the sender's %2 stays text")
             test.verify(test.label("consentHasText").visible, "the text is announced")
-            var names = probe.findAll(test.dialog, "consentFileName")
-            test.compare(names.length, 2)
-            test.compare(names[0].text, Ev.EVIL_FILE)
-            test.compare(names[1].text, "notes.txt")
+            test.compare(test.shownFiles(), [Ev.EVIL_FILE, "notes.txt"])
             test.compare(test.label("consentMore").text, "and 3 more files")
-            test.compare(test.label("consentTotal").text, "5 files, 2.6 MB in all")
-            test.verify(/^Declined automatically in (59|60) seconds\.$/.test(test.label("consentCountdown").text),
+            test.compare(test.label("consentTotal").text, "5 files, 2.6 MB in total")
+            test.verify(/^Declined in (59|60) s$/.test(test.label("consentCountdown").text),
                         "a countdown: " + test.label("consentCountdown").text)
+            test.verify(test.label("consentClock").value > 0.95, "and its line, nearly full")
             // Nothing the peer sent reached a Silica-owned text item.
             test.verifyPlainText(test.dialog, "the consent dialog")
             // Nothing is answered while the user looks at it.
@@ -90,11 +103,12 @@ Script {
         },
         function () {
             test.open(8)
-            test.verify(!probe.find(test.dialog, "consentPin").parent.visible, "no PIN, no PIN block")
-            test.verify(!test.label("consentModel").visible, "no model line")
-            test.verify(!test.label("consentMore").visible, "nothing more")
+            test.verify(!probe.find(test.dialog, "consentPin").parent.parent.parent.visible, "no PIN, no PIN block")
+            test.compare(test.label("consentProtocol").text, "wants to send you a file over Quick Share")
             test.verify(!test.label("consentHasText").visible, "no text line")
-            test.compare(test.label("consentTotal").text, "1 file, 10 B in all")
+            // One file: big, by itself, with its size; no list, no total.
+            test.compare(test.shownFiles(), ["a.txt"])
+            test.verify(!test.label("consentTotal").parent.visible, "no total for one file")
             test.dialog.reject()
             test.compare(test.answers(), [[7, true], [8, false]], "Decline answers no")
             bridge.emitEvent(Ev.offer(9, {}))

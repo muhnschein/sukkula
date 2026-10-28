@@ -4,14 +4,22 @@ import Sailfish.Silica 1.0
 
 /*
  * Send | Receive across the top of the main page, the strip the Clock and
- * Settings apps wear: the tab on screen underlined in the highlight
- * colour, sliding across when the other is chosen.
+ * Settings apps wear: the words side by side in the middle of the screen,
+ * the one on screen in the highlight colour with a thin line under it
+ * that slides across when the other is chosen.
  *
  * Silica's own TabBar is in Sailfish.Silica.private, which Harbour does
  * not allow, and works only inside a TabView; so this is rebuilt from
- * Sailfish.Silica 1.0, with Silica's metrics, as Vuo's ScopeTabBar does.
+ * Sailfish.Silica 1.0 with TabBar's geometry, as Vuo's ScopeTabBar does:
+ * each tab is its word plus Theme.paddingLarge either side, and the slack
+ * left over goes to the outer edges of the first and last tab, whose words
+ * hug the inside -- so the words sit together in the middle rather than
+ * each in the middle of its half. A strip too wide for the screen drops
+ * one font size, as TabBar does.
+ *
  * It is not a view: it shows `currentIndex` and says which tab was
- * tapped, and the page owns the mode.
+ * tapped, and the page owns the mode. It paints nothing behind the words:
+ * the page clips its lists below it instead (MainPage.qml).
  */
 Item {
     id: strip
@@ -38,10 +46,33 @@ Item {
 
     implicitHeight: strip.topMargin + row.height
 
-    Row {
+    // Laid out by hand rather than by a Row, whose positions only follow
+    // a width change at the next frame: each tab starts where the one
+    // before it ends.
+    Item {
         id: row
         y: strip.topMargin
-        anchors.horizontalCenter: parent.horizontalCenter
+        width: strip.width
+        height: (tabs.count, tabs.count > 0 && tabs.itemAt(0) ? tabs.itemAt(0).height : 0)
+
+        /// The slack either side of the words, given to the outer tabs.
+        /// Read off `tabContentWidth`, which does not depend on it.
+        readonly property real extraMargin: {
+            var total = 0
+            for (var i = 0; i < row.children.length; i++) {
+                total += row.children[i].tabContentWidth || 0
+            }
+            return Math.max(0, strip.width - total) / 2
+        }
+        /// One size down when the words do not fit. Measured, not read
+        /// back off the tabs, whose widths depend on it.
+        readonly property real titleFontSize: {
+            var total = 0
+            for (var i = 0; i < strip.titles.length; i++) {
+                total += largeMetrics.advanceWidth(strip.titles[i]) + 2 * Theme.paddingLarge
+            }
+            return total > strip.width ? Theme.fontSizeMedium : Theme.fontSizeLarge
+        }
 
         Repeater {
             id: tabs
@@ -51,10 +82,15 @@ Item {
                 id: button
                 objectName: index === 0 ? "modeSend" : "modeReceive"
                 readonly property bool current: index === strip.currentIndex
+                readonly property bool first: index === 0 && tabs.count > 1
+                readonly property bool last: index === tabs.count - 1 && tabs.count > 1
+                readonly property real tabContentWidth: label.implicitWidth + 2 * Theme.paddingLarge
+                readonly property Item before: index > 0 ? (tabs.count, tabs.itemAt(index - 1)) : null
                 property Item labelItem: label
 
-                width: Math.max(strip.width / Math.max(1, strip.titles.length),
-                                label.implicitWidth + 2 * Theme.paddingLarge)
+                x: button.before ? button.before.x + button.before.width : 0
+                width: button.tabContentWidth + (index === 0 ? row.extraMargin : 0)
+                       + (index === tabs.count - 1 ? row.extraMargin : 0)
                 height: Math.max(strip.portrait ? Theme.itemSizeLarge : Theme.itemSizeSmall,
                                  label.implicitHeight
                                  + 2 * (strip.portrait ? Theme.paddingLarge : Theme.paddingMedium))
@@ -66,19 +102,23 @@ Item {
 
                 Label {
                     id: label
-                    anchors.centerIn: parent
+                    // The outer tabs' words hug the inside edge.
+                    x: button.first ? button.width - label.width - Theme.paddingMedium
+                       : button.last ? Theme.paddingMedium
+                       : (button.width - label.width) / 2
+                    anchors.verticalCenter: parent.verticalCenter
                     text: strip.titles[index]
                     textFormat: Text.PlainText
-                    font.pixelSize: Theme.fontSizeLarge
+                    font.pixelSize: row.titleFontSize
                     color: button.highlighted || button.current ? Theme.highlightColor : Theme.primaryColor
                 }
 
+                // Outside the word, away from the other tab.
                 BusyIndicator {
-                    anchors {
-                        left: label.right
-                        leftMargin: Theme.paddingMedium
-                        verticalCenter: label.verticalCenter
-                    }
+                    objectName: "modeBusy"
+                    x: button.first ? label.x - width - Theme.paddingMedium
+                                    : label.x + label.width + Theme.paddingMedium
+                    anchors.verticalCenter: label.verticalCenter
                     size: BusyIndicatorSize.ExtraSmall
                     running: strip.busyIndex === index
                     visible: running
@@ -87,7 +127,7 @@ Item {
         }
     }
 
-    // As wide as the tab's word, under it.
+    // As wide as the tab's word, a hairline under it.
     Rectangle {
         id: underline
         objectName: "modeUnderline"
@@ -95,7 +135,7 @@ Item {
         x: underline.label ? row.x + strip.currentButton.x + underline.label.x : 0
         y: underline.label ? row.y + underline.label.y + underline.label.height + Theme.paddingMedium : 0
         width: underline.label ? underline.label.width : 0
-        height: Math.max(2, Math.round(Theme.paddingSmall / 3))
+        height: Theme._lineWidth
         color: Theme.highlightColor
 
         Behavior on x {
@@ -106,5 +146,10 @@ Item {
             enabled: strip.animate
             SmoothedAnimation { duration: 200; easing.type: Easing.InOutQuad }
         }
+    }
+
+    FontMetrics {
+        id: largeMetrics
+        font.pixelSize: Theme.fontSizeLarge
     }
 }

@@ -39,7 +39,7 @@ ARCH=aarch64
 ICON_SIZES="86x86 108x108 128x128 172x172"
 
 # Spec §2: these and nothing else, sorted.
-POLICY_PERMISSIONS="Bluetooth Camera Documents Downloads Internet Music Pictures RemovableMedia Videos"
+POLICY_PERMISSIONS="Bluetooth Camera Documents Downloads Internet MediaIndexing Music Pictures RemovableMedia Videos"
 # The sandbox names the app's data path is built from. Fixed: the LocalSend
 # certificate and the settings live under them (spec F-LS2), so renaming
 # either silently gives every user a new identity.

@@ -452,6 +452,16 @@ pub struct Peer {
     pub model: Option<String>,
     /// What kind of device it says it is.
     pub device_type: DeviceType,
+    /// Where it was found: its IP address, with the port where the
+    /// protocol serves on a fixed one (LocalSend). For the device's details
+    /// page only; sends go by `id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
+    /// LocalSend: the SHA-256 fingerprint of the certificate it proved
+    /// before it was listed, 64 uppercase hex digits. Every send to it is
+    /// pinned to this certificate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
 }
 
 /// What a peer says it is. Only used to pick an icon.

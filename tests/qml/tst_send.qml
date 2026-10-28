@@ -6,19 +6,24 @@ import "helpers"
 import "helpers/Events.js" as Ev
 
 /*
- * The Send tab's radar (F-C6) with each protocol: nothing but the plus
- * until a file is chosen, while discovery already runs; several files
- * from the file browser at once, more added with the plus and all cleared
- * with the cross; then the peers from discovery and the paired Bluetooth
- * devices on the rings with their names as plain text, each keeping its
- * place, and the cloud, whose tiles come out when it is tapped; the send
- * command's exact shape; a send's line, progress, cancel and end;
- * refusals said and the chosen items kept; Magic Wormhole's one-item
- * rule, its code on the tile and on the code page with the QR (F-MW1);
- * croc's rule for texts, its code on the tile and on the code page with
- * its QR (F-CR1, spec v0.6); Bluetooth's files-only rule (F-BT1); more peers than the rings hold, as
- * a list; and each protocol switched off in Settings gone from the radar
- * (F-C1).
+ * The Send tab (F-C6) with each protocol, round the anchor: "Ready to
+ * send" with who is about under it, the sweep going round while
+ * discovery runs, and one button, the content picker; files chosen,
+ * summed up as "2 photos" with their size, more added and all cleared
+ * behind a remorse; the devices nearby by name as plain text, a device
+ * found over two protocols as one row whose menu says which way, the
+ * paired Bluetooth devices after them, and one "Looking for more"; the
+ * send command's exact shape; a send as the whole tab: waiting for an
+ * answer, the ring filling with the percentage, Cancel going straight
+ * back, a check with "Send to another" and "Done", a cross with why,
+ * "Try again" and "Back"; refusals said; About this device (address,
+ * pinned certificate); sending with a code: Magic Wormhole for one file,
+ * croc for several, its code as the title and its QR code in the
+ * anchor's place, Copy and Share, "Receiver's app" switching with the
+ * old code given up, the code given up when its page is left unused, no
+ * server line, and the send going on on the tab once the receiver has
+ * come (F-MW1, F-CR1); and each protocol switched off in Settings gone
+ * from the tab (F-C1).
  */
 Script {
     id: test
@@ -26,7 +31,10 @@ Script {
     property Item main: null
     property Item view: null
     property Item page: null
+    property var pendingId: -1
     readonly property string downloads: "/home/defaultuser/Downloads/"
+    readonly property string pictures: "/home/defaultuser/Pictures/"
+    readonly property string fingerprint: "3FA2910C5B7ED4A10C9F22E87B316A0D91C45E02AA7F3D18B6E90417C2D57E44"
 
     ApplicationWindow {
         id: window
@@ -58,102 +66,162 @@ Script {
         return cmds[cmds.length - 1].id
     }
 
-    /// The radar's peers on show, by name.
-    function shownNames() {
-        var out = []
-        var all = probe.findAll(test.view, "peerBubble")
-        for (var i = 0; i < all.length; i++) {
-            if (all[i].visible) {
-                out.push(all[i].name)
-            }
-        }
-        return out.sort()
+    function find(name) {
+        return probe.find(test.view, name)
     }
 
-    function bubble(name) {
-        var all = probe.findAll(test.view, "peerBubble")
+    /// The device rows on show: [title, subtitle] each, in order.
+    function rows() {
+        var out = []
+        var all = probe.findAll(test.view, "deviceRow")
         for (var i = 0; i < all.length; i++) {
-            if (all[i].visible && all[i].name === name) {
+            if (all[i].visible) {
+                out.push([all[i].title, all[i].subtitle])
+            }
+        }
+        return out
+    }
+
+    function row(title) {
+        var all = probe.findAll(test.view, "deviceRow")
+        for (var i = 0; i < all.length; i++) {
+            if (all[i].visible && all[i].title === title) {
                 return all[i]
             }
         }
         return null
     }
 
-    function find(name) {
-        return probe.find(test.view, name)
+    /// The Send tab's hero, and a label of it.
+    function hero() {
+        return test.find("sendHero")
+    }
+    function says(name) {
+        return probe.find(test.hero(), name).text
+    }
+    function anchor() {
+        return probe.find(test.hero(), "anchor")
+    }
+    /// A label of the code page's hero.
+    function pageSays(name) {
+        return probe.find(probe.find(test.page, "codeHero"), name).text
     }
 
-    /// Ticks `rows` ({url} or {filePath}) in the file browser on top and
-    /// accepts.
-    function pick(rows) {
+    /// A device row's menu, opened: its items' texts, and the items.
+    function menuOf(item) {
+        var menu = item.menu.createObject(item)
+        var items = []
+        var texts = []
+        var kids = probe.findAll(menu, "sendWith").concat(probe.findAll(menu, "aboutDevice"))
+        for (var i = 0; i < kids.length; i++) {
+            items.push(kids[i])
+            texts.push(kids[i].text)
+        }
+        return { menu: menu, items: items, texts: texts }
+    }
+
+    /// Ticks `rows` ({url} or {filePath}, with fileSize) in the picker on
+    /// top, which must be `name`, and accepts.
+    function pick(name, rows) {
         var picker = window.pageStack.currentPage
-        test.verify(picker !== test.main && picker.selectedContent !== undefined, "the file browser is up")
+        test.compare(picker.objectName, name, "the picker up")
         for (var i = 0; i < rows.length; i++) {
             picker.selectedContent.append(rows[i])
         }
         picker.accept()
     }
 
+    function peer(id, protocol, name, extra) {
+        var p = { id: id, protocol: protocol, name: name, model: Ev.EVIL_MODEL, device_type: "phone" }
+        for (var k in extra) {
+            p[k] = extra[k]
+        }
+        return Ev.json({ type: "peer_found", peer: p })
+    }
+
     steps: [
         function () {
             test.main = window.pageStack.push(Qt.resolvedUrl("../../qml/pages/MainPage.qml"), { engine: engine })
             test.view = probe.find(test.main, "sendView")
-            test.view.linger = 50
         },
         function () {
             test.verify(test.view.current, "the Send tab first")
             test.compare(test.commandsOfType("start_discovery").length, 1, "discovery runs from the start")
             test.compare(test.commandsOfType("list_bluetooth_devices").length, 1)
-            test.compare(test.find("payloadSummary").text, "Tap to choose what to send")
-            test.compare(test.find("originGlyph").kind, "add", "a plus at the centre")
-            test.verify(!test.find("radarHint").visible, "nothing to say yet")
-            test.verify(!test.find("cloud").visible, "no cloud before a file")
-            test.verify(!test.find("wormholeTile").visible)
-            test.verify(!test.find("crocTile").visible, "nor croc's")
-            test.verify(!test.find("clearPayload").visible)
-            test.verify(!test.view.pulsing, "the rings keep still")
+            test.compare(test.says("heroTitle"), "Ready to send")
+            test.compare(test.says("heroSubtitle"), "Looking for devices nearby…")
+            test.compare(test.anchor().mode, "looking", "the sweep while devices are looked for")
+            test.verify(probe.find(test.anchor(), "anchorSweep").visible)
+            test.compare(test.anchor().glyph, "phone")
+            test.verify(test.find("chooseFiles").visible, "one button")
+            test.compare(test.find("pickContent"), null, "no tiles")
+            test.compare(test.find("pickFiles"), null, "the content picker has the file system")
+            test.verify(!test.find("addMore").visible && !test.find("clearPayload").visible, "nothing chosen")
+            test.compare(test.rows(), [], "no devices to pick from yet")
             bridge.emitEvent(Ev.peerFound("p1", "local_send"))
             bridge.emitEvent(Ev.peerFound("q1", "quick_share", "Android"))
             bridge.emitEvent(Ev.bluetoothDevices([{ address: "AA:BB:CC:DD:EE:FF", name: "Car EVIL" }]))
         },
         function () {
-            test.compare(test.shownNames(), [], "the peers wait for something to send them")
-            test.compare(test.view.slots.slice(0, 3),
-                         ["local_send:p1", "quick_share:q1", "bluetooth:AA:BB:CC:DD:EE:FF"],
-                         "though their places are kept")
-            // The plus: the file browser, several at once.
-            test.find("origin").clicked()
-            test.pick([{ url: "file://" + test.downloads + "a.txt" },
-                       { url: "file://" + test.downloads + "b%20c.txt" },
-                       { url: "https://evil.example/x" }])
+            test.compare(test.says("heroSubtitle"), Ev.EVIL_NAME + " and 1 more nearby",
+                         "who is about, the paired ones not counted; the name's %2 stays text")
+            test.verifyPlainText(test.main, "the tab with peers found")
+            // The content picker: pictures, videos, music and documents in
+            // one, several at once, with sizes.
+            test.find("chooseFiles").clicked()
+            test.pick("contentPicker", [{ url: "file://" + test.pictures + "a.jpg", fileSize: 1000 },
+                                        { url: "file://" + test.pictures + "b%20c.jpg", fileSize: 3000 },
+                                        { url: "https://evil.example/x.jpg" }])
         },
         function () {
-            test.compare(window.pageStack.currentPage.objectName, "mainPage", "the browser closes")
+            test.compare(window.pageStack.currentPage.objectName, "mainPage", "the picker closes")
             test.compare(test.main.payload.files.length, 2, "local files only")
-            test.compare(test.main.payload.files[1].path, test.downloads + "b c.txt", "the URL decoded")
-            test.compare(test.find("payloadSummary").text, "2 items")
-            test.compare(test.find("payloadCount").text, "2")
-            test.compare(test.find("originGlyph").kind, "file")
-            test.compare(test.shownNames(), [Ev.EVIL_NAME, "Android", "Car EVIL"].sort(), "every protocol's peers")
-            test.verify(test.view.pulsing, "the rings pulse")
-            test.verify(test.find("cloud").visible, "the cloud")
-            test.compare(test.find("cloudLabel").text, "More options")
-            test.verify(!test.find("wormholeTile").visible, "its tiles still in")
-            test.verifyPlainText(test.main, "the radar with peers")
-            // The cross clears it all.
+            test.compare(test.main.payload.files[1].path, test.pictures + "b c.jpg", "the URL decoded")
+            test.compare(test.says("heroTitle"), "2 photos", "what, in the anchor's title")
+            test.compare(test.says("heroSubtitle"), "4.0 kB")
+            test.compare(test.anchor().glyph, "photo", "their kind in the disc")
+            test.compare(test.anchor().mode, "looking", "the anchor stays put, still looking")
+            test.verify(!test.find("chooseFiles").visible && test.find("addMore").visible
+                        && test.find("clearPayload").visible, "Add files and Clear")
+            test.compare(test.rows(), [[Ev.EVIL_NAME, "Phone · LocalSend"], ["Android", "Phone · Quick Share"],
+                                       ["Car EVIL", "Paired device · Bluetooth"]],
+                         "by name, the paired ones last, the protocol in the grey line")
+            test.compare(test.find("lookingLabel").text, "Looking for more", "one line says discovery goes on")
+            test.compare(test.find("nearbyHint").text, "Devices must be on the same Wi-Fi and ready to receive.")
+            // The ambience's own icons: a phone, a paired device.
+            var phone = probe.find(test.row("Android"), "rowGlyph")
+            test.compare(phone.names, ["icon-m-device", "icon-m-phone"])
+            test.verify(String(phone.source).indexOf("image://theme/icon-m-") === 0, "from the theme: " + phone.source)
+            test.compare(probe.find(test.row("Car EVIL"), "rowGlyph").names[0], "icon-m-bluetooth-device")
+            test.compare(probe.find(test.find("sendWithCode"), "rowGlyph").kind, "qr")
+            test.verify(test.find("sendWithCode").visible, "and far away, with a code")
+            test.verify(!probe.find(test.find("sendWithCode"), "rowSubtitle").visible, "its title says it")
+            test.verifyPlainText(test.main, "the device list")
+            // Clear clears it all, after a moment to change one's mind.
             test.find("clearPayload").clicked()
+            var remorse = probe.find(test.main, "clearRemorse")
+            test.verify(remorse.active, "a remorse first")
+            remorse.cancel()
+            test.compare(test.main.payload.itemCount, 2, "cancelled: still chosen")
+            test.find("clearPayload").clicked()
+            remorse.trigger()
             test.compare(test.main.payload.itemCount, 0)
-            test.compare(test.shownNames(), [], "the peers go with it")
-            test.verify(!test.find("cloud").visible)
-            // The plus again: one file, by its path.
-            test.find("origin").clicked()
-            test.pick([{ filePath: test.downloads + "a.txt", url: "" }])
+            test.verify(test.find("chooseFiles").visible, "the one button again")
+            test.compare(test.rows(), [], "the devices go with it")
+            // A file from the file system: by its path, size unknown.
+            test.find("chooseFiles").clicked()
+            test.pick("contentPicker", [{ filePath: test.downloads + "a.txt", url: "" }])
         },
         function () {
-            test.compare(test.find("payloadSummary").text, "a.txt")
+            test.compare(test.says("heroTitle"), "a.txt", "one file: its name")
+            test.compare(test.says("heroSubtitle"), "", "no size where none was said")
+            test.compare(test.anchor().glyph, "document")
+            // Add files: the same picker.
+            test.find("addMore").clicked()
+            test.compare(window.pageStack.currentPage.objectName, "contentPicker")
+            window.pageStack.pop()
             bridge.nextTransfer = 50
-            test.bubble(Ev.EVIL_NAME).clicked()
+            test.row(Ev.EVIL_NAME).clicked()
             test.compare(test.lastOf("send"), {
                 type: "send",
                 target: { protocol: "local_send", peer: "p1" },
@@ -162,300 +230,324 @@ Script {
         },
         function () {
             test.compare(test.view.outgoing.transferId, 50)
-            test.compare(test.shownNames(), [], "only the send's peer stays")
-            var target = test.find("outgoingBubble")
-            test.verify(target.visible, "drawn on its own")
-            test.compare(target.name, Ev.EVIL_NAME)
-            test.verify(test.find("sendLine").visible, "a line to it")
-            test.verify(!test.find("internetLine").visible)
-            test.verify(!test.find("clearPayload").visible, "nothing to clear while it goes")
-            test.compare(test.find("outgoingStatus").text, "Waiting for an answer…")
+            // The tab is the send: who, and waiting for them.
+            test.compare(test.anchor().mode, "waiting")
+            test.compare(test.anchor().glyph, "phone", "the device's kind in the disc")
+            test.compare(test.says("heroTitle"), Ev.EVIL_NAME)
+            test.compare(test.says("heroSubtitle"), "Waiting for them to accept…")
+            test.compare(test.says("heroLine"), "a.txt")
+            test.compare(test.rows(), [], "no other device while it goes")
+            test.verify(!test.find("sendWithCode").visible && !test.find("addMore").visible)
+            test.verify(test.find("cancelSend").visible, "Cancel, where the buttons were")
             bridge.emitEvent(Ev.transferStarted(50, "outgoing", {}))
             bridge.emitEvent(Ev.progress(50, 500, 2000))
         },
         function () {
-            test.compare(test.find("outgoingPercent").text, "25%")
-            test.compare(test.find("outgoingStatus").text, "500 B of 2.0 kB")
-            test.compare(test.find("outgoingBubble").progress, 0.25, "the avatar fills")
-            test.verify(probe.find(test.main, "cancelSending").visible)
+            test.compare(test.anchor().mode, "progress", "the ring fills")
+            test.compare(test.anchor().value, 0.25)
+            test.compare(probe.find(test.anchor(), "anchorPercent").text, "25%")
+            test.verify(!probe.find(test.anchor(), "anchorDisc").visible, "the percentage alone in the ring")
+            test.compare(test.says("heroSubtitle"), "500 B of 2.0 kB")
+            test.compare(test.says("heroLine"), "a.txt")
+            test.verifyPlainText(test.main, "a send under way")
             test.find("cancelSend").clicked()
             test.compare(test.lastOf("cancel"), { type: "cancel", transfer: 50 })
             bridge.emitEvent(Ev.finished(50, "cancelled"))
+            return 20
         },
         function () {
-            test.compare(test.find("outgoingStatus").text, "Cancelled")
+            test.verify(test.view.outgoing === null, "cancelled here: straight back to the devices")
             test.compare(test.main.payload.itemCount, 1, "a send that did not go keeps what was chosen")
-            test.find("outgoingBubble").clicked()
-            test.verify(test.view.outgoing === null, "a tap goes back to the radar")
-            test.compare(test.shownNames().length, 3, "with everyone on it")
-            test.compare(test.find("payloadSummary").text, "a.txt")
-            // A file and a text, from the Share menu.
-            test.main.share([{ kind: "file", path: test.downloads + "a.txt" }, { kind: "text", text: "hello" }])
+            test.compare(test.rows().length, 3, "with everyone")
+            // One device over two ways: one row, by its name.
+            bridge.emitEvent(test.peer("q2", "quick_share", "Pixel 8", { address: "192.168.1.42", model: undefined }))
+            bridge.emitEvent(test.peer("p2", "local_send", "Pixel 8", { address: "192.168.1.42:53317",
+                                                                        fingerprint: test.fingerprint }))
         },
         function () {
-            test.compare(test.find("payloadCount").text, "2")
-            // A refused send is said, and everything stays.
+            test.compare(test.row("Pixel 8").subtitle, "Phone · Quick Share, LocalSend", "one row, both ways")
+            test.compare(test.rows().length, 4)
+            var m = test.menuOf(test.row("Pixel 8"))
+            test.compare(m.texts, ["Send with Quick Share", "Send with LocalSend", "About this device"])
+            // Its menu sends the other way.
             bridge.autoReply = false
-            test.bubble("Android").clicked()
-            test.compare(test.lastOf("send"), {
-                type: "send",
-                target: { protocol: "quick_share", peer: "q1" },
-                items: [{ kind: "file", path: test.downloads + "a.txt" }, { kind: "text", text: "hello" }]
-            })
-            test.compare(test.find("outgoingStatus").text, "Connecting…")
+            var android = test.view.devices[0]
+            m.items[1].clicked()
+            m.menu.destroy()
+            test.compare(test.lastOf("send").target, { protocol: "local_send", peer: "p2" }, "over LocalSend")
+            test.compare(test.says("heroSubtitle"), "Connecting…")
             // No second send while one is on its way.
-            test.view.choose(test.view.lanPeer({ protocol: "local_send", peerId: "p1", name: "x" }), 0)
+            test.view.choose(android)
             test.compare(test.commandsOfType("send").length, 2)
+            // A refused send is said, and everything stays.
             bridge.emitEvent(Ev.reply(test.lastId(), false, "refused"))
         },
         function () {
             test.compare(probe.find(test.main, "bannerLabel").text, "Declined.")
             test.verify(test.view.outgoing === null)
-            test.compare(test.shownNames().length, 3)
-            test.compare(test.main.payload.itemCount, 2)
+            test.compare(test.main.payload.itemCount, 1)
             bridge.autoReply = true
-            // Bluetooth sends files only (F-BT1).
-            test.bubble("Car EVIL").clicked()
-            test.compare(test.commandsOfType("send").length, 2, "not with a text")
-            test.compare(probe.find(test.main, "bannerLabel").text, "Bluetooth sends files only.")
-            // The cloud: its tiles come out.
-            test.find("cloud").clicked()
-            test.verify(test.find("wormholeTile").visible, "Magic Wormhole's tile")
-            test.verify(test.find("crocTile").visible, "and croc's")
-            test.compare(test.find("cloudLabel").visible, false, "the label has said its piece")
-            // croc: files, or one text on its own (F-CR1).
-            test.find("crocTile").clicked()
-            test.compare(test.commandsOfType("send").length, 2, "not a text with a file")
-            test.compare(probe.find(test.main, "bannerLabel").text, "croc sends files, or one text on its own.")
-            // Magic Wormhole: one item only (F-MW1).
-            test.find("wormholeTile").clicked()
-            test.compare(test.commandsOfType("send").length, 2, "not two items")
-            test.compare(probe.find(test.main, "bannerLabel").text,
-                         "Magic Wormhole sends one file or one text at a time.")
-            test.main.payload.removeText(0)
-            bridge.nextTransfer = 77
-            test.find("wormholeTile").clicked()
-            test.compare(test.lastOf("send"), { type: "send", target: { protocol: "wormhole" },
-                                                items: [{ kind: "file", path: test.downloads + "a.txt" }] })
+            // A tap sends the first way.
+            bridge.nextTransfer = 51
+            test.row("Pixel 8").clicked()
+            test.compare(test.lastOf("send").target, { protocol: "quick_share", peer: "q2" }, "Quick Share first")
         },
         function () {
-            test.compare(test.view.outgoing.transferId, 77)
-            var tile = test.find("wormholeTile")
-            test.verify(tile.visible && tile.starting, "the tile waits for its code")
-            test.verify(!probe.find(tile, "tileCode").visible, "no code yet")
-            test.verify(test.find("internetLine").visible, "the line goes up through the cloud")
-            test.verify(!test.find("outgoingBubble").visible, "nobody has come yet")
-            bridge.emitEvent(Ev.wormholeCode(77, "7-guitarist-revenge"))
-            bridge.emitEvent(Ev.transferStarted(77, "outgoing", { protocol: "wormhole", peer: "" }))
+            bridge.emitEvent(Ev.transferStarted(51, "outgoing", { protocol: "quick_share", peer: "Pixel 8" }))
+            bridge.emitEvent(Ev.finished(51, "done"))
         },
         function () {
-            test.compare(probe.find(test.find("wormholeTile"), "tileCode").text, "7-guitarist-revenge")
-            // The code, big, with its QR, a tap away.
-            test.find("wormholeTile").clicked()
-            test.page = window.pageStack.currentPage
-            test.compare(test.page.objectName, "wormholeCodePage")
-            test.compare(test.page.transferId, 77)
-        },
-        function () {
-            test.compare(probe.find(test.page, "wormholeCode").text, "7-guitarist-revenge")
-            var qr = probe.find(test.page, "wormholeQr")
-            test.verify(qr.valid && qr.visible, "the QR code is drawn")
-            test.compare(qr.size, 21)
-            test.compare(probe.find(test.page, "wormholeStatus").text, "Waiting for the receiver…")
-            window.pageStack.pop()
-            bridge.emitEvent(Ev.progress(77, 500, 1000))
-        },
-        function () {
-            test.verify(!test.find("wormholeTile").visible, "the receiver has come")
-            test.verify(test.find("outgoingBubble").visible, "in the tile's place")
-            test.compare(test.find("outgoingBubble").x + test.find("outgoingBubble").width / 2,
-                         test.view.leftTileX, "Magic Wormhole's side")
-            test.compare(test.find("outgoingPercent").text, "50%")
-            bridge.emitEvent(Ev.finished(77, "done"))
-        },
-        function () {
-            test.compare(test.find("outgoingStatus").text, "Sent")
-            test.compare(test.find("outgoingPercent").text, "100%")
-            test.compare(test.main.payload.itemCount, 0, "what was sent is done with")
+            test.compare(test.anchor().mode, "done")
+            test.compare(probe.find(test.anchor(), "anchorGlyph").kind, "check", "a check in a filled disc")
+            test.compare(test.says("heroTitle"), "Sent")
+            test.compare(test.says("heroSubtitle"), "a.txt to Pixel 8")
+            test.verify(test.find("sendAnother").visible && test.find("sendDone").visible)
+            test.verify(!test.find("cancelSend").visible)
+            test.compare(test.main.payload.itemCount, 1, "what was sent stays chosen, for another device")
             return 150
         },
         function () {
-            test.verify(test.view.outgoing === null, "back to the radar by itself")
-            test.verify(!test.find("cloud").visible, "nothing chosen: no cloud")
-            test.verify(!test.view.moreOpen, "and its tiles are put away")
-            test.compare(test.find("payloadSummary").text, "Tap to choose what to send")
-            // Shared paths: absolute ones only, each once; and the
-            // engine's bad_file explained with what Sailjail grants.
+            test.verify(test.view.outgoing !== null, "the check stays until a button says where to")
+            test.find("sendAnother").clicked()
+            test.verify(test.view.outgoing === null)
+            test.compare(test.says("heroTitle"), "a.txt", "back to who to, the file still chosen")
+            test.compare(test.rows().length, 4)
+            // A send that fails: why, then Try again or Back.
+            bridge.nextTransfer = 52
+            test.row("Android").clicked()
+        },
+        function () {
+            bridge.emitEvent(Ev.transferStarted(52, "outgoing", { protocol: "quick_share", peer: "Android" }))
+            bridge.emitEvent(Ev.finished(52, "failed", null, "refused"))
+        },
+        function () {
+            test.compare(test.anchor().mode, "failed")
+            test.compare(probe.find(test.anchor(), "anchorGlyph").kind, "cross", "a cross in a red disc")
+            test.compare(test.says("heroTitle"), "Not sent")
+            test.compare(test.says("heroSubtitle"), "Declined.")
+            test.compare(test.says("heroLine"), "a.txt")
+            test.verify(test.hero().failed && probe.find(test.hero(), "heroTitle").color === Theme.errorColor, "in red")
+            test.verify(test.find("sendRetry").visible && test.find("sendBack").visible)
+            bridge.nextTransfer = 53
+            test.find("sendRetry").clicked()
+            test.compare(test.lastOf("send").target, { protocol: "quick_share", peer: "q1" }, "the same way again")
+            test.compare(test.view.outgoing.name, "Android")
+        },
+        function () {
+            bridge.emitEvent(Ev.transferStarted(53, "outgoing", { protocol: "quick_share", peer: "Android" }))
+            bridge.emitEvent(Ev.finished(53, "failed"))
+        },
+        function () {
+            test.compare(test.says("heroSubtitle"), "The connection failed or timed out.")
+            test.find("sendBack").clicked()
+            test.verify(test.view.outgoing === null, "Back: to the devices")
+            test.compare(test.main.payload.itemCount, 1)
+            // About this device.
+            var m = test.menuOf(test.row("Pixel 8"))
+            m.items[2].clicked()
+            m.menu.destroy()
+            test.page = window.pageStack.currentPage
+            test.compare(test.page.objectName, "devicePage")
+        },
+        function () {
+            test.compare(probe.find(test.page, "deviceName").text, "Pixel 8")
+            var values = []
+            var all = probe.findAll(test.page, "detailValue")
+            for (var i = 0; i < all.length; i++) {
+                values.push(all[i].text)
+            }
+            test.compare(values, ["Phone", "192.168.1.42",
+                                  Ev.EVIL_MODEL, "Phone", "192.168.1.42:53317",
+                                  "3FA2 910C 5B7E D4A1 0C9F 22E8 7B31 6A0D 91C4 5E02 AA7F 3D18 B6E9 0417 C2D5 7E44"],
+                         "Quick Share's, then LocalSend's with its model and pinned certificate")
+            test.verify(probe.find(test.page, "deviceNote").text.indexOf("checks this certificate") >= 0)
+            test.verifyPlainText(test.page, "About this device")
+            window.pageStack.pop()
+            // The Share menu: files only, absolute paths, each once; and
+            // the engine's bad_file explained with what Sailjail grants.
             test.main.share([{ kind: "file", path: test.downloads + "ok.txt" },
                              { kind: "file", path: "/home/defaultuser/Pictures/Jolla/p.jpg" },
                              { kind: "file", path: "relative/path.txt" },
                              { kind: "file", path: test.downloads + "ok.txt" },
+                             { kind: "text", text: "not sent" },
                              { kind: "weird" },
                              null])
-            test.compare(test.main.payload.files.length, 2, "absolute paths only, once each")
+            test.compare(test.main.payload.files.length, 2, "absolute paths only, once each, no texts")
+            test.compare(test.says("heroTitle"), "2 files")
             bridge.autoReply = false
-            test.bubble(Ev.EVIL_NAME).clicked()
+            test.row(Ev.EVIL_NAME).clicked()
             bridge.emitEvent(Ev.reply(test.lastId(), false, "bad_file"))
         },
         function () {
             test.compare(probe.find(test.main, "bannerLabel").text,
-                         "A file could not be read. Sukkula can send files from Downloads, Documents, "
-                         + "Music, Pictures, Videos and memory cards only.")
+                         "A file could not be read. Sukkula can only send files from Downloads, Documents, "
+                         + "Music, Pictures, Videos and memory cards.")
             test.compare(test.main.payload.files.length, 2, "kept, to fix")
             bridge.autoReply = true
-            // More peers than the rings hold.
-            for (var i = 0; i < 8; i++) {
-                bridge.emitEvent(Ev.peerFound("m" + i, "local_send", "Device " + i))
-            }
-        },
-        function () {
-            var room = test.view.slotSpots.length
-            test.verify(room >= 5 && room < 11, "the rings hold some, not all: " + room)
-            test.compare(test.shownNames().length, room, "as many as the rings hold")
-            test.compare(test.view.overflow, 11 - room)
-            var more = test.find("morePeers")
-            test.verify(more.visible, "the rest behind +N")
-            test.verify(probe.texts(more).indexOf("+" + (11 - room)) >= 0)
-            // Round rings, and nobody covers anybody, the centre, +N or
-            // the cross.
-            var rings = test.view.rings
-            for (var r = 1; r < rings.length; r++) {
-                test.verify(rings[r] - rings[r - 1] >= test.view.avatar, "rings a peer apart")
-            }
-            var boxes = []
-            var spots = test.view.slotSpots
-            for (var i = 0; i < spots.length; i++) {
-                test.verify(spots[i].x - test.view.avatar / 2 >= 0
-                            && spots[i].x + test.view.avatar / 2 <= test.view.width, "on the screen")
-                var ringOf = Math.sqrt(Math.pow(spots[i].x - test.view.ox, 2) + Math.pow(spots[i].y - test.view.oy, 2))
-                var onRing = false
-                for (var k = 0; k < rings.length; k++) {
-                    onRing = onRing || Math.abs(ringOf - rings[k]) < 0.5
-                }
-                test.verify(onRing, "on a ring")
-                test.verify(spots[i].y - test.view.avatar / 2 > test.find("cloud").y + test.find("cloud").height,
-                            "below the cloud and its label")
-                boxes.push(test.view.peerBox(spots[i].x, spots[i].y))
-            }
-            var origin = test.find("origin")
-            var cross = test.find("clearPayload")
-            boxes.push([origin.x, origin.y, origin.x + origin.width, origin.y + origin.height])
-            boxes.push([more.x, more.y, more.x + more.width, more.y + more.height])
-            boxes.push([cross.x, cross.y, cross.x + cross.width, cross.y + cross.height])
-            for (var a = 0; a < boxes.length; a++) {
-                for (var b = a + 1; b < boxes.length; b++) {
-                    var apart = boxes[a][2] <= boxes[b][0] || boxes[b][2] <= boxes[a][0]
-                                || boxes[a][3] <= boxes[b][1] || boxes[b][3] <= boxes[a][1]
-                    test.verify(apart, "slots " + a + " and " + b + " overlap")
-                }
-            }
-            test.verify(test.find("cloud").y >= test.view.topInset, "the cloud clear of the tabs")
-            bridge.emitEvent(Ev.peerLost("p1"))
-        },
-        function () {
-            var after = test.view.slots
-            test.verify(after[0] !== "local_send:p1", "a peer that went leaves its place")
-            test.verify(after[0] !== "", "to one that waited")
-            test.compare(after[1], "quick_share:q1", "and nobody else moves")
-            test.compare(test.view.overflow, 10 - test.view.slotSpots.length)
-            test.find("morePeers").clicked()
-        },
-        function () {
+            // With a code: several files go with croc.
+            bridge.nextTransfer = 60
+            test.find("sendWithCode").clicked()
             test.page = window.pageStack.currentPage
-            test.compare(test.page.objectName, "peerListPage")
-            var rows = probe.findAll(test.page, "peerRow")
-            test.compare(rows.length, 10, "every peer")
-            var names = probe.findAll(test.page, "peerRowName")
-            var shown = []
-            for (var i = 0; i < names.length; i++) {
-                shown.push(names[i].text)
-            }
-            test.verify(shown.indexOf("Car EVIL") >= 0 && shown.indexOf("Device 7") >= 0, shown.join(", "))
-            test.verifyPlainText(test.page, "the device list")
-            bridge.nextTransfer = 90
-            for (var r = 0; r < rows.length; r++) {
-                if (probe.find(rows[r], "peerRowName").text === "Device 7") {
-                    rows[r].clicked()
-                }
-            }
+            test.compare(test.page.objectName, "sendCodePage")
+            test.compare(test.lastOf("send"), { type: "send", target: { protocol: "croc" },
+                                                items: [{ kind: "file", path: test.downloads + "ok.txt" },
+                                                        { kind: "file", path: "/home/defaultuser/Pictures/Jolla/p.jpg" }] })
         },
         function () {
-            test.compare(window.pageStack.currentPage.objectName, "mainPage", "back to the radar")
-            var sent = test.lastOf("send")
-            test.compare(sent.target, { protocol: "local_send", peer: "m7" }, "to the one tapped")
-            test.verify(test.find("outgoingBubble").visible, "drawn, though it has no place on the rings")
-            bridge.emitEvent(Ev.transferStarted(90, "outgoing", {}))
-            // A share while it runs: the next thing to send.
-            test.main.share([{ kind: "text", text: "next" }])
-            bridge.emitEvent(Ev.finished(90, "done"))
-            return 150
+            var box = probe.find(test.page, "theirApp")
+            test.compare(box.currentIndex, 1, "croc")
+            test.compare(box.description, "Works with Sukkula and croc.")
+            test.compare(test.pageSays("heroSubtitle"), "Getting a code…")
+            test.compare(probe.find(test.page, "anchor").mode, "waiting", "the anchor, at the same place")
+            // Magic Wormhole cannot take two files.
+            box.choose(0)
+            test.compare(test.commandsOfType("send").length, 7, "no second send")
+            test.compare(test.view.outgoing.protocol, "croc")
+            bridge.emitEvent(Ev.crocCode(60, "gala-tulip-acorn"))
+            bridge.emitEvent(Ev.transferStarted(60, "outgoing", { protocol: "croc", peer: "croc" }))
         },
         function () {
+            test.compare(test.pageSays("heroTitle"), "gala-tulip-acorn", "the code is the title")
+            test.compare(test.pageSays("heroSubtitle"), "The receiver scans it or types it in.")
+            var qr = probe.find(test.page, "sendQr")
+            test.verify(qr.valid && qr.visible, "croc's QR code is drawn")
+            test.compare(qr.size, 21)
+            test.verify(qr.parent === probe.find(test.page, "anchorArea"), "in the anchor's place")
+            test.verify(!probe.find(test.page, "anchor").visible)
+            test.compare(probe.find(test.page, "codeServer"), null, "which server is Settings' business")
+            // Leaving the page before anyone came gives the code up.
+            window.pageStack.pop()
+            return 50
+        },
+        function () {
+            test.compare(test.lastOf("cancel"), { type: "cancel", transfer: 60 }, "an unused code given up")
             test.verify(test.view.outgoing === null)
-            test.compare(test.main.payload.texts, ["next"], "a share that came during a send outlives it")
+            // One file: Magic Wormhole.
+            test.main.share([{ kind: "file", path: test.downloads + "a.txt" }])
+            bridge.nextTransfer = 77
+            test.find("sendWithCode").clicked()
+            test.page = window.pageStack.currentPage
+            test.compare(test.lastOf("send"), { type: "send", target: { protocol: "wormhole" },
+                                                items: [{ kind: "file", path: test.downloads + "a.txt" }] })
+        },
+        function () {
+            test.compare(probe.find(test.page, "theirApp").currentIndex, 0, "Magic Wormhole")
+            test.compare(test.pageSays("heroTitle"), "a.txt", "what, until the code is there")
+            bridge.emitEvent(Ev.wormholeCode(77, "7-guitarist-revenge"))
+            bridge.emitEvent(Ev.transferStarted(77, "outgoing", { protocol: "wormhole", peer: "" }))
+        },
+        function () {
+            test.compare(test.pageSays("heroTitle"), "7-guitarist-revenge")
+            test.verify(probe.find(test.page, "sendQr").visible)
+            probe.find(test.page, "copyCode").clicked()
+            test.compare(Clipboard.text, "7-guitarist-revenge", "Copy")
+            var shareButton = probe.find(test.page, "shareCode")
+            test.verify(shareButton.visible, "Share…")
+            shareButton.clicked()
+            var action = test.page.children[0].item
+            test.compare(action.triggered, 1, "the share sheet")
+            test.compare(action.resources, [{ data: "7-guitarist-revenge", name: "code.txt", type: "text/plain" }],
+                         "with the code as text, and nothing else")
+            // Receiver's app: croc. The code shown is given up for a new one.
+            bridge.nextTransfer = 78
+            probe.find(test.page, "theirApp").choose(1)
+            test.compare(test.lastOf("cancel"), { type: "cancel", transfer: 77 }, "the old code given up")
+            test.compare(test.lastOf("send"), { type: "send", target: { protocol: "croc" },
+                                                items: [{ kind: "file", path: test.downloads + "a.txt" }] })
+        },
+        function () {
+            test.compare(test.view.outgoing.transferId, 78)
+            test.compare(test.pageSays("heroTitle"), "a.txt", "the old code is gone")
+            bridge.emitEvent(Ev.crocCode(78, "gala-tulip-acorn"))
+            bridge.emitEvent(Ev.transferStarted(78, "outgoing", { protocol: "croc", peer: "croc" }))
+        },
+        function () {
+            test.compare(test.pageSays("heroTitle"), "gala-tulip-acorn")
+            bridge.emitEvent(Ev.progress(78, 500, 1000))
+        },
+        function () {
+            // The receiver has come: the ring fills where the QR code was.
+            test.verify(!probe.find(test.page, "sendQr").visible)
+            var a = probe.find(test.page, "anchor")
+            test.verify(a.visible)
+            test.compare(a.mode, "progress")
+            test.compare(probe.find(a, "anchorPercent").text, "50%")
+            test.compare(test.pageSays("heroTitle"), "a.txt")
+            test.compare(test.pageSays("heroSubtitle"), "500 B of 1.0 kB")
+            test.verify(!probe.find(test.page, "theirApp").visible, "no switching once it goes")
+            test.verify(!probe.find(test.page, "copyCode").visible)
+            test.verify(probe.find(test.page, "cancelSend").visible)
+            test.verifyPlainText(test.page, "a send with a code")
+            // Leaving now keeps it going, on the tab.
+            window.pageStack.pop()
+            return 50
+        },
+        function () {
+            test.compare(test.lastOf("cancel"), { type: "cancel", transfer: 77 }, "nothing more given up")
+            test.compare(test.anchor().mode, "progress", "the tab shows it the same way")
+            test.compare(test.says("heroTitle"), "a.txt")
+            test.compare(test.says("heroSubtitle"), "500 B of 1.0 kB")
+            test.verify(!test.find("sendWithCode").visible)
+            bridge.emitEvent(Ev.finished(78, "done"))
+        },
+        function () {
+            test.compare(test.says("heroTitle"), "Sent")
+            test.compare(test.says("heroSubtitle"), "a.txt")
+            // Done: back to the start, nothing chosen.
+            test.find("sendDone").clicked()
+            test.verify(test.view.outgoing === null)
+            test.compare(test.main.payload.itemCount, 0)
+            test.compare(test.says("heroTitle"), "Ready to send")
+            // Sent from the code page: the same buttons there.
+            test.main.share([{ kind: "file", path: test.downloads + "b.txt" }])
+            bridge.nextTransfer = 80
+            test.find("sendWithCode").clicked()
+            test.page = window.pageStack.currentPage
+            bridge.emitEvent(Ev.wormholeCode(80, "8-guitarist-revenge"))
+            bridge.emitEvent(Ev.transferStarted(80, "outgoing", { protocol: "wormhole", peer: "" }))
+            bridge.emitEvent(Ev.progress(80, 10, 20))
+            bridge.emitEvent(Ev.finished(80, "done"))
+        },
+        function () {
+            test.compare(probe.find(test.page, "anchor").mode, "done")
+            test.compare(test.pageSays("heroTitle"), "Sent")
+            test.compare(test.pageSays("heroSubtitle"), "b.txt")
+            test.verify(probe.find(test.page, "sendAnother").visible && probe.find(test.page, "sendDone").visible,
+                        "never half a code page")
+            test.verify(!probe.find(test.page, "sendQr").visible && !probe.find(test.page, "theirApp").visible)
+            probe.find(test.page, "sendAnother").clicked()
+            return 50
+        },
+        function () {
+            test.compare(window.pageStack.currentPage.objectName, "mainPage", "the page goes")
+            test.verify(test.view.outgoing === null)
+            test.compare(test.says("heroTitle"), "b.txt", "the file still chosen")
+            test.verify(test.find("sendWithCode").visible, "ready for another")
             // F-C1: every protocol but Magic Wormhole and croc off.
             bridge.emitEvent(Ev.settings({ localsend: { enabled: false, pin: null },
                                            quickshare: { enabled: false, visibility: "hidden", ble_nudge: false },
                                            bluetooth: { enabled: false } }))
         },
         function () {
-            test.compare(test.shownNames(), [], "nobody on the rings")
-            test.verify(!test.find("morePeers").visible)
-            test.verify(!test.find("radarHint").visible, "and nothing is looked for")
-            test.verify(test.find("cloud").visible, "the cloud stays")
-            test.find("cloud").clicked()
-            test.verify(test.find("wormholeTile").visible, "with Magic Wormhole")
-            test.verify(test.find("crocTile").visible, "and croc")
-            // Magic Wormhole switched off as well.
+            test.compare(test.rows(), [], "nobody nearby")
+            test.compare(test.find("nearbyHint").text, "Sending nearby is switched off in Settings.")
+            test.compare(test.anchor().mode, "idle", "nothing to look for")
+            test.verify(!test.find("lookingLabel").visible)
+            test.verify(test.find("sendWithCode").visible, "codes still go")
+            // Magic Wormhole switched off: croc takes one file too.
             bridge.emitEvent(Ev.settings({ localsend: { enabled: false, pin: null },
                                            quickshare: { enabled: false, visibility: "hidden", ble_nudge: false },
                                            wormhole: { enabled: false, mailbox_url: null, relay_url: null },
                                            bluetooth: { enabled: false } }))
         },
         function () {
-            test.verify(!test.find("wormholeTile").visible, "Magic Wormhole has a switch as well (F-C1)")
-            test.verify(test.find("cloud").visible, "croc keeps the cloud")
-            test.verify(test.find("crocTile").visible)
-            // croc sends the one text (F-CR1).
-            bridge.nextTransfer = 91
-            test.find("crocTile").clicked()
-            test.compare(test.lastOf("send"), { type: "send", target: { protocol: "croc" },
-                                                items: [{ kind: "text", text: "next" }] })
-        },
-        function () {
-            var tile = test.find("crocTile")
-            test.verify(tile.visible && tile.starting, "croc's tile waits for its code")
-            test.verify(test.find("internetLine").visible, "through the cloud")
-            bridge.emitEvent(Ev.crocCode(91, "gala-tulip-acorn"))
-            bridge.emitEvent(Ev.transferStarted(91, "outgoing", { protocol: "croc", peer: "croc" }))
-        },
-        function () {
-            test.compare(probe.find(test.find("crocTile"), "tileCode").text, "gala-tulip-acorn")
-            test.find("crocTile").clicked()
+            bridge.nextTransfer = 79
+            test.find("sendWithCode").clicked()
             test.page = window.pageStack.currentPage
-            test.compare(test.page.objectName, "wormholeCodePage")
-            test.compare(test.page.protocol, "croc")
-        },
-        function () {
-            test.compare(probe.find(test.page, "wormholeCode").text, "gala-tulip-acorn")
-            var qr = probe.find(test.page, "wormholeQr")
-            test.verify(qr.valid && qr.visible, "croc's QR code is drawn")
-            test.compare(qr.size, 21)
-            test.compare(probe.find(test.page, "pageHeaderTitle").text, "croc")
+            test.compare(test.lastOf("send").target, { protocol: "croc" }, "croc, the one left")
+            test.verify(!probe.find(test.page, "theirApp").visible, "no app to choose")
             window.pageStack.pop()
-            bridge.emitEvent(Ev.progress(91, 2, 4))
-        },
-        function () {
-            test.verify(!test.find("crocTile").visible, "the receiver has come")
-            test.compare(test.find("outgoingBubble").x + test.find("outgoingBubble").width / 2,
-                         test.view.rightTileX, "croc's side")
-            bridge.emitEvent(Ev.finished(91, "cancelled"))
-            return 150
-        },
-        function () {
-            test.verify(test.view.outgoing === null)
-            test.compare(test.main.payload.texts, ["next"], "a cancelled send keeps its text")
-            // And croc switched off.
+            // And croc switched off: nothing far away.
             bridge.emitEvent(Ev.settings({ localsend: { enabled: false, pin: null },
                                            quickshare: { enabled: false, visibility: "hidden", ble_nudge: false },
                                            wormhole: { enabled: false, mailbox_url: null, relay_url: null },
@@ -463,23 +555,25 @@ Script {
                                            bluetooth: { enabled: false } }))
         },
         function () {
-            test.verify(!test.find("crocTile").visible, "croc has a switch too")
-            test.verify(!test.find("cloud").visible)
-            test.verify(test.find("radarHint").visible)
-            test.compare(test.find("radarHint").text, "Every way of sending is switched off in Settings.")
-            bridge.emitEvent(Ev.settings({ localsend: { enabled: false, pin: null },
-                                           quickshare: { enabled: false, visibility: "hidden", ble_nudge: false },
-                                           bluetooth: { enabled: false } }))
+            test.compare(test.lastOf("cancel"), { type: "cancel", transfer: 79 })
+            test.verify(!test.find("sendWithCode").visible, "croc has a switch too")
+            bridge.emitEvent(Ev.settings({}))
         },
         function () {
             // A reply after its page has gone is dropped quietly.
             test.page = window.pageStack.push(Qt.resolvedUrl("../../qml/pages/MainPage.qml"), { engine: engine })
             var other = probe.find(test.page, "sendView")
-            test.page.payload.load([{ kind: "text", text: "late" }])
+            test.page.payload.load([{ kind: "file", path: test.downloads + "late.txt" }])
             bridge.autoReply = false
-            probe.find(other, "cloud").clicked()
-            probe.find(other, "wormholeTile").clicked()
-            test.compare(test.lastOf("send").items, [{ kind: "text", text: "late" }])
+            var late = null
+            var all = probe.findAll(other, "deviceRow")
+            for (var i = 0; i < all.length; i++) {
+                if (all[i].title === "Android") {
+                    late = all[i]
+                }
+            }
+            late.clicked()
+            test.compare(test.lastOf("send").items, [{ kind: "file", path: test.downloads + "late.txt" }])
             test.pendingId = test.lastId()
             window.pageStack.pop()
             return 50
@@ -489,6 +583,7 @@ Script {
             return 50
         },
         function () {
+            bridge.autoReply = true
             test.compare(window.pageStack.currentPage.objectName, "mainPage")
             test.compare(engine.discoveryUsers, 1, "the page that went gave its discovery back")
             var cmds = bridge.parsedCommands()
@@ -498,9 +593,7 @@ Script {
                     last = cmds[i].cmd.type
                 }
             }
-            test.compare(last, "start_discovery", "and did not stop it for the page still in Send mode")
+            test.compare(last, "start_discovery", "and did not stop it for the page still on the Send tab")
         }
     ]
-
-    property var pendingId: -1
 }

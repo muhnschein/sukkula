@@ -3,23 +3,26 @@ import QtQuick 2.6
 import Sailfish.Silica 1.0
 
 /*
- * Receive mode (F-C1): Send mode's radar, the other way round.
+ * The Receive tab (F-C1), at one glance, round the anchor (StatusHero):
+ * whether this phone is ready and the name others see it by, the anchor
+ * pulsing while it waits; what is coming in, the anchor filling as it
+ * comes, with Cancel (F-C5), then a check and where it went, or a cross
+ * and why, for a few seconds; receiving with a code from far away, by
+ * scanning its QR code or typing it in (F-MW2, F-CR2); and what came
+ * today. How each way of receiving is doing is in Settings, beside its
+ * switch; a way that could not start is said here in a line that leads
+ * there.
  *
- * At the foot, this phone, with the name others see. The rings pulse
- * while it is visible. A device that offers something comes onto the
- * rings with its protocol's badge while the consent dialog asks (F-C2);
- * once accepted, a line runs from it to this phone and both fill up as
- * the bytes come (F-C5). Above, a QR code (spec v0.6): tapping it opens
- * the camera, to read the sender's Magic Wormhole or croc code off their
- * screen or type it (F-MW2, F-CR2), and what comes that way comes through
- * it from above, Magic Wormhole's from the left and croc's from the right.
+ * Every offer still waits on the consent dialog (F-C2), which comes up
+ * over whatever shows. Files that came together are one row ("3
+ * photos"), and tapping it lists them. A file's kind is told by its name
+ * alone: nothing received is ever opened or drawn (S2, S8).
  *
- * What was received, and what was sent, is on the History page.
- *
- * Sender names are the peers' own (after S2) and are shown only in
- * PeerBubble's plain-text label.
+ * Sender and file names are the peers' own (after S1, S2) and are shown
+ * only in IconListItem's, ProgressRow's, StatusHero's and this file's
+ * plain-text labels.
  */
-Radar {
+Item {
     id: view
 
     property QtObject engine
@@ -27,218 +30,120 @@ Radar {
     property Item banner
     /// This is the tab on screen.
     property bool current: true
-    /// How long an ended transfer stays on screen, in ms.
+    /// The app is in front.
+    property bool foreground: true
+    /// Room at the top for the tabs.
+    property real topInset: 0
+    /// The height of the list this is in, which places the anchor.
+    property real viewHeight: 0
+    /// How long an ended transfer stays in the hero, in ms.
     property int linger: 4000
-    property bool alive: true
 
-    /// Ended incoming transfers still on screen: transferId -> when.
+    /// Ended incoming transfers still under "Receiving": transferId -> when.
     property var ended: ({})
-    /// Offers that have left the rings, for their transfer to take their
-    /// slot if they were accepted: [{protocol, sender, slot, at}]. The
-    /// engine takes an offer off its list before it says how it closed,
-    /// so each one gone is kept for a while, whatever its answer.
-    property var handover: []
-    /// What each offer on screen is, for the handover: offerId ->
-    /// {protocol, sender}.
-    property var offerInfo: ({})
-    /// The transfer whose progress is spelt out, or -1.
-    property int focusId: -1
-    /// Incoming transfers running, and their bytes.
-    property int activeCount: 0
-    property real activeBytes: 0
-    property real activeTotal: 0
-    /// Something is on the rings or the tiles.
-    property bool busy: false
-    /// Goes up with every rebalance(): what reads the transfers reads it.
+    /// Goes up whenever a transfer changes: what reads them reads it.
     property int tick: 0
 
     readonly property bool receiving: view.engine.receiving
-    readonly property var readyProtocols: {
-        var out = []
-        var s = view.engine.protocolStatuses
-        for (var i = 0; i < s.length; i++) {
-            if (s[i].state === "ready") {
-                out.push(s[i].protocol)
+    readonly property var statuses: view.engine.protocolStatuses
+    readonly property bool nearbyEnabled: view.engine.protocolEnabled("local_send")
+                                          || view.engine.protocolEnabled("quick_share")
+    readonly property bool nearbyReady: view.stateOf("local_send") === "ready"
+                                        || view.stateOf("quick_share") === "ready"
+    readonly property bool anyFailed: view.stateOf("local_send") === "failed"
+                                      || view.stateOf("quick_share") === "failed"
+    readonly property bool codeOn: view.engine.protocolEnabled("wormhole") || view.engine.protocolEnabled("croc")
+    /// Something is coming in, or has just ended.
+    readonly property bool busy: (view.tick, view.countShown() > 0)
+    /// Something came today.
+    readonly property bool anyToday: (view.tick, view.countToday() > 0)
+    readonly property bool pulsing: view.current && view.foreground && view.receiving && view.nearbyReady
+                                    && !view.busy
+    /// A way of receiving nearby is on and could not start.
+    readonly property bool someFailed: view.receiving && view.nearbyEnabled && view.anyFailed
+    /// The transfer the hero shows: the first coming in, or ended a
+    /// moment ago; null while none is.
+    readonly property var heroTransfer: (view.tick, view.findHeroTransfer())
+    readonly property int heroId: view.heroTransfer ? view.heroTransfer.transferId : -1
+    /// The anchor's mode.
+    readonly property string heroMode: !view.heroTransfer ? (view.pulsing ? "ready" : "idle")
+        : view.heroTransfer.state === "active" ? (view.heroTransfer.bytes > 0 ? "progress" : "waiting")
+        : view.heroTransfer.state === "done" ? "done" : "failed"
+
+    implicitHeight: column.height
+
+    onHeroIdChanged: rate.reset()
+
+    TransferRate {
+        id: rate
+        bytes: view.heroTransfer ? view.heroTransfer.bytes : 0
+        total: view.heroTransfer ? view.heroTransfer.total : 0
+        active: view.heroTransfer !== null && view.heroTransfer.state === "active"
+    }
+
+    function findHeroTransfer() {
+        for (var i = 0; i < view.engine.transfers.count; i++) {
+            var t = view.engine.transfers.get(i)
+            if (view.shows(t.direction, t.state, t.transferId)) {
+                return view.engine.transfer(t.transferId)
             }
         }
-        return out
+        return null
     }
-    readonly property var failedProtocols: {
-        var out = []
-        var s = view.engine.protocolStatuses
-        for (var i = 0; i < s.length; i++) {
-            if (s[i].state === "failed") {
-                out.push(s[i])
+
+    function stateOf(protocol) {
+        for (var i = 0; i < view.statuses.length; i++) {
+            if (view.statuses[i].protocol === protocol) {
+                return view.statuses[i].state
             }
         }
-        return out
-    }
-    readonly property bool wormholeOn: view.engine.protocolEnabled("wormhole")
-    readonly property bool crocOn: view.engine.protocolEnabled("croc")
-    readonly property bool internetOn: view.wormholeOn || view.crocOn
-    readonly property real progress: view.activeTotal > 0 ? Math.min(1, view.activeBytes / view.activeTotal)
-                                                          : (view.activeCount > 0 ? 0 : -1)
-    readonly property var focused: (view.tick, view.focusId >= 0 ? view.engine.transfer(view.focusId) : null)
-    /// An internet transfer or offer is on screen: the QR code is part of
-    /// its picture then, and does not open the camera.
-    property bool internetBusy: false
-
-    pulsing: view.current && view.receiving && view.readyProtocols.length > 0 && view.activeCount === 0
-    faint: view.activeCount > 0
-    /// Left of this phone: how the transfer in focus is doing.
-    readonly property real infoWidth: view.ox - view.originSize / 2 - Theme.paddingLarge - view.margin
-    readonly property real infoHeight: Theme.fontSizeExtraLarge * 1.3 + Theme.fontSizeExtraSmall * 4
-                                       + Theme.iconSizeMedium + Theme.paddingSmall * 3
-    reserved: [[0, view.oy + view.originSize / 2 - view.infoHeight,
-                view.ox - view.originSize / 2, view.oy + view.originSize / 2 + view.summaryHeight]]
-
-    function internet(protocol) {
-        return protocol === "wormhole" || protocol === "croc"
-    }
-    function tileX(protocol) {
-        return protocol === "croc" ? view.rightTileX : view.leftTileX
+        return ""
     }
 
-    /// An incoming transfer is on screen: running, or ended a moment ago.
+    /// An incoming transfer is under "Receiving": running, or ended a
+    /// moment ago.
     function shows(direction, state, transferId) {
         return direction === "incoming" && (state === "active" || view.ended[transferId] !== undefined)
     }
-
-    onSlotSpotsChanged: view.rebalance()
-
-    /// Who is where: the offers and the incoming transfers on screen get
-    /// slots; a transfer takes its offer's.
-    function rebalance() {
-        var keys = []
-        var wanted = {}
-        var offers = []
-        var info = {}
-        var busy = false
-        var internetBusy = false
-        for (var i = 0; i < view.engine.offers.count; i++) {
-            var o = view.engine.offers.get(i)
-            info[o.offerId] = { protocol: o.protocol, sender: o.sender }
-            busy = true
-            if (view.internet(o.protocol)) {
-                internetBusy = true
-                continue
-            }
-            offers.push(o)
+    /// An incoming transfer is under "Received today": done today, and no
+    /// longer under "Receiving".
+    function today(direction, state, transferId, endedAt) {
+        if (direction !== "incoming" || state !== "done" || view.ended[transferId] !== undefined) {
+            return false
         }
-        var superseded = {}
-        var now = Date.now()
-        var handover = []
-        for (var h = 0; h < view.handover.length; h++) {
-            if (now - view.handover[h].at < 10000) {
-                handover.push(view.handover[h])
+        var midnight = new Date()
+        midnight.setHours(0, 0, 0, 0)
+        return endedAt >= midnight.getTime()
+    }
+    function countShown() {
+        var n = 0
+        for (var i = 0; i < view.engine.transfers.count; i++) {
+            var t = view.engine.transfers.get(i)
+            if (view.shows(t.direction, t.state, t.transferId)) {
+                n++
             }
         }
-        for (var g = 0; g < view.slots.length; g++) {
-            var was = view.slots[g]
-            if (was.indexOf("offer:") !== 0) {
-                continue
-            }
-            var gone = Number(was.substring(6))
-            if (info[gone] === undefined && view.offerInfo[gone] !== undefined) {
-                handover.push({ protocol: view.offerInfo[gone].protocol, sender: view.offerInfo[gone].sender,
-                                slot: g, at: now })
-            }
-        }
-        var active = 0
-        var bytes = 0
-        var total = 0
-        var newest = -1
-        var focusShown = false
-        for (var t = 0; t < view.engine.transfers.count; t++) {
-            var row = view.engine.transfers.get(t)
-            if (!view.shows(row.direction, row.state, row.transferId)) {
-                continue
-            }
-            busy = true
-            if (row.state === "active") {
-                active++
-                bytes += row.bytes
-                total += row.total
-                if (newest < 0) {
-                    newest = row.transferId
-                }
-            }
-            if (row.transferId === view.focusId) {
-                focusShown = true
-            }
-            if (view.internet(row.protocol)) {
-                internetBusy = true
-                continue
-            }
-            var key = "transfer:" + row.transferId
-            keys.push(key)
-            if (view.slots.indexOf(key) >= 0) {
-                continue
-            }
-            // Its offer, still on screen, or just accepted.
-            for (var k = 0; k < offers.length; k++) {
-                if (offers[k].protocol === row.protocol && offers[k].sender === row.peer
-                        && superseded[offers[k].offerId] !== true) {
-                    superseded[offers[k].offerId] = true
-                    wanted[key] = view.slots.indexOf("offer:" + offers[k].offerId)
-                    break
-                }
-            }
-            if (wanted[key] === undefined) {
-                for (var m = 0; m < handover.length; m++) {
-                    if (handover[m].protocol === row.protocol && handover[m].sender === row.peer) {
-                        wanted[key] = handover[m].slot
-                        handover.splice(m, 1)
-                        break
-                    }
-                }
+        return n
+    }
+    function countToday() {
+        var n = 0
+        for (var i = 0; i < view.engine.transfers.count; i++) {
+            var t = view.engine.transfers.get(i)
+            if (view.today(t.direction, t.state, t.transferId, t.endedAt)) {
+                n++
             }
         }
-        for (var n = 0; n < offers.length; n++) {
-            if (superseded[offers[n].offerId] !== true) {
-                keys.push("offer:" + offers[n].offerId)
-            }
-        }
-        view.offerInfo = info
-        view.handover = handover
-        view.activeCount = active
-        view.activeBytes = bytes
-        view.activeTotal = total
-        view.busy = busy
-        view.internetBusy = internetBusy
-        if (!focusShown) {
-            view.focusId = newest
-        }
-        view.place(keys, wanted)
-        view.tick++
+        return n
     }
 
-    Connections {
-        target: view.engine.offers
-        // Qt 5.6 handler syntax.
-        onCountChanged: view.rebalance()
-    }
     Connections {
         target: view.engine.transfers
-        onCountChanged: view.rebalance()
+        // Qt 5.6 handler syntax.
+        onCountChanged: view.tick++
     }
     Connections {
         target: view.engine
-        onSettingsChanged: view.rebalance()
-        onTransferUpdated: {
-            var t = view.engine.transfer(transferId)
-            if (t && t.direction === "incoming" && t.state === "active"
-                    && (view.focusId < 0 || view.engine.transfer(view.focusId) === null)) {
-                view.focusId = transferId
-            }
-            // Ended: kept on screen from this very update, so that its
-            // last state is what is spelt out.
-            if (t && t.direction === "incoming" && t.state !== "active") {
-                view.ending(transferId)
-            } else {
-                view.rebalance()
-            }
-        }
+        onTransferUpdated: view.tick++
         onTransferEnded: {
             if (direction === "incoming") {
                 view.ending(transferId)
@@ -246,7 +151,8 @@ Radar {
         }
     }
 
-    /// An incoming transfer has ended: it stays for `linger`.
+    /// An incoming transfer has ended: it stays under "Receiving" for
+    /// `linger`, saying how.
     function ending(transferId) {
         if (view.ended[transferId] !== undefined) {
             return
@@ -257,23 +163,8 @@ Radar {
         }
         next[transferId] = Date.now()
         view.ended = next
-        view.rebalance()
+        view.tick++
         prune.restart()
-    }
-
-    /// An ended transfer leaves the screen after `linger`, or when tapped.
-    function dismiss(transferId) {
-        if (view.ended[transferId] === undefined) {
-            return
-        }
-        var next = {}
-        for (var id in view.ended) {
-            if (Number(id) !== transferId) {
-                next[id] = view.ended[id]
-            }
-        }
-        view.ended = next
-        view.rebalance()
     }
 
     Timer {
@@ -295,7 +186,7 @@ Radar {
             }
             if (changed) {
                 view.ended = next
-                view.rebalance()
+                view.tick++
             }
             if (left === 0) {
                 prune.stop()
@@ -303,190 +194,60 @@ Radar {
         }
     }
 
-    function tapped(transferId, state) {
-        if (state === "active") {
-            view.focusId = transferId
-        } else {
-            view.dismiss(transferId)
-        }
-    }
-
-    /// The camera, to read or type a code: which protocol, the code says.
+    /// The camera, to read a code off the sender's screen: which protocol,
+    /// the QR code says.
     function scanCode() {
         pageStack.push(Qt.resolvedUrl("../pages/ScanPage.qml"), { engine: view.engine })
     }
 
-    function cancelFocused() {
-        if (view.focused && view.focused.state === "active") {
-            view.engine.cancel(view.focusId)
-        }
+    /// A code typed in or pasted: which protocol, the engine tells.
+    function typeCode() {
+        pageStack.push(Qt.resolvedUrl("../pages/TypeCodePage.qml"), { engine: view.engine })
     }
 
-    Component.onCompleted: view.rebalance()
-    Component.onDestruction: view.alive = false
-
-    // ---- The picture ----------------------------------------------------
-
-    CloudButton {
-        objectName: "qrButton"
-        kind: "qr"
-        x: view.cloudX - width / 2
-        y: view.cloudY - view.cloudHeight / 2
-        width: view.cloudHeight
-        cloudHeight: view.cloudHeight
-        lineWidth: Math.max(2, width * 2.5 / 32)
-        labelHeight: view.summaryHeight
-        labelWidth: view.width - 2 * view.margin
-        visible: view.internetOn && view.engine.running
-        faint: view.busy && !view.internetBusy
-        //: Receive screen, under the QR code: tapping it opens the camera.
-        label: !view.internetBusy ? qsTr("Scan or type a code") : ""
-        onClicked: {
-            if (!view.internetBusy) {
-                view.scanCode()
-            }
-        }
+    function openSettings() {
+        pageStack.push(Qt.resolvedUrl("../pages/SettingsPage.qml"), { engine: view.engine })
     }
 
-    // Offers waiting for an answer: nearby in their slots, from the
-    // internet above the QR code, on their protocol's side.
-    Repeater {
-        model: view.engine.offers
-        delegate: PeerBubble {
-            readonly property bool fromInternet: view.internet(model.protocol)
-            readonly property int slot: view.slots.indexOf("offer:" + model.offerId)
-            objectName: "offerBubble"
-            size: view.avatar
-            x: (fromInternet ? view.tileX(model.protocol) : view.spotX(slot)) - width / 2
-            y: (fromInternet ? view.tileMidY : view.spotY(slot)) - height / 2
-            visible: fromInternet || slot >= 0
-            name: model.sender
-            protocol: fromInternet ? "" : model.protocol
-            active: true
-        }
-    }
-
-    // Incoming transfers: a line to this phone, and the sender filling up.
-    Repeater {
-        model: view.engine.transfers
-        delegate: Item {
-            id: incoming
-            readonly property bool fromInternet: view.internet(model.protocol)
-            readonly property int slot: view.slots.indexOf("transfer:" + model.transferId)
-            readonly property bool shown: view.shows(model.direction, model.state, model.transferId)
-                                          && (fromInternet || slot >= 0)
-            readonly property real px: fromInternet ? view.tileX(model.protocol) : view.spotX(slot)
-            readonly property real py: fromInternet ? view.tileMidY : view.spotY(slot)
-            anchors.fill: parent
-            visible: incoming.shown
-
-            Segment {
-                visible: !incoming.fromInternet
-                x1: incoming.px
-                y1: incoming.py
-                x2: view.ox
-                y2: view.oy
-                startGap: view.avatar / 2
-                endGap: view.originSize / 2
-            }
-            Segment {
-                visible: incoming.fromInternet
-                x1: incoming.px
-                y1: incoming.py
-                x2: view.cloudX
-                y2: view.cloudY
-                startGap: view.avatar / 2
-            }
-            Segment {
-                visible: incoming.fromInternet
-                x1: view.cloudX
-                y1: view.cloudY
-                x2: view.ox
-                y2: view.oy
-                endGap: view.originSize / 2
-            }
-            PeerBubble {
-                objectName: "incomingBubble"
-                size: view.avatar
-                x: incoming.px - width / 2
-                y: incoming.py - height / 2
-                name: model.peer
-                protocol: incoming.fromInternet ? "" : model.protocol
-                active: true
-                progress: model.state === "done" ? 1 : (model.total > 0 ? model.bytes / model.total : 0)
-                onClicked: view.tapped(model.transferId, model.state)
-            }
-        }
-    }
-
-    // How far, left of this phone: who, the percentage big, then what is
-    // going on.
-    Column {
-        id: info
-        readonly property var t: view.focused
-        x: view.margin
-        y: view.oy + view.originSize / 2 - height
-        width: view.infoWidth
-        visible: info.t !== null && view.shows(info.t.direction, info.t.state, view.focusId)
-        spacing: Theme.paddingSmall / 2
-
-        Label {
-            objectName: "incomingFrom"
-            width: parent.width
-            horizontalAlignment: Text.AlignRight
-            visible: text.length > 0
-            text: info.t !== null ? info.t.peer : ""
-            textFormat: Text.PlainText
-            truncationMode: TruncationMode.Fade
-            font.pixelSize: Theme.fontSizeExtraSmall
-            color: Theme.highlightColor
-        }
-        Label {
-            objectName: "incomingPercent"
-            width: parent.width
-            horizontalAlignment: Text.AlignRight
-            text: info.t === null ? ""
-                  : Math.floor(100 * (info.t.state === "done" ? 1
-                                      : info.t.total > 0 ? Math.min(1, info.t.bytes / info.t.total) : 0)) + "%"
-            textFormat: Text.PlainText
-            visible: info.t !== null && (info.t.state === "active" || info.t.state === "done")
-            font.pixelSize: Theme.fontSizeExtraLarge
-            color: Theme.highlightColor
-        }
-        Label {
-            objectName: "incomingStatus"
-            width: parent.width
-            horizontalAlignment: Text.AlignRight
-            text: view.statusText(info.t)
-            textFormat: Text.PlainText
-            wrapMode: Text.Wrap
-            maximumLineCount: 3
-            font.pixelSize: Theme.fontSizeExtraSmall
-            color: info.t !== null && info.t.state === "failed" ? Theme.errorColor : Theme.secondaryHighlightColor
-        }
-        IconButton {
-            objectName: "cancelIncoming"
-            anchors.right: parent.right
-            visible: info.t !== null && info.t.state === "active"
-            icon.source: "image://theme/icon-m-clear"
-            onClicked: view.cancelFocused()
-        }
-    }
-
-    function statusText(t) {
+    /// A row under "Received today" was tapped.
+    function openReceived(transferId) {
+        var t = view.engine.transfer(transferId)
         if (!t) {
-            return ""
+            return
         }
+        if (t.savedCount === 0 && t.fileCount === 0) {
+            for (var i = 0; i < view.engine.texts.count; i++) {
+                var text = view.engine.texts.get(i)
+                if (text.transferId === transferId) {
+                    pageStack.push(Qt.resolvedUrl("../pages/TextPage.qml"), { from: text.from, text: text.text })
+                    return
+                }
+            }
+            return
+        }
+        if (view.namesOf(t).length > 1) {
+            pageStack.push(Qt.resolvedUrl("../pages/ReceivedPage.qml"), { engine: view.engine, transferId: transferId })
+        }
+    }
+
+    /// The names a transfer's files were saved under, or were offered
+    /// under while it runs.
+    function namesOf(t) {
+        var list = t.savedCount > 0 ? t.saved : t.files
+        return list.length > 0 ? list.split("\n") : []
+    }
+
+    function receivingText(t) {
         switch (t.state) {
         case "active":
-            //: Progress of a transfer: %1 bytes so far, %2 bytes in all, both formatted.
-            return qsTr("%1 of %2").arg(Format.formatFileSize(t.bytes)).arg(Format.formatFileSize(t.total))
+            //: Receive tab: files are coming; %1 is what, e.g. "3 photos" or a file's name.
+            return qsTr("Receiving %1…").arg(view.engine.bundleName(view.namesOf(t), t.fileCount))
         case "done":
             return t.savedCount > 0
-                   //: Receive screen: files arrived.
-                   ? qsTr("Saved in Downloads/Sukkula")
-                   //: Receive screen: a text arrived; it is on the History page.
-                   : qsTr("Received. It is in History.")
+                   //: Receive tab: files arrived.
+                   ? qsTr("Saved in Downloads › Sukkula")
+                   //: Receive tab: a text arrived; it is on the History page.
+                   : qsTr("Saved in History")
         case "cancelled":
             //: A transfer was stopped by one of the two sides.
             return qsTr("Cancelled")
@@ -497,130 +258,256 @@ Radar {
         return ""
     }
 
-    // This phone, filling up with what comes.
-    Item {
-        id: origin
-        objectName: "receiveOrigin"
-        x: view.ox - width / 2
-        y: view.oy - height / 2
-        width: view.originSize
-        height: width
+    /// "From Anna's Pixel 8 · 8.2 MB": who a row under "Received today"
+    /// came from, and how much. The name is the peer's: the last .arg().
+    function fromText(peer, total) {
+        //: Receive tab: who files came from, then how much; %1 is the formatted size, %2 the sender's name.
+        return qsTr("From %2 · %1").arg(Format.formatFileSize(total)).arg(peer)
+    }
 
-        readonly property color ink: view.activeCount > 0 ? Theme.highlightColor : Theme.primaryColor
-
-        Rectangle {
-            anchors.fill: parent
-            radius: width / 2
-            color: Theme.rgba(Theme.highlightBackgroundColor, 0.15)
-            border.width: Math.max(2, Math.round(width / 30))
-            border.color: origin.ink
+    function hero() {
+        if (!view.receiving) {
+            //: Receive tab: receiving was asked for and is not on yet.
+            return qsTr("Switching on…")
         }
+        if (!view.nearbyEnabled) {
+            //: Receive tab: Quick Share and LocalSend are switched off; only codes can be received.
+            return view.codeOn ? qsTr("Ready to receive codes") : qsTr("Receiving is switched off in Settings.")
+        }
+        if (view.nearbyReady) {
+            //: Receive tab: this phone can be found and sent to.
+            return qsTr("Ready to receive")
+        }
+        if (view.anyFailed) {
+            //: Receive tab: no way of receiving nearby could start.
+            return qsTr("Others nearby cannot see you")
+        }
+        //: Receive tab: the protocols are starting.
+        return qsTr("Starting…")
+    }
+
+    function heroTitle() {
+        var t = view.heroTransfer
+        if (!t) {
+            return view.hero()
+        }
+        switch (view.heroMode) {
+        case "done":
+            //: Receive tab: files or a text arrived.
+            return qsTr("Received")
+        case "failed":
+            //: Receive tab: what was coming did not arrive; the line under it says why.
+            return qsTr("Not received")
+        }
+        return t.peer
+    }
+
+    function heroSubtitle() {
+        var t = view.heroTransfer
+        if (!t) {
+            //: Receive tab, over this phone's name as devices nearby list it.
+            return view.nearbyEnabled ? qsTr("Others nearby see you as") : ""
+        }
+        switch (view.heroMode) {
+        case "waiting":
+            return view.receivingText(t)
+        case "progress":
+            return rate.sizeLine()
+        case "done":
+            return t.savedCount > 0
+                   //: Receive tab: files arrived.
+                   ? qsTr("Saved in Downloads › Sukkula")
+                   //: Receive tab: a text arrived; it is on the History page.
+                   : qsTr("Saved in History")
+        }
+        return t.state === "cancelled"
+               //: A transfer was stopped by one of the two sides.
+               ? qsTr("Cancelled")
+               : view.engine.errorText({ code: t.error })
+    }
+
+    function heroLine() {
+        var t = view.heroTransfer
+        if (!t) {
+            return view.nearbyEnabled ? view.engine.effectiveDeviceName : ""
+        }
+        var what = t.savedCount === 0 && t.fileCount === 0
+                   //: Receive tab: a text message arrived.
+                   ? qsTr("Text message")
+                   : view.engine.bundleName(view.namesOf(t), Math.max(t.savedCount, t.fileCount))
+        switch (view.heroMode) {
+        case "waiting":
+            return ""
+        case "progress":
+            return what
+        }
+        //: Receive tab, under "Received": what came from whom; %1 is what, e.g. "3 photos", %2 the sender's name.
+        return qsTr("%1 from %2").arg(what).arg(t.peer)
+    }
+
+    Column {
+        id: column
+        width: parent.width
 
         Item {
-            objectName: "receiveFill"
-            anchors {
-                left: parent.left
-                right: parent.right
-                bottom: parent.bottom
-            }
-            height: parent.height * Math.max(0, view.progress)
-            clip: true
-            visible: view.activeCount > 0
-
-            Rectangle {
-                y: parent.height - origin.height
-                width: origin.width
-                height: origin.height
-                radius: width / 2
-                color: Theme.highlightColor
-                opacity: 0.8
-            }
+            width: 1
+            height: view.topInset
         }
 
-        Glyph {
-            anchors.centerIn: parent
-            width: parent.width * 0.6
-            height: width
-            kind: "phone"
-            color: origin.ink
-        }
-    }
+        StatusHero {
+            id: hero
+            objectName: "receiveHero"
+            topInset: view.topInset
+            pageHeight: view.viewHeight
+            mode: view.heroMode
+            glyph: "phone"
+            value: view.heroTransfer && view.heroTransfer.total > 0 ? view.heroTransfer.bytes / view.heroTransfer.total : 0
+            running: view.current && view.foreground
+            title: view.heroTitle()
+            failed: view.heroMode === "failed"
+            subtitle: view.heroSubtitle()
+            line: view.heroLine()
 
-    Label {
-        objectName: "deviceNameLabel"
-        anchors {
-            top: origin.bottom
-            topMargin: Theme.paddingSmall / 2
-            horizontalCenter: origin.horizontalCenter
-        }
-        width: view.width - 2 * view.margin
-        horizontalAlignment: Text.AlignHCenter
-        text: view.engine.effectiveDeviceName
-        textFormat: Text.PlainText
-        truncationMode: TruncationMode.Fade
-        font.pixelSize: Theme.fontSizeExtraSmall
-        color: Theme.secondaryHighlightColor
-    }
+            // A way that could not start: why is beside its switch.
+            BackgroundItem {
+                id: failedItem
+                objectName: "receiveFailed"
+                width: hero.width
+                height: failedLabel.height + 2 * Theme.paddingMedium
+                visible: view.someFailed && !view.heroTransfer
+                onClicked: view.openSettings()
 
-    // What receiving is doing, while nothing is coming.
-    Column {
-        objectName: "receiveStatus"
-        x: view.margin
-        width: view.width - 2 * view.margin
-        y: view.oy - view.outer * 0.55 - height / 2
-        visible: !view.busy
-        spacing: Theme.paddingSmall
-
-        Label {
-            objectName: "receiveState"
-            width: parent.width
-            horizontalAlignment: Text.AlignHCenter
-            text: !view.receiving
-                  //: Receive screen: Receive mode was asked for and is not on yet.
-                  ? qsTr("Switching on…")
-                  : view.readyProtocols.length > 0
-                    //: Receive screen with nothing coming yet.
-                    ? qsTr("Waiting for offers. Nothing is saved until you accept it.")
-                    : view.failedProtocols.length > 0
-                      //: Receive screen: no protocol could start.
-                      ? qsTr("Nobody nearby can see this phone.")
-                      //: Receive screen: the protocols are starting.
-                      : qsTr("Starting…")
-            textFormat: Text.PlainText
-            wrapMode: Text.Wrap
-            font.pixelSize: Theme.fontSizeSmall
-            color: Theme.secondaryHighlightColor
-        }
-        Label {
-            objectName: "visibleVia"
-            width: parent.width
-            horizontalAlignment: Text.AlignHCenter
-            visible: view.receiving && view.readyProtocols.length > 0
-            text: {
-                var names = []
-                for (var i = 0; i < view.readyProtocols.length; i++) {
-                    names.push(view.engine.protocolName(view.readyProtocols[i]))
+                Label {
+                    id: failedLabel
+                    objectName: "receiveFailedLine"
+                    x: Theme.horizontalPageMargin
+                    width: parent.width - 2 * Theme.horizontalPageMargin
+                    anchors.verticalCenter: parent.verticalCenter
+                    horizontalAlignment: Text.AlignHCenter
+                    text: view.nearbyReady
+                          //: Receive tab, under "Ready to receive": one way of receiving nearby could not start; tapping opens Settings, which says why.
+                          ? qsTr("Some devices nearby cannot see you. Tap to see why.")
+                          //: Receive tab, under "Others nearby cannot see you": tapping opens Settings, which says why.
+                          : qsTr("Tap to see why.")
+                    textFormat: Text.PlainText
+                    wrapMode: Text.Wrap
+                    font.pixelSize: Theme.fontSizeSmall
+                    color: failedItem.highlighted ? Theme.highlightColor : Theme.errorColor
                 }
-                //: Receive screen: the protocols this phone can be found over; %1 lists them.
-                return qsTr("Visible over %1").arg(names.join(", "))
             }
-            textFormat: Text.PlainText
-            wrapMode: Text.Wrap
-            font.pixelSize: Theme.fontSizeExtraSmall
-            color: Theme.secondaryColor
+
+            Button {
+                objectName: "cancelReceive"
+                visible: view.heroTransfer !== null && view.heroTransfer.state === "active"
+                //: Stops a send or a receive under way.
+                text: qsTr("Cancel")
+                onClicked: view.engine.cancel(view.heroId)
+            }
         }
-        Repeater {
-            model: view.receiving ? view.failedProtocols : []
-            delegate: Label {
-                width: parent.width
-                horizontalAlignment: Text.AlignHCenter
-                //: A protocol could not start; %1 is its name, %2 why.
-                text: qsTr("%1 could not start: %2").arg(view.engine.protocolName(modelData.protocol))
-                                                  .arg(view.engine.errorText({ code: modelData.errorCode }))
+
+        Column {
+            id: rest
+            objectName: "receiveRest"
+            width: parent.width
+
+            // ---- Coming in -----------------------------------------------
+
+            // More than one at a time: the others, under the hero's.
+            SectionHeader {
+                visible: (view.tick, view.countShown() > 1)
+                //: Receive tab: the section of transfers coming in.
+                text: qsTr("Receiving")
+            }
+
+            Repeater {
+                model: view.engine.transfers
+                delegate: ProgressRow {
+                    objectName: "receiveProgress"
+                    visible: (view.tick, view.shows(model.direction, model.state, model.transferId)
+                              && model.transferId !== view.heroId)
+                    title: model.peer
+                    status: (view.tick, view.receivingText(view.engine.transfer(model.transferId) || {}))
+                    phase: model.state
+                    bytes: model.bytes
+                    total: model.total
+                    onCancelClicked: view.engine.cancel(model.transferId)
+                }
+            }
+
+            // ---- From far away --------------------------------------------
+
+            SectionHeader {
+                visible: view.codeOn && view.engine.running
+                //: Receive tab: the section for receiving over the internet with a code.
+                text: qsTr("From far away")
+            }
+
+            IconListItem {
+                objectName: "scanCode"
+                visible: view.codeOn && view.engine.running
+                glyph: "qr"
+                //: Receive tab: opens the camera to read the sender's QR code.
+                title: qsTr("Scan a QR code")
+                onClicked: view.scanCode()
+            }
+
+            IconListItem {
+                objectName: "typeCode"
+                visible: view.codeOn && view.engine.running
+                glyph: "keyboard"
+                //: Receive tab: opens the page to type or paste a code.
+                title: qsTr("Type in a code")
+                onClicked: view.typeCode()
+            }
+
+            // ---- Came today -----------------------------------------------
+
+            SectionHeader {
+                visible: view.anyToday
+                //: Receive tab: the section of what arrived today.
+                text: qsTr("Received today")
+            }
+
+            Repeater {
+                model: view.engine.transfers
+                delegate: IconListItem {
+                    id: receivedRow
+                    readonly property var names: model.savedCount > 0 ? model.saved.split("\n")
+                                                 : model.files.length > 0 ? model.files.split("\n") : []
+                    readonly property bool isText: model.savedCount === 0 && model.fileCount === 0
+                    objectName: "receivedRow"
+                    visible: (view.tick, view.today(model.direction, model.state, model.transferId, model.endedAt))
+                    glyph: receivedRow.isText ? "text"
+                           : view.engine.commonKind(receivedRow.names,
+                                                    Math.max(model.savedCount, receivedRow.names.length))
+                    title: receivedRow.isText
+                           //: Receive tab: a text message arrived.
+                           ? qsTr("Text message")
+                           : view.engine.bundleName(receivedRow.names,
+                                                    Math.max(model.savedCount, receivedRow.names.length))
+                    subtitle: view.fromText(model.peer, model.total)
+                    onClicked: view.openReceived(model.transferId)
+                }
+            }
+
+            Label {
+                objectName: "savedIn"
+                x: Theme.horizontalPageMargin
+                width: parent.width - 2 * Theme.horizontalPageMargin
+                visible: view.anyToday
+                topPadding: Theme.paddingSmall
+                bottomPadding: Theme.paddingSmall
+                //: Receive tab: where received files are.
+                text: qsTr("Saved in Downloads › Sukkula")
                 textFormat: Text.PlainText
                 wrapMode: Text.Wrap
-                font.pixelSize: Theme.fontSizeExtraSmall
-                color: Theme.errorColor
+                font.pixelSize: Theme.fontSizeSmall
+                color: Theme.secondaryColor
+            }
+
+            Item {
+                width: 1
+                height: Theme.paddingLarge
             }
         }
     }

@@ -508,14 +508,19 @@ The receive switch, and how each protocol in the build is doing (F-C1).
 ### peer_found, peer_lost
 
 A peer to send to appeared, changed, or went away. `id` is opaque and
-stable while the peer is visible.
+stable while the peer is visible. `address` is where it was found, for
+the device's details: an IP address, with the port for LocalSend, whose
+server has a fixed one. A peer that moves is found again with the new
+one. `fingerprint` is LocalSend's alone: the SHA-256 of the certificate
+the peer proved before it was listed, 64 uppercase hex digits, which
+every send to it is pinned to.
 
 ```json event
-{"type":"peer_found","peer":{"id":"ls-4f2a","protocol":"local_send","name":"Aino's laptop","model":"ThinkPad X1","device_type":"computer"}}
+{"type":"peer_found","peer":{"id":"ls-4f2a","protocol":"local_send","name":"Aino's laptop","model":"ThinkPad X1","device_type":"computer","address":"192.168.1.20:53317","fingerprint":"3FA2910C5B7ED4A10C9F22E87B316A0D91C45E02AA7F3D18B6E90417C2D57E44"}}
 ```
 
 ```json event
-{"type":"peer_found","peer":{"id":"qs-91c0","protocol":"quick_share","name":"Pixel 9","device_type":"phone"}}
+{"type":"peer_found","peer":{"id":"qs-91c0","protocol":"quick_share","name":"Pixel 9","device_type":"phone","address":"192.168.1.42"}}
 ```
 
 ```json event

@@ -172,9 +172,12 @@ Script {
             var t = engine.transfer(1)
             test.compare(t.peer, Ev.EVIL_NAME)
             test.compare(t.files, Ev.EVIL_FILE + "\nb.pdf")
+            test.compare(t.sizes, "1000\n1000", "the files' sizes, one per line")
             test.compare(t.bytes, 500)
             test.compare(t.state, "active")
+            test.verify(t.startedAt > 0 && t.endedAt === 0, "started, not ended")
             test.compare(engine.activeTransfers, 1)
+            test.compare(engine.activeIncoming, 1, "coming in")
             test.compare(engine.activeBytes, 500)
             // Progress past the total is held at the total; NaN and
             // negatives read 0.
@@ -195,7 +198,9 @@ Script {
             test.compare(t.bytes, 2000)
             test.compare(t.savedCount, 2)
             test.compare(t.saved, Ev.EVIL_FILE + "\nb (1).pdf")
+            test.verify(t.endedAt >= t.startedAt && t.endedAt > 0, "and when it ended")
             test.compare(engine.activeTransfers, 0)
+            test.compare(engine.activeIncoming, 0)
             bridge.emitEvent(Ev.transferStarted(2, "outgoing", { protocol: "bluetooth" }))
             bridge.emitEvent(Ev.finished(2, "failed", null, "refused"))
             bridge.emitEvent('{"type":"transfer_finished","transfer":2,"outcome":"weird"}')
@@ -233,6 +238,47 @@ Script {
             bridge.emitEvent(Ev.peerFound("p2", "quick_share"))
             bridge.emitEvent(Ev.peerFound("p3", "wormhole")) // no peers there
             bridge.emitEvent(Ev.peerFound("p1", "local_send", "Renamed"))
+            // Where a peer is, and LocalSend's certificate: of the right
+            // shape, or nothing.
+            var fp = "3FA2910C5B7ED4A10C9F22E87B316A0D91C45E02AA7F3D18B6E90417C2D57E44"
+            bridge.emitEvent(Ev.json({ type: "peer_found", peer: { id: "a1", protocol: "local_send", name: "A",
+                                                                   device_type: "computer",
+                                                                   address: "[fe80::1%wlan0]:53317",
+                                                                   fingerprint: fp } }))
+            bridge.emitEvent(Ev.json({ type: "peer_found", peer: { id: "a2", protocol: "local_send", name: "B",
+                                                                   device_type: "sofa",
+                                                                   address: "<b>1.2.3.4</b>",
+                                                                   fingerprint: fp.toLowerCase() } }))
+            bridge.emitEvent(Ev.json({ type: "peer_found", peer: { id: "a3", protocol: "local_send", name: "C",
+                                                                   device_type: "phone", address: 7,
+                                                                   fingerprint: fp + "00" } }))
+        },
+        function () {
+            var byId = {}
+            for (var i = 0; i < engine.localSendPeers.count; i++) {
+                byId[engine.localSendPeers.get(i).peerId] = engine.localSendPeers.get(i)
+            }
+            test.compare(byId.a1.address, "[fe80::1%wlan0]:53317")
+            test.compare(byId.a1.fingerprint, "3FA2910C5B7ED4A10C9F22E87B316A0D91C45E02AA7F3D18B6E90417C2D57E44")
+            test.compare(byId.a1.deviceType, "computer")
+            test.compare([byId.a2.address, byId.a2.fingerprint, byId.a2.deviceType], ["", "", ""],
+                         "markup, lowercase hex and a kind nobody knows: dropped")
+            test.compare([byId.a3.address, byId.a3.fingerprint], ["", ""], "a number, a long fingerprint")
+            test.compare(byId.p1.address, "", "none said, none shown")
+            bridge.emitEvent(Ev.peerLost("a1"))
+            bridge.emitEvent(Ev.peerLost("a2"))
+            bridge.emitEvent(Ev.peerLost("a3"))
+            // The words for what files are: by the name's extension alone.
+            test.compare([engine.kindOf("a.JPG"), engine.kindOf("b.mov"), engine.kindOf("c.flac"),
+                          engine.kindOf("d.pdf"), engine.kindOf("e.bin"), engine.kindOf("jpg"),
+                          engine.kindOf(Ev.EVIL_FILE)],
+                         ["photo", "video", "music", "document", "file", "file", "photo"])
+            test.compare(engine.bundleName(["x.jpg", "y.png"], 2), "2 photos")
+            test.compare(engine.bundleName(["x.mp4"], 1), "x.mp4", "one file: its name")
+            test.compare(engine.bundleName(["x.jpg", "y.pdf"], 2), "2 files", "mixed")
+            test.compare(engine.bundleName(["x.jpg"], 3), "3 files", "not all named: no guess")
+            test.compare(engine.countWords("video", 1), "1 video")
+            test.compare(engine.deviceTypeText("unknown"), "")
         },
         function () {
             test.compare(engine.localSendPeers.count, 1)
